@@ -1,0 +1,87 @@
+{
+  "simulation_settings": {
+    "dt_minutes": 10,
+    "duration_hours": 168
+  },
+  "zone_properties": {
+    "length": 10.0,
+    "width": 8.0,
+    "height": 2.8,
+    "exterior_surfaces": [
+      "north_wall",
+      "east_wall",
+      "south_wall",
+      "west_wall",
+      "roof"
+    ]
+  },
+  "materials": [
+    {
+      "name": "Concrete",
+      "thickness": 0.1,
+      "conductivity": 1.4,
+      "density": 2300,
+      "specific_heat": 880
+    },
+    {
+      "name": "Insulation",
+      "thickness": 0.05,
+      "conductivity": 0.04,
+      "density": 30,
+      "specific_heat": 1200
+    }
+  ],
+  "construction": {
+    "name": "Default Wall",
+    "layers": [
+      "Concrete",
+      "Insulation",
+      "Concrete"
+    ]
+  },
+  "windows": [
+    {
+      "wall_name": "south_wall",
+      "area": 6.0,
+      "u_value": 1.5,
+      "shgc": 0.5
+    }
+  ],
+  "hvac_system": {
+    "heating_capacity_w": 8000,
+    "cooling_capacity_w": 8000
+  },
+  "schedules": {
+    "occupied_hours": [ 7, 19 ],
+    "occupied_setpoint_c": 21.0,
+    "unoccupied_setpoint_c": 15.0,
+    "occupied_internal_gains_w": 400
+  },
+  "weather": {
+    "temp_base_c": 3,
+    "temp_amplitude_c": 5,
+    "temp_phase_shift_hr": 14,
+    "solar_max_irradiance_w_m2": 800
+  },
+  "convection_models": {
+    "exterior_hf": {
+      "RoofStable": "SparrowWindward",
+      "RoofUnstable": "SparrowWindward",
+      "VerticalWallWindward": "SparrowWindward",
+      "VerticalWallLeeward": "SparrowLeeward"
+    },
+    "exterior_hn": {
+      "RoofStable": "WaltonStableHorizontalOrTilt",
+      "RoofUnstable": "WaltonUnstableHorizontalOrTilt",
+      "VerticalWallWindward": "ASHRAEVerticalWall",
+      "VerticalWallLeeward": "ASHRAEVerticalWall"
+    },
+    "interior": {
+      "VerticalWall": "ASHRAEVerticalWall",
+      "UnstableHorizontal": "WaltonUnstableHorizontalOrTilt",
+      "StableHorizontal": "WaltonStableHorizontalOrTilt",
+      "UnstableTilted": "WaltonUnstableHorizontalOrTilt",
+      "StableTilted": "WaltonStableHorizontalOrTilt"
+    }
+  }
+}
