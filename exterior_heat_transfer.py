@@ -17,24 +17,55 @@ ROUGHNESS_MULTIPLIERS = {
 
 class AdaptiveConvectionAlgorithm:
     """
-    Calculates the outside face heat transfer coefficient (hc) using
+    A class to calculate the outside face heat transfer coefficient (hc) using
     the Adaptive Convection Algorithm.
+
+    The algorithm classifies a surface based on its orientation, heat flow direction,
+    and wind direction, then applies specific model equations for forced (hf) and
+    natural (hn) convection.
     """
 
     def __init__(self, hf_model_assignments, hn_model_assignments):
         """
         Initializes the algorithm with user-defined model assignments.
+
+        Args:
+            hf_model_assignments (dict): A dictionary mapping surface classifications
+                to the desired forced convection model.
+                Example: {'VerticalWallWindward': 'SparrowWindward', ...}
+            hn_model_assignments (dict): A dictionary mapping surface classifications
+                to the desired natural convection model.
+                Example: {'VerticalWallWindward': 'ASHRAEVerticalWall', ...}
         """
         self.hf_models = hf_model_assignments
         self.hn_models = hn_model_assignments
         self._combined_models = [
             'MoWITTWindward', 'MoWITTLeeward', 'NusseltJurges', 
-            'McAdams', 'ClearRoof'
+            'McAdams'
         ]
 
     def calculate_hc(self, surface, weather):
         """
         Calculates the total convective heat transfer coefficient (hc).
+
+        Args:
+            surface (dict): A dictionary of surface properties.
+                - type (str): 'wall' or 'roof'
+                - tilt (float): Surface tilt angle in degrees (0=horizontal, 90=vertical)
+                - azimuth (float): Surface azimuth in degrees (0-360, 180=S)
+                - area (float): Surface area in m^2
+                - perimeter (float): Surface perimeter in m
+                - roughness_index (int): 1-6, corresponding to ROUGHNESS_MULTIPLIERS
+                - surface_temp_c (float): Outside surface temperature in Celsius
+                - building_volume_m3 (float, optional): Total building volume for Mitchell model.
+            weather (dict): A dictionary of weather conditions.
+                - wind_speed_local_ms (float): Wind speed at surface height in m/s
+                - wind_speed_10m_ms (float): Wind speed at weather station (10m) in m/s
+                - wind_direction_deg (float): Wind direction in degrees (0-360, 180=from S)
+                - air_temp_c (float): Outside air temperature in Celsius
+
+        Returns:
+            float: The total convective heat transfer coefficient, hc (W/m^2.K).
         """
         classification = self._classify_surface(surface, weather)
         hf_model_name = self.hf_models.get(classification)
@@ -67,6 +98,18 @@ class AdaptiveConvectionAlgorithm:
         else:
             raise ValueError("Invalid surface type. Must be 'roof' or 'wall'.")
             
+    def _calculate_h_combined(self, model_name, surface, weather):
+        """Dispatcher for combined convection models."""
+        models = {
+            'MoWITTWindward': self._hc_mowitt_windward,
+            'MoWITTLeeward': self._hc_mowitt_leeward,
+            'NusseltJurges': self._hc_nusselt_jurges,
+            'McAdams': self._hc_mcadams,
+        }
+        if model_name not in models:
+            raise ValueError(f"Unknown combined convection model: {model_name}")
+        return models[model_name](surface, weather)
+                
     def _calculate_hf(self, model_name, surface, weather):
         """Dispatcher for forced convection models."""
         models = {
@@ -80,6 +123,32 @@ class AdaptiveConvectionAlgorithm:
         if model_name not in models:
             raise ValueError(f"Unknown forced convection model: {model_name}")
         return models[model_name](surface, weather)
+    
+    def _hc_mowitt_windward(self, surface, weather):
+        # Eq. 3.97 (with updated coefficients from Table 3.9)
+        delta_t = abs(surface['surface_temp_c'] - weather['air_temp_c'])
+        v_z = weather['wind_speed_local_ms']
+        c_t = 0.84; a = 3.26; b = 0.89
+        hn_term_sq = (c_t * (delta_t ** (1./3.))) ** 2
+        hf_term_sq = (a * (v_z ** b)) ** 2
+        return math.sqrt(hn_term_sq + hf_term_sq)
+
+    def _hc_mowitt_leeward(self, surface, weather):
+        # Eq. 3.98 (with updated coefficients from Table 3.9)
+        delta_t = abs(surface['surface_temp_c'] - weather['air_temp_c'])
+        v_z = weather['wind_speed_local_ms']
+        c_t = 0.84; a = 3.55; b = 0.617
+        hn_term_sq = (c_t * (delta_t ** (1./3.))) ** 2
+        hf_term_sq = (a * (v_z ** b)) ** 2
+        return math.sqrt(hn_term_sq + hf_term_sq)
+
+    def _hc_nusselt_jurges(self, surface, weather):
+        # Eq. 3.103
+        return 5.8 + 3.94 * weather['wind_speed_local_ms']
+        
+    def _hc_mcadams(self, surface, weather):
+        # Eq. 3.104
+        return 5.7 + 3.8 * weather['wind_speed_local_ms']
 
     def _hf_sparrow_windward(self, surface, weather):
         rf = ROUGHNESS_MULTIPLIERS.get(surface['roughness_index'], 1.0)
@@ -161,7 +230,5 @@ class AdaptiveConvectionAlgorithm:
     def _hn_ashrae_vertical(self, delta_t, tilt):
         return 1.31 * (delta_t ** (1./3.))
 
-    def _calculate_h_combined(self, model_name, surface, weather):
-        raise NotImplementedError("Combined models are not implemented in this version.")
 
 
