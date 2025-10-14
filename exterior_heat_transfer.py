@@ -82,8 +82,9 @@ class AdaptiveConvectionAlgorithm:
 
         hf = self._calculate_hf(hf_model_name, surface, weather)
         hn = self._calculate_hn(hn_model_name, surface, weather)
+        hc = ((hf**3)+(hn**3))**(1./3.)
         
-        return hf + hn
+        return hc
 
     def _classify_surface(self, surface, weather):
         """Determines the surface classification."""
