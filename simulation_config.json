@@ -1,6 +1,6 @@
 {
   "simulation_settings": {
-    "dt_minutes": 10,
+    "dt_minutes": 1,
     "duration_hours": 168
   },
   "zone_properties": {
@@ -13,7 +13,8 @@
       "south_wall",
       "west_wall",
       "roof"
-    ]
+    ],
+    "zone_sensible_heat_capacity_multiplier": 7.0
   },
   "materials": [
     {
@@ -49,16 +50,38 @@
   ],
   "hvac_system": {
     "heating_capacity_w": 8000,
-    "cooling_capacity_w": 8000
+    "cooling_capacity_w": 8000,
+    "proportional_gain_w_k": 2000.0
   },
   "schedules": {
-    "occupied_hours": [ 7, 19 ],
-    "occupied_setpoint_c": 21.0,
-    "unoccupied_setpoint_c": 15.0,
-    "occupied_internal_gains_w": 400
+    "occupied_hours": [
+      7,
+      19
+    ],
+    "occupied_heating_setpoint_c": 21.0,
+    "unoccupied_heating_setpoint_c": 15.0,
+    "occupied_cooling_setpoint_c": 21.0,
+    "unoccupied_cooling_setpoint_c": 30.0,
+    "occupied_internal_gains_w": 400,
+    "window_opening_hours": [
+      13,
+      14.5
+    ]
+  },
+  "air_exchange": {
+    "infiltration": {
+      "flow_coefficient_m3_s_Pa_n": 0.00025,
+      "pressure_exponent_n": 0.65,
+      "stack_coeff_Pa_K": 0.078,
+      "wind_coeff_Pa_s2_m2": 0.15,
+      "shelter_factor_s": 0.5
+    },
+    "ventilation": {
+      "open_window_ach": 10.0
+    }
   },
   "weather": {
-    "temp_base_c": 3,
+    "temp_base_c": 30,
     "temp_amplitude_c": 5,
     "temp_phase_shift_hr": 14,
     "solar_max_irradiance_w_m2": 800
@@ -85,3 +108,13 @@
     }
   }
 }
+
+
+
+
+
+
+
+
+
+

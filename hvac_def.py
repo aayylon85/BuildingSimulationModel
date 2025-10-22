@@ -5,38 +5,41 @@ the heating or cooling power required to meet the zone's setpoints.
 
 class VerySimpleHVAC:
     """
-    A simple predictive HVAC model that calculates the energy needed to
-    bring the zone to its setpoint over the next timestep.
+    A simple proportional control HVAC model.
     """
-    def __init__(self, heating_capacity_w, cooling_capacity_w):
+    def __init__(self, heating_capacity_w, cooling_capacity_w, proportional_gain_w_k):
         """
-        Initializes the HVAC system with its maximum power capacities.
+        Initializes the HVAC system with its maximum power capacities and control gain.
         """
         self.heating_capacity_w = heating_capacity_w
         self.cooling_capacity_w = cooling_capacity_w
+        self.proportional_gain_w_k = proportional_gain_w_k
 
-    def calculate_hvac_power(self, T_air_prev, T_setpoint, total_passive_loss,
-                               total_passive_gain, air_thermal_mass, dt_sec):
+    def calculate_hvac_power(self, T_air_prev, T_heating_setpoint, T_cooling_setpoint):
         """
-        Calculates the required HVAC power for the current timestep.
+        Calculates the required HVAC power for the current timestep using
+        proportional control.
 
         Returns:
             float: HVAC power in Watts (positive for heating, negative for cooling).
         """
-        # Power needed to change the air temperature to the setpoint
-        power_to_reach_setpoint = air_thermal_mass * (T_setpoint - T_air_prev) / dt_sec
-        
-        # Net power flow from passive sources (gains are positive)
-        net_passive_power = total_passive_gain - total_passive_loss
-
-        # Ideal HVAC power must counteract the net passive flow AND drive the temp change
-        ideal_hvac_power = power_to_reach_setpoint - net_passive_power
-
         q_hvac = 0.0
-        if ideal_hvac_power > 0: # Heating is required
-            q_hvac = min(ideal_hvac_power, self.heating_capacity_w)
-        elif ideal_hvac_power < 0: # Cooling is required
-            q_hvac = -min(abs(ideal_hvac_power), self.cooling_capacity_w)
+
+        # Heating demand with proportional control
+        heating_error = T_heating_setpoint - T_air_prev
+        if heating_error > 0:
+            # The ideal heating power is proportional to the error
+            ideal_heating_power = self.proportional_gain_w_k * heating_error
+            # The actual power is capped by the system's capacity
+            q_hvac = min(ideal_heating_power, self.heating_capacity_w)
+        
+        # Cooling demand with proportional control
+        cooling_error = T_air_prev - T_cooling_setpoint
+        if cooling_error > 0:
+            ideal_cooling_power = self.proportional_gain_w_k * cooling_error
+            q_hvac = -min(ideal_cooling_power, self.cooling_capacity_w)
         
         return q_hvac
+
+
 

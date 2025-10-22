@@ -11,6 +11,7 @@ from zone import Zone
 from exterior_heat_transfer import AdaptiveConvectionAlgorithm
 from interior_heat_transfer import InternalAdaptiveConvection
 from hvac_def import VerySimpleHVAC
+from air_exchange import AirExchangeManager
 
 def run_simulation_from_config(config_path):
     """
@@ -31,21 +32,34 @@ def run_simulation_from_config(config_path):
     construction = create_construction_from_config(config)
     zone_props = config['zone_properties']
     
-    zone = Zone(length=zone_props['length'], width=zone_props['width'], height=zone_props['height'],
-                construction=construction, dt_seconds=dt_sec,
-                exterior_surfaces=zone_props['exterior_surfaces'],
-                windows_data=config['windows'])
+    zone = Zone(
+        length=zone_props['length'], 
+        width=zone_props['width'], 
+        height=zone_props['height'],
+        construction=construction, 
+        dt_seconds=dt_sec,
+        exterior_surfaces=zone_props['exterior_surfaces'],
+        windows_data=config['windows'],
+        air_exchange_data=config.get('air_exchange'),
+        zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0)
+    )
 
     # --- 3. Define HVAC System from Config ---
     hvac_props = config['hvac_system']
-    hvac_system = VerySimpleHVAC(hvac_props['heating_capacity_w'], hvac_props['cooling_capacity_w'])
+    hvac_system = VerySimpleHVAC(
+        hvac_props['heating_capacity_w'], 
+        hvac_props['cooling_capacity_w'],
+        hvac_props['proportional_gain_w_k']
+    )
 
-    # --- 4. Define Boundary Conditions from Config ---
+    # --- 4. Define Boundary Conditions and Schedules from Config ---
     schedules = config['schedules']
     weather_conf = config['weather']
     
-    T_setpoint_profile = np.zeros(num_steps)
+    heating_setpoint_profile = np.zeros(num_steps)
+    cooling_setpoint_profile = np.zeros(num_steps)
     internal_gains_profile = np.zeros(num_steps)
+    window_opening_profile = np.zeros(num_steps)
     weather_data = []
 
     for i, t_hr in enumerate(time_hours):
@@ -53,18 +67,27 @@ def run_simulation_from_config(config_path):
         start_occ, end_occ = schedules['occupied_hours']
         
         if start_occ <= hour_of_day < end_occ:
-            T_setpoint_profile[i] = schedules['occupied_setpoint_c']
+            heating_setpoint_profile[i] = schedules['occupied_heating_setpoint_c']
+            cooling_setpoint_profile[i] = schedules['occupied_cooling_setpoint_c']
             internal_gains_profile[i] = schedules['occupied_internal_gains_w']
         else:
-            T_setpoint_profile[i] = schedules['unoccupied_setpoint_c']
+            heating_setpoint_profile[i] = schedules['unoccupied_heating_setpoint_c']
+            cooling_setpoint_profile[i] = schedules['unoccupied_cooling_setpoint_c']
             internal_gains_profile[i] = 0
+
+        if 'window_opening_hours' in schedules:
+            start_win, end_win = schedules['window_opening_hours']
+            if start_win <= hour_of_day < end_win:
+                window_opening_profile[i] = 1.0
+            else:
+                window_opening_profile[i] = 0.0
 
         solar_rad = max(0, weather_conf['solar_max_irradiance_w_m2'] * np.cos(2 * np.pi * (t_hr - 12) / 24))
         weather_data.append({
             'air_temp_c': weather_conf['temp_base_c'] + weather_conf['temp_amplitude_c'] * np.cos(2 * np.pi * (t_hr - weather_conf['temp_phase_shift_hr']) / 24),
-            'wind_speed_local_ms': 3.0, # Simplified for now, can be expanded in config
-            'wind_speed_10m_ms': 2.5,   # Simplified for now
-            'wind_direction_deg': 180,  # Simplified for now
+            'wind_speed_local_ms': 3.0,
+            'wind_speed_10m_ms': 2.5,
+            'wind_direction_deg': 180,
             'solar_irradiance_w_m2': solar_rad
         })
         
@@ -76,9 +99,10 @@ def run_simulation_from_config(config_path):
     # --- 6. Run Simulation ---
     print(f"Starting simulation from config file: {config_path}")
     results = zone.run_simulation(
-        T_setpoint_profile, weather_data, internal_gains_profile,
-        interior_convection_model, exterior_convection_model, 
-        hvac_system, duration_hours
+        heating_setpoint_profile, cooling_setpoint_profile, weather_data, 
+        internal_gains_profile, interior_convection_model, 
+        exterior_convection_model, hvac_system, duration_hours,
+        window_opening_profile
     )
     print("Simulation complete.")
 
@@ -87,36 +111,45 @@ def run_simulation_from_config(config_path):
     print(f"\nTotal Heating Energy Consumed: {total_heating_kwh:.2f} kWh")
     
     # Plotting
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12), sharex=True)
-    fig.suptitle('Zone Thermal Simulation from Config', fontsize=16)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(15, 15), sharex=True)
+    fig.suptitle('Zone Thermal Simulation', fontsize=16)
 
+    # --- Plot 1: Temperatures ---
     outside_air_temps = [w['air_temp_c'] for w in weather_data]
     ax1.plot(time_hours, outside_air_temps, 'c--', label='Outside Air Temp', alpha=0.8)
-    ax1.plot(time_hours, T_setpoint_profile, 'k:', label='Heating Setpoint (Day/Night)', lw=2)
+    ax1.plot(time_hours, heating_setpoint_profile, 'k--', label='Heating Setpoint', lw=2, dashes=(4, 2))
+    ax1.plot(time_hours, cooling_setpoint_profile, 'k:', label='Cooling Setpoint', lw=2)
     ax1.plot(time_hours, results['zone_air_temps'], 'r-', label='Actual Zone Air Temp', lw=2)
     ax1.set_title('Zone Temperatures')
     ax1.set_ylabel('Temperature (°C)')
     ax1.grid(True, linestyle=':', alpha=0.6)
     ax1.legend()
 
-    fabric_loss = results['fabric_load']
-    window_conductive_loss = results['window_net_load']
-    solar_gain = results['solar_gains']
-    internal_gains = results['internal_gains']
-    hvac_heating = results['hvac_energy']
-
-    ax2.plot(time_hours, hvac_heating, 'r-', label='HVAC Heating Supplied', lw=2.5)
-    ax2.plot(time_hours, fabric_loss, 'b--', label='Fabric Loss (+)', alpha=0.8)
-    ax2.plot(time_hours, window_conductive_loss, 'm--', label='Window Conduction Loss (+)', alpha=0.8)
-    ax2.plot(time_hours, -solar_gain, 'y-.', label='Solar Gain (-)', lw=2)
-    ax2.plot(time_hours, -internal_gains, 'g:', label='Internal Gains (-)', lw=2.5)
-
+    # --- Plot 2: Net Load and HVAC Response ---
+    hvac_energy = results['hvac_energy']
+    net_passive_load = (results['fabric_loss'] + results['window_loss'] + results['air_exchange_loss'] - 
+                        results['solar_gains'] - results['internal_gains'])
+    
+    ax2.plot(time_hours, net_passive_load, 'm-', label='Net Passive Load (+)', lw=2)
+    ax2.plot(time_hours, hvac_energy, 'r-', label='HVAC Energy Supplied', lw=2.5)
     ax2.axhline(0, color='black', linestyle='-', linewidth=1.0)
-    ax2.set_title('Zone Energy Balance (Positive = Loss/Load, Negative = Gain)')
+    ax2.set_title('Heating Demand vs. Supply')
     ax2.set_ylabel('Power (W)')
-    ax2.set_xlabel('Time (hours)')
     ax2.grid(True, linestyle=':', alpha=0.6)
     ax2.legend()
+    
+    # --- Plot 3: Constituent Heat Flows ---
+    ax3.plot(time_hours, results['fabric_loss'], 'b--', label='Fabric Loss (+)', alpha=0.8)
+    ax3.plot(time_hours, results['window_loss'], 'm--', label='Window Loss (+)', alpha=0.8)
+    ax3.plot(time_hours, results['air_exchange_loss'], 'c--', label='Air Exchange Loss (+)', alpha=0.8)
+    ax3.plot(time_hours, -results['solar_gains'], 'y-.', label='Solar Gain (-)', lw=2)
+    ax3.plot(time_hours, -results['internal_gains'], 'g:', label='Internal Gains (-)', lw=2.5)
+    ax3.axhline(0, color='black', linestyle='-', linewidth=1.0)
+    ax3.set_title('Breakdown of Passive Heat Flows (Positive = Loss, Negative = Gain)')
+    ax3.set_ylabel('Power (W)')
+    ax3.set_xlabel('Time (hours)')
+    ax3.grid(True, linestyle=':', alpha=0.6)
+    ax3.legend()
 
     plt.xlim(0, duration_hours)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
@@ -124,3 +157,5 @@ def run_simulation_from_config(config_path):
 
 if __name__ == '__main__':
     run_simulation_from_config('simulation_config.json')
+
+
