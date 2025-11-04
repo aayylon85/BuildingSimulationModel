@@ -47,7 +47,8 @@ class CondFDSolver:
             node['T'] = new_temperatures[i]
 
     def populate_matrix_equations(self, A, B, node_offset, air_node_idx, 
-                                h_inside, h_outside, T_outside_air):
+                                h_inside, h_outside, T_outside_air,
+                                surface_area, solar_gain_w=0.0): # <-- CHANGED signature
         """
         Populates the rows of the main A and B matrices corresponding to this
         fabric construction's nodes.
@@ -59,14 +60,17 @@ class CondFDSolver:
         idx = node_offset
         node = self.nodes[0]
         rho, cp, k, dx = node['rho'], node['cp'], node['k'], node['dx']
+        # Capacitance is per m^2 (W/m^2.K). Must be scaled by area.
         capacitance = rho * cp * dx / self.dt
         k_east = (self.nodes[1]['k'] + k) / 2
         dx_east = (self.nodes[1]['dx'] + dx) / 2
         
-        A[idx, idx] = capacitance + h_inside + k_east / dx_east
-        A[idx, idx + 1] = -k_east / dx_east
-        A[idx, air_node_idx] = -h_inside # Link to the air node
-        B[idx] = capacitance * T_old[0]
+        # ALL terms must be multiplied by surface_area for correct energy balance
+        A[idx, idx] = (capacitance + h_inside + k_east / dx_east) * surface_area # <-- CHANGED
+        A[idx, idx + 1] = (-k_east / dx_east) * surface_area # <-- CHANGED
+        A[idx, air_node_idx] = -h_inside * surface_area # <-- CHANGED (Fixes asymmetry)
+        # Add solar gain (Watts) to the 'B' vector for this node
+        B[idx] = capacitance * surface_area * T_old[0] + solar_gain_w # <-- CHANGED
 
         # Node N-1: Outside surface
         idx = node_offset + N - 1
@@ -76,9 +80,9 @@ class CondFDSolver:
         k_west = (self.nodes[N-2]['k'] + k) / 2
         dx_west = (self.nodes[N-2]['dx'] + dx) / 2
         
-        A[idx, idx - 1] = -k_west / dx_west
-        A[idx, idx] = capacitance + h_outside + k_west / dx_west
-        B[idx] = capacitance * T_old[N-1] + h_outside * T_outside_air
+        A[idx, idx - 1] = (-k_west / dx_west) * surface_area # <-- CHANGED
+        A[idx, idx] = (capacitance + h_outside + k_west / dx_west) * surface_area # <-- CHANGED
+        B[idx] = (capacitance * T_old[N-1] + h_outside * T_outside_air) * surface_area # <-- CHANGED
         
         # Internal nodes
         for i in range(1, N - 1):
@@ -91,8 +95,8 @@ class CondFDSolver:
             k_east = (self.nodes[i+1]['k'] + k) / 2
             dx_east = (self.nodes[i+1]['dx'] + dx) / 2
 
-            A[idx, idx - 1] = -k_west / dx_west
-            A[idx, idx] = capacitance + k_west / dx_west + k_east / dx_east
-            A[idx, idx + 1] = -k_east / dx_east
-            B[idx] = capacitance * T_old[i]
+            A[idx, idx - 1] = (-k_west / dx_west) * surface_area # <-- CHANGED
+            A[idx, idx] = (capacitance + k_west / dx_west + k_east / dx_east) * surface_area # <-- CHANGED
+            A[idx, idx + 1] = (-k_east / dx_east) * surface_area # <-- CHANGED
+            B[idx] = capacitance * surface_area * T_old[i] # <-- CHANGED
 

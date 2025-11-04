@@ -217,7 +217,6 @@ class AdaptiveConvectionAlgorithm:
         if model_name not in models:
             raise ValueError(f"Unknown natural convection model: {model_name}")
         delta_t = abs(surface['surface_temp_c'] - weather['air_temp_c'])
-        if delta_t < 1e-6: return 0.0
         return models[model_name](delta_t, surface['tilt'])
 
     def _hn_walton_unstable(self, delta_t, tilt):

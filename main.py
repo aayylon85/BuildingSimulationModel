@@ -6,12 +6,12 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 
-from materials import create_construction_from_config
+from materials import create_constructions_dict # <-- CHANGED
 from zone import Zone
 from exterior_heat_transfer import AdaptiveConvectionAlgorithm
 from interior_heat_transfer import InternalAdaptiveConvection
-from hvac_def import VerySimpleHVAC
-from air_exchange import AirExchangeManager
+from hvac_def import StatefulHVAC
+# Removed unused import: from air_exchange import AirExchangeManager
 
 def run_simulation_from_config(config_path):
     """
@@ -26,33 +26,38 @@ def run_simulation_from_config(config_path):
     duration_hours = sim_settings['duration_hours']
     dt_sec = dt_minutes * 60
     num_steps = int(duration_hours * 3600 / dt_sec)
-    time_hours = np.linspace(0, duration_hours, num_steps)
+    
+    # Use np.arange for precise time steps
+    time_hours = np.arange(num_steps) * dt_sec / 3600.0
 
     # --- 2. Define Zone, Construction, and Windows from Config ---
-    construction = create_construction_from_config(config)
+    constructions = create_constructions_dict(config)
     zone_props = config['zone_properties']
+    geometry_data = config['geometry'] # Load new geometry section
     
-    zone = Zone(
-        length=zone_props['length'], 
-        width=zone_props['width'], 
-        height=zone_props['height'],
-        construction=construction, 
-        dt_seconds=dt_sec,
-        exterior_surfaces=zone_props['exterior_surfaces'],
-        windows_data=config['windows'],
-        air_exchange_data=config.get('air_exchange'),
-        zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0)
-    )
+    zone = Zone(zone_properties=zone_props,
+                geometry_data=geometry_data, # Pass geometry
+                constructions=constructions,
+                dt_seconds=dt_sec,
+                windows_data=config['windows'],
+                air_exchange_data=config.get('air_exchange'),
+                zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0)
+               )
 
     # --- 3. Define HVAC System from Config ---
     hvac_props = config['hvac_system']
-    hvac_system = VerySimpleHVAC(
+    hvac_system = StatefulHVAC(
         hvac_props['heating_capacity_w'], 
         hvac_props['cooling_capacity_w'],
-        hvac_props['proportional_gain_w_k']
+        hvac_props['heating_deadband_c'],
+        hvac_props['cooling_deadband_c'],
+        hvac_props['min_runtime_minutes'],
+        hvac_props['min_offtime_minutes'],
+        hvac_props['ramp_up_minutes'],
+        dt_sec
     )
 
-    # --- 4. Define Boundary Conditions and Schedules from Config ---
+    # --- 4. Define Boundary Conditions from Config ---
     schedules = config['schedules']
     weather_conf = config['weather']
     
@@ -62,11 +67,13 @@ def run_simulation_from_config(config_path):
     window_opening_profile = np.zeros(num_steps)
     weather_data = []
 
+    occ_start, occ_end = schedules['occupied_hours']
+    win_start, win_end = schedules.get('window_opening_hours', [0, 0])
+
     for i, t_hr in enumerate(time_hours):
         hour_of_day = t_hr % 24
-        start_occ, end_occ = schedules['occupied_hours']
         
-        if start_occ <= hour_of_day < end_occ:
+        if occ_start <= hour_of_day < occ_end:
             heating_setpoint_profile[i] = schedules['occupied_heating_setpoint_c']
             cooling_setpoint_profile[i] = schedules['occupied_cooling_setpoint_c']
             internal_gains_profile[i] = schedules['occupied_internal_gains_w']
@@ -74,14 +81,13 @@ def run_simulation_from_config(config_path):
             heating_setpoint_profile[i] = schedules['unoccupied_heating_setpoint_c']
             cooling_setpoint_profile[i] = schedules['unoccupied_cooling_setpoint_c']
             internal_gains_profile[i] = 0
+            
+        if win_start <= hour_of_day < win_end:
+            window_opening_profile[i] = 1.0 # Window is fully open
+        else:
+            window_opening_profile[i] = 0.0 # Window is closed
 
-        if 'window_opening_hours' in schedules:
-            start_win, end_win = schedules['window_opening_hours']
-            if start_win <= hour_of_day < end_win:
-                window_opening_profile[i] = 1.0
-            else:
-                window_opening_profile[i] = 0.0
-
+        # Simple sinusoidal weather model
         solar_rad = max(0, weather_conf['solar_max_irradiance_w_m2'] * np.cos(2 * np.pi * (t_hr - 12) / 24))
         weather_data.append({
             'air_temp_c': weather_conf['temp_base_c'] + weather_conf['temp_amplitude_c'] * np.cos(2 * np.pi * (t_hr - weather_conf['temp_phase_shift_hr']) / 24),
@@ -111,45 +117,52 @@ def run_simulation_from_config(config_path):
     print(f"\nTotal Heating Energy Consumed: {total_heating_kwh:.2f} kWh")
     
     # Plotting
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(15, 15), sharex=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 15), sharex=True)
     fig.suptitle('Zone Thermal Simulation', fontsize=16)
 
     # --- Plot 1: Temperatures ---
     outside_air_temps = [w['air_temp_c'] for w in weather_data]
     ax1.plot(time_hours, outside_air_temps, 'c--', label='Outside Air Temp', alpha=0.8)
-    ax1.plot(time_hours, heating_setpoint_profile, 'k--', label='Heating Setpoint', lw=2, dashes=(4, 2))
-    ax1.plot(time_hours, cooling_setpoint_profile, 'k:', label='Cooling Setpoint', lw=2)
+    ax1.plot(time_hours, heating_setpoint_profile, 'k:', label='Heating Setpoint', lw=2)
+    ax1.plot(time_hours, cooling_setpoint_profile, 'b:', label='Cooling Setpoint', lw=2, alpha=0.7)
     ax1.plot(time_hours, results['zone_air_temps'], 'r-', label='Actual Zone Air Temp', lw=2)
     ax1.set_title('Zone Temperatures')
     ax1.set_ylabel('Temperature (°C)')
     ax1.grid(True, linestyle=':', alpha=0.6)
-    ax1.legend()
+    ax1.legend(loc='upper right')
 
     # --- Plot 2: Net Load and HVAC Response ---
+    fabric_loss = results['fabric_loss']
+    air_exchange_loss = results['air_exchange_loss']
+    solar_gain = results['solar_gains'][:num_steps]
+    internal_gains = results['internal_gains'][:num_steps]
     hvac_energy = results['hvac_energy']
-    net_passive_load = (results['fabric_loss'] + results['window_loss'] + results['air_exchange_loss'] - 
-                        results['solar_gains'] - results['internal_gains'])
-    
-    ax2.plot(time_hours, net_passive_load, 'm-', label='Net Passive Load (+)', lw=2)
+
+    # Positive = loss/load, Negative = gain
+    total_passive_loss = fabric_loss + air_exchange_loss
+    total_gains = solar_gain + internal_gains
+    net_load = np.array(total_passive_loss) - np.array(total_gains) # The load the HVAC must meet
+
     ax2.plot(time_hours, hvac_energy, 'r-', label='HVAC Energy Supplied', lw=2.5)
+    ax2.plot(time_hours, net_load, 'k--', label='Net Zone Load (Loss-Gains)', alpha=0.8)
     ax2.axhline(0, color='black', linestyle='-', linewidth=1.0)
-    ax2.set_title('Heating Demand vs. Supply')
+    ax2.set_title('Net Load and HVAC Response')
     ax2.set_ylabel('Power (W)')
     ax2.grid(True, linestyle=':', alpha=0.6)
-    ax2.legend()
-    
-    # --- Plot 3: Constituent Heat Flows ---
-    ax3.plot(time_hours, results['fabric_loss'], 'b--', label='Fabric Loss (+)', alpha=0.8)
-    ax3.plot(time_hours, results['window_loss'], 'm--', label='Window Loss (+)', alpha=0.8)
-    ax3.plot(time_hours, results['air_exchange_loss'], 'c--', label='Air Exchange Loss (+)', alpha=0.8)
-    ax3.plot(time_hours, -results['solar_gains'], 'y-.', label='Solar Gain (-)', lw=2)
-    ax3.plot(time_hours, -results['internal_gains'], 'g:', label='Internal Gains (-)', lw=2.5)
+    ax2.legend(loc='upper right')
+
+    # --- Plot 3: Constituent Loads/Gains ---
+    ax3.plot(time_hours, fabric_loss, 'b--', label='Fabric Loss (+)', alpha=0.8)
+    ax3.plot(time_hours, air_exchange_loss, 'c--', label='Air Exchange Loss (+)', alpha=0.8)
+    ax3.plot(time_hours, -solar_gain, 'y-.', label='Solar Gain (-)', lw=2)
+    ax3.plot(time_hours, -internal_gains, 'g:', label='Internal Gains (-)', lw=2.5)
+
     ax3.axhline(0, color='black', linestyle='-', linewidth=1.0)
-    ax3.set_title('Breakdown of Passive Heat Flows (Positive = Loss, Negative = Gain)')
+    ax3.set_title('Constituent Energy Flows (Positive = Loss, Negative = Gain)')
     ax3.set_ylabel('Power (W)')
     ax3.set_xlabel('Time (hours)')
     ax3.grid(True, linestyle=':', alpha=0.6)
-    ax3.legend()
+    ax3.legend(loc='upper right')
 
     plt.xlim(0, duration_hours)
     plt.tight_layout(rect=[0, 0, 1, 0.96])

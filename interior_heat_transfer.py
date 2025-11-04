@@ -66,8 +66,6 @@ class InternalAdaptiveConvection:
         tilt = surface_data['props']['tilt'] # Also needed here
         delta_t_abs = abs(surface_temp - zone_air_temp_c)
         
-        if delta_t_abs < 1e-6:
-            return 0.0
 
         return dispatch_map[model_name](delta_t_abs, tilt)
 

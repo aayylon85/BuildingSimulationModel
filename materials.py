@@ -3,15 +3,13 @@ Defines building materials and functions to create constructions from a config f
 """
 from collections import namedtuple
 
-# Define a simple data structure for a material layer
+# This is the same as your old file
 Material = namedtuple("Material", ["name", "thickness", "conductivity", "density", "specific_heat"])
 
-def create_construction_from_config(config):
-    """
-    Creates a list of Material objects for a construction based on the JSON config.
-    """
+def create_materials_dict(config):
+    """Creates a dictionary of Material objects from the config."""
     defined_materials = {}
-    for mat_props in config['materials']:
+    for mat_props in config.get('materials', []):
         material = Material(
             name=mat_props['name'],
             thickness=mat_props['thickness'],
@@ -20,12 +18,25 @@ def create_construction_from_config(config):
             specific_heat=mat_props['specific_heat']
         )
         defined_materials[mat_props['name']] = material
+    return defined_materials
+
+def create_constructions_dict(config):
+    """
+    Creates a dictionary of construction layer lists from the config.
+    The CondFDSolver expects a list of Material objects.
     
-    construction_layers = []
-    for layer_name in config['construction']['layers']:
-        if layer_name in defined_materials:
-            construction_layers.append(defined_materials[layer_name])
-        else:
-            raise ValueError(f"Material '{layer_name}' used in construction but not defined in materials list.")
-            
-    return construction_layers
+    This replaces the old 'create_construction_from_config' function.
+    """
+    materials_db = create_materials_dict(config)
+    constructions = {}
+    
+    # config['constructions'] is now a dictionary
+    for name, const_data in config.get('constructions', {}).items():
+        layers = []
+        for layer_name in const_data['layers']:
+            if layer_name not in materials_db:
+                raise ValueError(f"Material '{layer_name}' in construction '{name}' not defined in materials list.")
+            layers.append(materials_db[layer_name])
+        constructions[name] = layers
+        
+    return constructions

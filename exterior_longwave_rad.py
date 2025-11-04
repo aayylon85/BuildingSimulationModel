@@ -9,8 +9,7 @@ surfaces, each with their own view factor and temperature.
 import math
 from typing import List, Tuple
 
-# Stefan-Boltzmann constant in W/(m^2.K^4)
-STEFAN_BOLTZMANN = 5.670374419e-8
+from constants import STEFAN_BOLTZMANN
 
 class ExternalLongwaveRadiation:
     """

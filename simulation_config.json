@@ -1,12 +1,15 @@
 {
   "simulation_settings": {
     "dt_minutes": 1,
-    "duration_hours": 168
+    "duration_hours": 250
   },
   "zone_properties": {
     "length": 10.0,
     "width": 8.0,
     "height": 2.8,
+    "zone_sensible_heat_capacity_multiplier": 4.0
+  },
+  "geometry": {
     "exterior_surfaces": [
       "north_wall",
       "east_wall",
@@ -14,7 +17,14 @@
       "west_wall",
       "roof"
     ],
-    "zone_sensible_heat_capacity_multiplier": 7.0
+    "surface_definitions": {
+      "north_wall": {"area": 22.4, "perimeter": 21.6, "tilt": 90, "azimuth": 0, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "east_wall": {"area": 28.0, "perimeter": 21.6, "tilt": 90, "azimuth": 90, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "south_wall": {"area": 22.4, "perimeter": 21.6, "tilt": 90, "azimuth": 180, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "west_wall": {"area": 28.0, "perimeter": 21.6, "tilt": 90, "azimuth": 270, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "roof": {"area": 80.0, "perimeter": 36.0, "tilt": 0, "azimuth": 0, "type": "roof", "roughness_index": 3, "construction_name": "ExteriorWall"},
+      "floor": {"area": 80.0, "perimeter": 36.0, "tilt": 180, "azimuth": 0, "type": "floor", "roughness_index": 3, "construction_name": "SlabFloor"}
+    }
   },
   "materials": [
     {
@@ -32,13 +42,19 @@
       "specific_heat": 1200
     }
   ],
-  "construction": {
-    "name": "Default Wall",
-    "layers": [
-      "Concrete",
-      "Insulation",
-      "Concrete"
-    ]
+  "constructions": {
+    "ExteriorWall": {
+      "layers": [
+        "Concrete",
+        "Insulation",
+        "Concrete"
+      ]
+    },
+    "SlabFloor": {
+      "layers": [
+        "Concrete"
+      ]
+    }
   },
   "windows": [
     {
@@ -48,26 +64,6 @@
       "shgc": 0.5
     }
   ],
-  "hvac_system": {
-    "heating_capacity_w": 8000,
-    "cooling_capacity_w": 8000,
-    "proportional_gain_w_k": 2000.0
-  },
-  "schedules": {
-    "occupied_hours": [
-      7,
-      19
-    ],
-    "occupied_heating_setpoint_c": 21.0,
-    "unoccupied_heating_setpoint_c": 15.0,
-    "occupied_cooling_setpoint_c": 21.0,
-    "unoccupied_cooling_setpoint_c": 30.0,
-    "occupied_internal_gains_w": 400,
-    "window_opening_hours": [
-      13,
-      14.5
-    ]
-  },
   "air_exchange": {
     "infiltration": {
       "flow_coefficient_m3_s_Pa_n": 0.00025,
@@ -77,14 +73,32 @@
       "shelter_factor_s": 0.5
     },
     "ventilation": {
-      "open_window_ach": 10.0
+      "open_window_ach": 5.0
     }
   },
+  "hvac_system": {
+    "heating_capacity_w": 1000.0,
+    "cooling_capacity_w": 1000.0,
+    "heating_deadband_c": 1.0,
+    "cooling_deadband_c": 1.0,
+    "min_runtime_minutes": 60.0,
+    "min_offtime_minutes": 10.0,
+    "ramp_up_minutes": 30.0
+  },
+  "schedules": {
+    "occupied_hours": [ 7, 19 ],
+    "window_opening_hours": [ 13, 14.5 ],
+    "occupied_heating_setpoint_c": 21.0,
+    "unoccupied_heating_setpoint_c": 15.0,
+    "occupied_cooling_setpoint_c": 24.0,
+    "unoccupied_cooling_setpoint_c": 30.0,
+    "occupied_internal_gains_w": 400
+  },
   "weather": {
-    "temp_base_c": 30,
+    "temp_base_c": 15,
     "temp_amplitude_c": 5,
     "temp_phase_shift_hr": 14,
-    "solar_max_irradiance_w_m2": 800
+    "solar_max_irradiance_w_m2": 0
   },
   "convection_models": {
     "exterior_hf": {
@@ -108,6 +122,7 @@
     }
   }
 }
+
 
 
 
