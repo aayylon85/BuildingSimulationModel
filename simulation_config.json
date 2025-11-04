@@ -61,7 +61,13 @@
       "wall_name": "south_wall",
       "area": 6.0,
       "u_value": 1.5,
-      "shgc": 0.5
+      "shgc": 0.5,
+      "solar_distribution": {
+        "floor": 0.6,
+        "north_wall": 0.2,
+        "east_wall": 0.1,
+        "west_wall": 0.1
+  }
     }
   ],
   "air_exchange": {

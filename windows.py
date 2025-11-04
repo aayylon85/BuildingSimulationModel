@@ -6,7 +6,7 @@ class SimpleWindow:
     """
     Represents a window with simplified thermal properties.
     """
-    def __init__(self, area, u_value, shgc):
+    def __init__(self, area, u_value, shgc, solar_distribution_ratios):
         """
         Initializes the simple window.
         """
@@ -18,6 +18,7 @@ class SimpleWindow:
         self.area = area
         self.u_value = u_value
         self.shgc = shgc
+        self.ratios = solar_distribution_ratios
 
     def calculate_heat_flow(self, t_inside_air, t_outside_air, solar_irradiance):
         """
