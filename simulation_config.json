@@ -83,8 +83,8 @@
     }
   },
   "hvac_system": {
-    "heating_capacity_w": 1000.0,
-    "cooling_capacity_w": 1000.0,
+    "heating_capacity_w": 0.0,
+    "cooling_capacity_w": 0.0,
     "heating_deadband_c": 1.0,
     "cooling_deadband_c": 1.0,
     "min_runtime_minutes": 60.0,
@@ -98,7 +98,7 @@
     "unoccupied_heating_setpoint_c": 15.0,
     "occupied_cooling_setpoint_c": 24.0,
     "unoccupied_cooling_setpoint_c": 30.0,
-    "occupied_internal_gains_w": 400
+    "occupied_internal_gains_w": 0.0
   },
   "weather": {
     "temp_base_c": 15,
