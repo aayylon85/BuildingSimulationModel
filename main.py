@@ -1,174 +1,270 @@
 """
 Main script to set up and run a single-zone thermal simulation from a 
 JSON configuration file.
+
+This version has been refactored to run the simulation step-by-step
+in this file, allowing for dynamic occupant interactions.
 """
 import json
 import numpy as np
-import matplotlib.pyplot as plt
+import argparse
+import sys
 
-from materials import create_constructions_dict # <-- CHANGED
+from materials import create_constructions_dict 
 from zone import Zone
 from exterior_heat_transfer import AdaptiveConvectionAlgorithm
 from interior_heat_transfer import InternalAdaptiveConvection
-from hvac_def import StatefulHVAC
+from hvac_def import create_hvac_system
+from plotting import plot_simulation_results
+from boundary_conditions import create_boundary_conditions
+# Import the Occupant class
+from occupants import Occupant
 
 
 def run_simulation_from_config(config_path):
     """
-    Loads a JSON configuration, runs the simulation, and plots the results.
+    Loads a JSON configuration, runs the simulation step-by-step,
+    and plots the results.
     """
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        print(f"Error: Configuration file not found at '{config_path}'", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError:
+        print(f"Error: Could not parse JSON in configuration file '{config_path}'.", file=sys.stderr)
+        print("Please check for syntax errors (e.g., trailing commas, unmatched brackets).", file=sys.stderr)
+        sys.exit(1)
 
-    # --- 1. Simulation Setup from Config ---
-    sim_settings = config['simulation_settings']
-    dt_minutes = sim_settings['dt_minutes']
-    duration_hours = sim_settings['duration_hours']
-    dt_sec = dt_minutes * 60
-    num_steps = int(duration_hours * 3600 / dt_sec)
-    
-    # Use np.arange for precise time steps
-    time_hours = np.arange(num_steps) * dt_sec / 3600.0
-
-    # --- 2. Define Zone, Construction, and Windows from Config ---
-    constructions = create_constructions_dict(config)
-    zone_props = config['zone_properties']
-    geometry_data = config['geometry'] # Load new geometry section
-    
-    zone = Zone(zone_properties=zone_props,
-                geometry_data=geometry_data, # Pass geometry
-                constructions=constructions,
-                dt_seconds=dt_sec,
-                windows_data=config['windows'],
-                air_exchange_data=config.get('air_exchange'),
-                zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0)
-               )
-
-    # --- 3. Define HVAC System from Config ---
-    hvac_props = config['hvac_system']
-    hvac_system = StatefulHVAC(
-        hvac_props['heating_capacity_w'], 
-        hvac_props['cooling_capacity_w'],
-        hvac_props['heating_deadband_c'],
-        hvac_props['cooling_deadband_c'],
-        hvac_props['min_runtime_minutes'],
-        hvac_props['min_offtime_minutes'],
-        hvac_props['ramp_up_minutes'],
-        dt_sec
-    )
-
-    # --- 4. Define Boundary Conditions from Config ---
-    schedules = config['schedules']
-    weather_conf = config['weather']
-    
-    heating_setpoint_profile = np.zeros(num_steps)
-    cooling_setpoint_profile = np.zeros(num_steps)
-    internal_gains_profile = np.zeros(num_steps)
-    window_opening_profile = np.zeros(num_steps)
-    weather_data = []
-
-    occ_start, occ_end = schedules['occupied_hours']
-    win_start, win_end = schedules.get('window_opening_hours', [0, 0])
-
-    for i, t_hr in enumerate(time_hours):
-        hour_of_day = t_hr % 24
+    # --- Run the simulation with error handling for config structure ---
+    try:
+        # --- 1. Simulation Setup from Config ---
+        sim_settings = config['simulation_settings']
+        dt_minutes = sim_settings['dt_minutes']
+        duration_hours = sim_settings['duration_hours']
+        dt_sec = dt_minutes * 60
+        num_steps = int(duration_hours * 3600 / dt_sec)
         
-        if occ_start <= hour_of_day < occ_end:
-            heating_setpoint_profile[i] = schedules['occupied_heating_setpoint_c']
-            cooling_setpoint_profile[i] = schedules['occupied_cooling_setpoint_c']
-            internal_gains_profile[i] = schedules['occupied_internal_gains_w']
-        else:
-            heating_setpoint_profile[i] = schedules['unoccupied_heating_setpoint_c']
-            cooling_setpoint_profile[i] = schedules['unoccupied_cooling_setpoint_c']
-            internal_gains_profile[i] = 0
+        # Use np.arange for precise time steps
+        time_hours = np.arange(num_steps) * dt_sec / 3600.0
+
+        # --- 2. Define Zone, Construction, and Windows from Config ---
+        constructions = create_constructions_dict(config)
+        zone_props = config['zone_properties']
+        geometry_data = config['geometry']
+        
+        zone = Zone(zone_properties=zone_props,
+                    geometry_data=geometry_data,
+                    constructions=constructions,
+                    dt_seconds=dt_sec,
+                    windows_data=config['windows'],
+                    air_exchange_data=config.get('air_exchange'),
+                    zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0)
+                   )
+
+        # --- 3. Define HVAC System from Config ---
+        hvac_props = config['hvac_system']
+        hvac_system = create_hvac_system(hvac_props, dt_sec)
+
+        # --- 4. Define Boundary Conditions from Config ---
+        (
+            heating_setpoint_profile, 
+            cooling_setpoint_profile, 
+            internal_gains_profile, 
+            window_opening_profile, # This will be all zeros
+            weather_data
+        ) = create_boundary_conditions(config, num_steps, time_hours)
             
-        if win_start <= hour_of_day < win_end:
-            window_opening_profile[i] = 1.0 # Window is fully open
-        else:
-            window_opening_profile[i] = 0.0 # Window is closed
-
-        # Simple sinusoidal weather model
-        solar_rad = max(0, weather_conf['solar_max_irradiance_w_m2'] * np.cos(2 * np.pi * (t_hr - 12) / 24))
-        weather_data.append({
-            'air_temp_c': weather_conf['temp_base_c'] + weather_conf['temp_amplitude_c'] * np.cos(2 * np.pi * (t_hr - weather_conf['temp_phase_shift_hr']) / 24),
-            'wind_speed_local_ms': 3.0,
-            'wind_speed_10m_ms': 2.5,
-            'wind_direction_deg': 180,
-            'solar_irradiance_w_m2': solar_rad
-        })
+        # --- 5. Configure Convection Models from Config ---
+        conv_models = config['convection_models']
+        exterior_convection_model = AdaptiveConvectionAlgorithm(conv_models['exterior_hf'], conv_models['exterior_hn'])
+        interior_convection_model = InternalAdaptiveConvection(conv_models['interior'])
         
-    # --- 5. Configure Convection Models from Config ---
-    conv_models = config['convection_models']
-    exterior_convection_model = AdaptiveConvectionAlgorithm(conv_models['exterior_hf'], conv_models['exterior_hn'])
-    interior_convection_model = InternalAdaptiveConvection(conv_models['interior'])
+        # --- 6. Create Occupants ---
+        occupant_objects = []
+        if 'occupancy' in config and 'occupants' in config['occupancy']:
+            for occ_data in config['occupancy']['occupants']:
+                occupant_objects.append(Occupant(occ_data))
+        print(f"Initialized {len(occupant_objects)} occupants.")
 
-    # --- 6. Run Simulation ---
-    print(f"Starting simulation from config file: {config_path}")
-    results = zone.run_simulation(
-        heating_setpoint_profile, cooling_setpoint_profile, weather_data, 
-        internal_gains_profile, interior_convection_model, 
-        exterior_convection_model, hvac_system, duration_hours,
-        window_opening_profile
-    )
-    print("Simulation complete.")
+        # --- 7. Run Warm-up ---
+        print("Starting dynamic stabilization warm-up...")
+        T_air_prev = zone.run_warmup(
+            heating_setpoint_profile, cooling_setpoint_profile, weather_data,
+            internal_gains_profile, interior_convection_model,
+            exterior_convection_model, hvac_system
+        )
+        print("Warm-up complete. Starting main simulation.")
 
-    # --- 7. Process and Display Results ---
-    total_heating_kwh = np.sum(results['hvac_energy'][results['hvac_energy'] > 0]) * dt_sec / (3600 * 1000)
-    print(f"\nTotal Heating Energy Consumed: {total_heating_kwh:.2f} kWh")
-    
-    # Plotting
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 15), sharex=True)
-    fig.suptitle('Zone Thermal Simulation', fontsize=16)
+        # --- 8. Run Main Simulation (Step-by-Step) ---
+        
+        # --- Result Arrays ---
+        zone_air_temps = np.zeros(num_steps)
+        hvac_energy = np.zeros(num_steps)
+        fabric_loss = np.zeros(num_steps)
+        air_exchange_loss = np.zeros(num_steps)
+        solar_gains = np.zeros(num_steps)
+        window_state_profile = np.zeros(num_steps)
+        
+        # --- Dynamic State Variables ---
+        current_window_fraction = 0.0 # Start with window closed
+        # Copy setpoint profiles so they can be modified dynamically
+        dynamic_heating_setpoint = np.copy(heating_setpoint_profile)
+        dynamic_cooling_setpoint = np.copy(cooling_setpoint_profile)
+        
+        # --- Occupant Action Setup ---
+        occupant_check_interval_minutes = 60
+        steps_per_occupant_check = int(occupant_check_interval_minutes / dt_minutes)
+        if steps_per_occupant_check == 0:
+            steps_per_occupant_check = 1 # Check every step if dt > 10 min
+        
+        thermostat_adjustment_c = 1.0 # How much to change setpoint per vote
 
-    # --- Plot 1: Temperatures ---
-    outside_air_temps = [w['air_temp_c'] for w in weather_data]
-    ax1.plot(time_hours, outside_air_temps, 'c--', label='Outside Air Temp', alpha=0.8)
-    ax1.plot(time_hours, heating_setpoint_profile, 'k:', label='Heating Setpoint', lw=2)
-    ax1.plot(time_hours, cooling_setpoint_profile, 'b:', label='Cooling Setpoint', lw=2, alpha=0.7)
-    ax1.plot(time_hours, results['zone_air_temps'], 'r-', label='Actual Zone Air Temp', lw=2)
-    ax1.set_title('Zone Temperatures')
-    ax1.set_ylabel('Temperature (°C)')
-    ax1.grid(True, linestyle=':', alpha=0.6)
-    ax1.legend(loc='upper right')
+        zone_air_temps[0] = T_air_prev # Start from the warmed-up temperature
 
-    # --- Plot 2: Net Load and HVAC Response ---
-    fabric_loss = results['fabric_loss']
-    air_exchange_loss = results['air_exchange_loss']
-    solar_gain = results['solar_gains'][:num_steps]
-    internal_gains = results['internal_gains'][:num_steps]
-    hvac_energy = results['hvac_energy']
+        for t in range(num_steps):
+            if t > 0:
+                T_air_prev = zone_air_temps[t-1]
+            
+            # --- (A) Check for Occupant Actions ---
+            # Get current weather for this step *before* occupant check
+            current_weather = weather_data[t]
+            
+            if t % steps_per_occupant_check == 0:
+                hour_of_day = time_hours[t] % 24
+                outside_temp_c = current_weather['air_temp_c']
+                
+                window_votes = 0
+                thermostat_votes = 0
+                
+                present_occupants = []
+                for occ in occupant_objects:
+                    if occ.is_present(hour_of_day):
+                        present_occupants.append(occ)
 
-    # Positive = loss/load, Negative = gain
-    total_passive_loss = fabric_loss + air_exchange_loss
-    total_gains = solar_gain + internal_gains
-    net_load = np.array(total_passive_loss) - np.array(total_gains) # The load the HVAC must meet
+                if present_occupants:
+                    for occ in present_occupants:
+                        # Get votes based on the previous step's temperature
+                        win_action, therm_action = occ.get_desired_action(
+                            T_air_prev, 
+                            current_window_fraction,
+                            outside_temp_c  # Pass outside temperature
+                        )
+                        
+                        if win_action == "open_window":
+                            window_votes += 1
+                        elif win_action == "close_window":
+                            window_votes -= 1
+                            
+                        if therm_action == "heat_up":
+                            thermostat_votes += 1
+                        elif therm_action == "cool_down":
+                            thermostat_votes -= 1
+                
+                # --- Aggregate window votes ---
+                # Opposing votes cancel out. Net positive = open.
+                if window_votes > 0:
+                    current_window_fraction = 1.0
+                elif window_votes < 0:
+                    current_window_fraction = 0.0
+                # if votes == 0, no change
+                
 
-    ax2.plot(time_hours, hvac_energy, 'r-', label='HVAC Energy Supplied', lw=2.5)
-    ax2.plot(time_hours, net_load, 'k--', label='Net Zone Load (Loss-Gains)', alpha=0.8)
-    ax2.axhline(0, color='black', linestyle='-', linewidth=1.0)
-    ax2.set_title('Net Load and HVAC Response')
-    ax2.set_ylabel('Power (W)')
-    ax2.grid(True, linestyle=':', alpha=0.6)
-    ax2.legend(loc='upper right')
+                # --- Aggregate thermostat votes ---
+                # Apply changes to the *rest* of the schedule
+                if thermostat_votes > 0:
+                    dynamic_heating_setpoint[t:] += thermostat_adjustment_c
+                    dynamic_cooling_setpoint[t:] += thermostat_adjustment_c
+                elif thermostat_votes < 0:
+                    dynamic_heating_setpoint[t:] -= thermostat_adjustment_c
+                    dynamic_cooling_setpoint[t:] -= thermostat_adjustment_c
+            
+            # --- (B) Get current step's boundary conditions ---
+            # current_weather is already fetched above
+            current_internal_gains = internal_gains_profile[t]
+            current_heating_setpoint = dynamic_heating_setpoint[t]
+            current_cooling_setpoint = dynamic_cooling_setpoint[t]
+            
+            # --- (C) Run one simulation step ---
+            step_results = zone.run_simulation_step(
+                T_air_prev,
+                current_weather,
+                current_internal_gains,
+                current_heating_setpoint,
+                current_cooling_setpoint,
+                current_window_fraction, # Pass the dynamic value
+                interior_convection_model,
+                exterior_convection_model,
+                hvac_system
+            )
+            
+            # --- (D) Store results ---
+            zone_air_temps[t] = step_results['T_air_new']
+            hvac_energy[t] = step_results['q_hvac']
+            fabric_loss[t] = step_results['q_fabric_loss']
+            air_exchange_loss[t] = step_results['q_air_exchange_loss']
+            solar_gains[t] = step_results['q_solar_gains']
+            window_state_profile[t] = current_window_fraction
 
-    # --- Plot 3: Constituent Loads/Gains ---
-    ax3.plot(time_hours, fabric_loss, 'b--', label='Fabric Loss (+)', alpha=0.8)
-    ax3.plot(time_hours, air_exchange_loss, 'c--', label='Air Exchange Loss (+)', alpha=0.8)
-    ax3.plot(time_hours, -solar_gain, 'y-.', label='Solar Gain (-)', lw=2)
-    ax3.plot(time_hours, -internal_gains, 'g:', label='Internal Gains (-)', lw=2.5)
+        print("Simulation complete.")
 
-    ax3.axhline(0, color='black', linestyle='-', linewidth=1.0)
-    ax3.set_title('Constituent Energy Flows (Positive = Loss, Negative = Gain)')
-    ax3.set_ylabel('Power (W)')
-    ax3.set_xlabel('Time (hours)')
-    ax3.grid(True, linestyle=':', alpha=0.6)
-    ax3.legend(loc='upper right')
+        # --- 9. Process and Display Results ---
+        total_heating_kwh = np.sum(hvac_energy[hvac_energy > 0]) * dt_sec / (3600 * 1000)
+        total_cooling_kwh = -np.sum(hvac_energy[hvac_energy < 0]) * dt_sec / (3600 * 1000)
+        total_hvac_kwh = total_heating_kwh + total_cooling_kwh
+        print(f"\nTotal Heating Energy Consumed: {total_heating_kwh:.2f} kWh")
+        print(f"\nTotal Cooling Energy Consumed: {total_cooling_kwh:.2f} kWh")
+        print(f"\nTotal HVAC Energy Consumed: {total_hvac_kwh:.2f} kWh")
+        
+        # Manually assemble the results dictionary for plotting
+        results = {
+            'zone_air_temps': zone_air_temps,
+            'hvac_energy': hvac_energy,
+            'fabric_loss': fabric_loss,
+            'air_exchange_loss': air_exchange_loss,
+            'solar_gains': solar_gains,
+            'internal_gains': internal_gains_profile,
+            'window_state': window_state_profile # Add window state to results
+        }
+        
+        # --- 10. Plot Results ---
+        plot_simulation_results(
+            time_hours,
+            weather_data,
+            heating_setpoint_profile, # Original setpoint
+            cooling_setpoint_profile, # Original setpoint
+            results,
+            num_steps,
+            duration_hours
+        )
 
-    plt.xlim(0, duration_hours)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    except KeyError as e:
+        print(f"Error: Missing or invalid key in configuration file '{config_path}'.", file=sys.stderr)
+        print(f"Details: The required key {e} was not found or is nested incorrectly.", file=sys.stderr)
+        print("Please ensure the config file has the correct structure.", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        # Catch other potential simulation errors
+        print(f"An unexpected error occurred during the simulation setup or run: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc() # Print full error traceback
+        sys.exit(1)
+
 
 if __name__ == '__main__':
-    run_simulation_from_config('simulation_config.json')
-
-
+    # ... (argparse code remains unchanged) ...
+    parser = argparse.ArgumentParser(
+        description="Run a single-zone thermal simulation from a JSON config file."
+    )
+    parser.add_argument(
+        'config_file', 
+        type=str, 
+        nargs='?', 
+        default='simulation_config.json', 
+        help="Path to the simulation JSON configuration file (default: simulation_config.json)"
+    )
+    
+    args = parser.parse_args()
+    
+    run_simulation_from_config(args.config_file)

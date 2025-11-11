@@ -83,8 +83,8 @@
     }
   },
   "hvac_system": {
-    "heating_capacity_w": 0.0,
-    "cooling_capacity_w": 0.0,
+    "heating_capacity_w": 5000.0,
+    "cooling_capacity_w": 5000.0,
     "heating_deadband_c": 1.0,
     "cooling_deadband_c": 1.0,
     "min_runtime_minutes": 60.0,
@@ -93,19 +93,53 @@
   },
   "schedules": {
     "occupied_hours": [ 7, 19 ],
-    "window_opening_hours": [ 13, 14.5 ],
     "occupied_heating_setpoint_c": 21.0,
     "unoccupied_heating_setpoint_c": 15.0,
     "occupied_cooling_setpoint_c": 24.0,
     "unoccupied_cooling_setpoint_c": 30.0,
     "occupied_internal_gains_w": 0.0
   },
+
+  "occupancy": {
+    "heat_gain_per_occupant_w": 200.0,
+    "occupants": [
+      {
+        "name": "Alice",
+        "work_start_hr": 8,
+        "work_end_hr": 17,
+        "window_preference": "opener",
+        "window_temp_c": 23.0,
+        "thermostat_preference": "changer",
+        "thermostat_temp_c": 21.0
+      },
+      {
+        "name": "Bob",
+        "work_start_hr": 9,
+        "work_end_hr": 18,
+        "window_preference": "opener",
+        "window_temp_c": 19.0,
+        "thermostat_preference": "changer",
+        "thermostat_temp_c": 18.0
+      },
+      {
+        "name": "Charlie",
+        "work_start_hr": 9,
+        "work_end_hr": 17,
+        "window_preference": "opener",
+        "window_temp_c": 24.0,
+        "thermostat_preference": "changer",
+        "thermostat_temp_c": 22.5
+      }
+    ]
+  },
+
   "weather": {
-    "temp_base_c": 15,
-    "temp_amplitude_c": 5,
+    "type": "simple_sinusoidal",
+    "temp_base_c": -10,
+    "temp_amplitude_c": 3,
     "temp_phase_shift_hr": 14,
-    "solar_max_irradiance_w_m2": 0,
-    "wind_Speed_ms": 3.0
+    "solar_max_irradiance_w_m2": 400,
+    "wind_Speed_ms": 20.0
   },
   "convection_models": {
     "exterior_hf": {

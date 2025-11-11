@@ -15,7 +15,7 @@ class AirExchangeManager:
         self.ventilation_config = air_exchange_data['ventilation']
 
     def get_mass_flow_rate_coeff_w_k(self, T_zone_c, T_ext_c, wind_speed_ms,
-                                      window_open_fraction, hvac_is_heating):
+                                      window_open_fraction):
         """
         Calculates the combined mass flow rate coefficient (m_dot * C_p)
         from all air exchange processes.
@@ -27,10 +27,10 @@ class AirExchangeManager:
         ventilation_rate_m3_s = self._get_ventilation_rate_m3_s(window_open_fraction)
 
         # Superposition principle to combine flows
-        q_n_sq = infiltration_rate_m3_s**2
-        q_v_sq = ventilation_rate_m3_s**2
+        q_n_sq = infiltration_rate_m3_s
+        q_v_sq = ventilation_rate_m3_s
         
-        total_flow_m3_s = (q_n_sq + q_v_sq)**0.5
+        total_flow_m3_s = (q_n_sq + q_v_sq)
         
         m_dot_kg_s = total_flow_m3_s * AIR_DENSITY_KG_M3
         return m_dot_kg_s * AIR_SPECIFIC_HEAT_J_KG_K

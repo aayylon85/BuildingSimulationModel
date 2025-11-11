@@ -1,6 +1,11 @@
 """
 Defines the Zone model. It manages the thermal properties of the zone's fabric
-and air and runs the simulation using a fully coupled solver.
+and air. The main simulation loop has been moved to main.py.
+
+This class now provides:
+- __init__(): To set up the zone solver.
+- run_warmup(): To run the initial stabilization.
+- run_simulation_step(): To solve a single timestep.
 """
 import numpy as np
 import types
@@ -11,6 +16,7 @@ from air_exchange import AirExchangeManager
 class Zone:
     """
     Represents a single thermal zone with surfaces, windows, and internal gains.
+    Manages the solver and provides methods for simulation steps.
     """
     
     def __init__(self, zone_properties, geometry_data, constructions, dt_seconds,
@@ -20,9 +26,9 @@ class Zone:
         Initializes the zone and its thermal properties.
         """
         self.dimensions = zone_properties
+        self.dt_sec = dt_seconds
         
         zone_volume = zone_properties['length'] * zone_properties['width'] * zone_properties['height']
-        
         
         all_surfaces_props = {}
         for name, props in geometry_data['surface_definitions'].items():
@@ -34,6 +40,7 @@ class Zone:
             all_surfaces_props, constructions, dt_seconds, 
             zone_volume, zone_sensible_heat_capacity_multiplier
         )
+        
         self.windows = {}
         # Create windows and adjust parent wall areas
         if windows_data:
@@ -41,7 +48,7 @@ class Zone:
                 parent_wall_name = win_data['wall_name']
                 self.solver.reduce_surface_area(parent_wall_name, win_data['area'])
                 win_name = f"Window_{i+1}_{parent_wall_name}"
-                ratios = win_data.get('solar_distribution_ratios', {})
+                ratios = win_data.get('solar_distribution', {}) # Corrected key
                 self.windows[win_name] = SimpleWindow(
                    win_data['area'], 
                    win_data['u_value'], 
@@ -49,24 +56,25 @@ class Zone:
                    ratios 
                 )
         
+        self.air_exchange_manager = None
         if air_exchange_data:
             self.air_exchange_manager = AirExchangeManager(air_exchange_data, zone_volume)
 
-    def run_simulation(self, heating_setpoint_profile, cooling_setpoint_profile, 
-                         weather_profile, internal_gains_profile,
-                         interior_convection_model, exterior_convection_model, hvac_system,
-                         sim_duration_hours, window_opening_profile):
-        
-        dt_sec = self.solver.dt
-        num_steps = int(sim_duration_hours * 3600 / dt_sec)
 
-        # --- DYNAMIC STABILIZATION WARM-UP ---
-        print("Starting dynamic stabilization warm-up...")
-        stabilization_days = 3 
-        steps_per_day = int(24 * 3600 / dt_sec)
+    def run_warmup(self, heating_setpoint_profile, cooling_setpoint_profile, 
+                   weather_profile, internal_gains_profile,
+                   interior_convection_model, exterior_convection_model, hvac_system):
+        """
+        Runs a dynamic stabilization warm-up and returns the final
+        zone air temperature.
+        """
         
-        if steps_per_day == 0:
-            steps_per_day = len(weather_profile) # Use at least one day's profile
+        # --- DYNAMIC STABILIZATION WARM-UP ---
+        stabilization_days = 3 
+        steps_per_day = int(24 * 3600 / self.dt_sec)
+        
+        if steps_per_day == 0 or steps_per_day > len(weather_profile):
+            steps_per_day = len(weather_profile)
             if steps_per_day == 0:
                  raise ValueError("Weather profile is empty.")
         
@@ -94,8 +102,7 @@ class Zone:
 
             q_hvac = hvac_system.calculate_hvac_power(T_air_prev, current_heating_setpoint, current_cooling_setpoint)
             
-            
-            solar_gains_w_dict = {} 
+            solar_gains_w_dict = {} # No solar during warmup for simplicity
             
             all_new_temps, _, _, _ = self.solver.solve_step(
                 T_air_prev, current_weather, self.windows, self.air_exchange_manager,
@@ -105,78 +112,72 @@ class Zone:
             
             T_air_prev = all_new_temps[-1]
 
-        print("Warm-up complete. Starting main simulation.")
-        # --- END WARM-UP ---
+        # Return the final converged air temperature
+        return T_air_prev
+
+
+    def run_simulation_step(self, T_air_prev, current_weather,
+                            current_internal_gains, current_heating_setpoint,
+                            current_cooling_setpoint, current_window_fraction,
+                            interior_convection_model, exterior_convection_model,
+                            hvac_system):
+        """
+        Runs a single simulation step and returns a dictionary of results.
+        """
         
-        # --- MAIN SIMULATION LOOP ---
-        zone_air_temps = np.zeros(num_steps)
-        hvac_energy = np.zeros(num_steps)
-        fabric_loss = np.zeros(num_steps)
-        air_exchange_loss = np.zeros(num_steps)
-        solar_gains = np.zeros(num_steps)
-        internal_gains = internal_gains_profile # Use the full profile
+        # --- Calculate Solar Gains ---
+        solar_gains_w_dict = {}
+        q_solar_total_gain_for_plotting = 0.0
+        irradiance = current_weather.get('solar_irradiance_w_m2', 0)
 
-        zone_air_temps[0] = T_air_prev # Start from the warmed-up temperature
-
-        for t in range(num_steps):
-            if t > 0:
-                T_air_prev = zone_air_temps[t-1]
-            
-            current_heating_setpoint = heating_setpoint_profile[t]
-            current_cooling_setpoint = cooling_setpoint_profile[t]
-            current_weather = weather_profile[t]
-            current_internal_gains = internal_gains_profile[t]
-            current_window_fraction = window_opening_profile[t]
-            
-            
-            solar_gains_w_dict = {}
-            q_solar_total_gain_for_plotting = 0.0
-            irradiance = current_weather.get('solar_irradiance_w_m2', 0)
-
-            for win_name, win in self.windows.items():
-               
-                q_cond_window, q_solar_window = win.calculate_heat_flow(
-                    T_air_prev, 
-                    current_weather['air_temp_c'], 
-                    irradiance
-                )
-                ratios = win.ratios
-                if not ratios:
-                    if 'floor' not in solar_gains_w_dict:
-                        solar_gains_w_dict['floor'] = 0.0
-                    solar_gains_w_dict['floor'] += q_solar_window
-                else:
-                    for surface, ratio in ratios.items():
-                        if ratio > 0:
-                            gain_share = q_solar_window * ratio
-                            if surface not in solar_gains_w_dict:
-                                solar_gains_w_dict[surface] = 0.0
-                            solar_gains_w_dict[surface] += gain_share
-                
-                
-            
-            q_hvac = hvac_system.calculate_hvac_power(T_air_prev, current_heating_setpoint, current_cooling_setpoint)
-
-            
-            all_new_temps, q_fabric, q_window, q_air_exchange = self.solver.solve_step(
-                T_air_prev, current_weather, self.windows, self.air_exchange_manager,
-                interior_convection_model, exterior_convection_model,
-                current_internal_gains, 
-                solar_gains_w_dict, 
-                q_hvac,
-                current_window_fraction
+        for win_name, win in self.windows.items():
+            # Note: T_air_prev is used for window conduction calculation
+            q_cond_window, q_solar_window = win.calculate_heat_flow(
+                T_air_prev, 
+                current_weather['air_temp_c'], 
+                irradiance
             )
             
+            # This is the solar energy that enters the zone
+            q_solar_total_gain_for_plotting += q_solar_window
             
-            zone_air_temps[t] = all_new_temps[-1]
-            hvac_energy[t] = q_hvac
-            fabric_loss[t] = q_fabric + q_window
-            air_exchange_loss[t] = q_air_exchange
-            solar_gains[t] = q_solar_total_gain_for_plotting # This is just solar
+            ratios = win.ratios
+            if not ratios or sum(ratios.values()) == 0:
+                # Default: 100% of solar gain goes to the floor
+                if 'floor' not in solar_gains_w_dict:
+                    solar_gains_w_dict['floor'] = 0.0
+                solar_gains_w_dict['floor'] += q_solar_window
+            else:
+                # Distribute solar gain to surfaces
+                for surface, ratio in ratios.items():
+                    if ratio > 0:
+                        gain_share = q_solar_window * ratio
+                        if surface not in solar_gains_w_dict:
+                            solar_gains_w_dict[surface] = 0.0
+                        solar_gains_w_dict[surface] += gain_share
+            
+        # --- Calculate HVAC Power ---
+        q_hvac = hvac_system.calculate_hvac_power(
+            T_air_prev, 
+            current_heating_setpoint, 
+            current_cooling_setpoint
+        )
 
+        # --- Solve Heat Balance ---
+        all_new_temps, q_fabric, q_window, q_air_exchange = self.solver.solve_step(
+            T_air_prev, current_weather, self.windows, self.air_exchange_manager,
+            interior_convection_model, exterior_convection_model,
+            current_internal_gains, 
+            solar_gains_w_dict, 
+            q_hvac,
+            current_window_fraction # Use the dynamic value
+        )
+        
+        # --- Return Results for this Step ---
         return {
-            'zone_air_temps': zone_air_temps, 'hvac_energy': hvac_energy,
-            'fabric_loss': fabric_loss,
-            'air_exchange_loss': air_exchange_loss, 'solar_gains': solar_gains,
-            'internal_gains': internal_gains
+            'T_air_new': all_new_temps[-1],
+            'q_hvac': q_hvac,
+            'q_fabric_loss': q_fabric + q_window,
+            'q_air_exchange_loss': q_air_exchange,
+            'q_solar_gains': q_solar_total_gain_for_plotting
         }

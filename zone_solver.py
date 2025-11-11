@@ -153,11 +153,11 @@ class ZoneHeatBalanceSolver:
             # --- Calculate air exchange using T_air_guess ---
             air_exchange_coeff = 0.0 
             if air_exchange_manager:
-                hvac_is_heating = hvac_power_w > 0
+                
                 air_exchange_coeff = air_exchange_manager.get_mass_flow_rate_coeff_w_k(
                     T_air_guess, weather['air_temp_c'],
                     weather['wind_speed_local_ms'],
-                    window_open_fraction, hvac_is_heating
+                    window_open_fraction
                 )
                 A[air_node_idx, air_node_idx] += air_exchange_coeff
                 B[air_node_idx] += air_exchange_coeff * weather['air_temp_c']

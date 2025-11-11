@@ -180,3 +180,48 @@ class StatefulHVAC:
         return self.current_output_w
 
 
+def create_hvac_system(hvac_props: dict, dt_seconds: float):
+    """
+    Factory function to create an HVAC system object from config properties.
+    
+    Args:
+        hvac_props: The 'hvac_system' dictionary from the config file.
+        dt_seconds: The simulation time step in seconds.
+        
+    Returns:
+        An instantiated HVAC object (e.g., StatefulHVAC or VerySimpleHVAC).
+    """
+    
+    # Get the model type, default to 'StatefulHVAC' if not specified
+    model_type = hvac_props.get('model_type', 'StatefulHVAC')
+    print(f"Creating HVAC model of type: {model_type}")
+
+    try:
+        if model_type == 'StatefulHVAC':
+            # Extract parameters specific to StatefulHVAC
+            return StatefulHVAC(
+                heating_capacity_w=hvac_props['heating_capacity_w'],
+                cooling_capacity_w=hvac_props['cooling_capacity_w'],
+                heating_deadband_c=hvac_props['heating_deadband_c'],
+                cooling_deadband_c=hvac_props['cooling_deadband_c'],
+                min_runtime_minutes=hvac_props['min_runtime_minutes'],
+                min_offtime_minutes=hvac_props['min_offtime_minutes'],
+                ramp_up_minutes=hvac_props['ramp_up_minutes'],
+                dt_seconds=dt_seconds
+            )
+            
+        elif model_type == 'VerySimpleHVAC':
+            # Extract parameters specific to VerySimpleHVAC
+            return VerySimpleHVAC(
+                heating_capacity_w=hvac_props['heating_capacity_w'],
+                cooling_capacity_w=hvac_props['cooling_capacity_w'],
+                proportional_gain_w_k=hvac_props['proportional_gain_w_k']
+            )
+            
+        else:
+            raise ValueError(f"Unknown HVAC model_type in config: '{model_type}'")
+            
+    except KeyError as e:
+        print(f"Error: Missing required HVAC parameter {e} for model '{model_type}' in config file.")
+        raise
+
