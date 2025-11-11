@@ -5,15 +5,7 @@ transfer coefficient (hc) on building surfaces.
 
 import math
 
-# Constants: Surface Roughness Multipliers (Walton 1981)
-ROUGHNESS_MULTIPLIERS = {
-    1: 2.17,  # Very Rough (Stucco)
-    2: 1.67,  # Rough (Brick)
-    3: 1.52,  # Medium Rough (Concrete)
-    4: 1.13,  # Medium Smooth (Clear pine)
-    5: 1.11,  # Smooth (Smooth Plaster)
-    6: 1.00,  # Very Smooth (Glass)
-}
+from constants import ROUGHNESS_MULTIPLIERS
 
 class AdaptiveConvectionAlgorithm:
     """
@@ -82,7 +74,7 @@ class AdaptiveConvectionAlgorithm:
 
         hf = self._calculate_hf(hf_model_name, surface, weather)
         hn = self._calculate_hn(hn_model_name, surface, weather)
-        hc = ((hf**3)+(hn**3))**(1./3.)
+        hc = hf+hn
         
         return hc
 
@@ -126,7 +118,7 @@ class AdaptiveConvectionAlgorithm:
         return models[model_name](surface, weather)
     
     def _hc_mowitt_windward(self, surface, weather):
-        # Eq. 3.97 (with updated coefficients from Table 3.9)
+        #Booten et al (2012) building on work of Yazdania and Klems (1994)
         delta_t = abs(surface['surface_temp_c'] - weather['air_temp_c'])
         v_z = weather['wind_speed_local_ms']
         c_t = 0.84; a = 3.26; b = 0.89
@@ -135,7 +127,7 @@ class AdaptiveConvectionAlgorithm:
         return math.sqrt(hn_term_sq + hf_term_sq)
 
     def _hc_mowitt_leeward(self, surface, weather):
-        # Eq. 3.98 (with updated coefficients from Table 3.9)
+        #Booten et al (2012) building on work of Yazdania and Klems (1994)
         delta_t = abs(surface['surface_temp_c'] - weather['air_temp_c'])
         v_z = weather['wind_speed_local_ms']
         c_t = 0.84; a = 3.55; b = 0.617
@@ -144,22 +136,25 @@ class AdaptiveConvectionAlgorithm:
         return math.sqrt(hn_term_sq + hf_term_sq)
 
     def _hc_nusselt_jurges(self, surface, weather):
-        # Eq. 3.103
+        #Palyvos (2008) simplified form in SI units based on Nusselt and Jurges (1992).
         return 5.8 + 3.94 * weather['wind_speed_local_ms']
         
     def _hc_mcadams(self, surface, weather):
-        # Eq. 3.104
+        #Palyvos (2008) simplified form in SI units based on McAdams (1954).
         return 5.7 + 3.8 * weather['wind_speed_local_ms']
 
     def _hf_sparrow_windward(self, surface, weather):
+        #Sparrow et al. (1979)
         rf = ROUGHNESS_MULTIPLIERS.get(surface['roughness_index'], 1.0)
         pv_over_a = (surface['perimeter'] * weather['wind_speed_local_ms']) / surface['area']
         return 2.537 * rf * math.sqrt(pv_over_a) if pv_over_a > 0 else 0
 
     def _hf_sparrow_leeward(self, surface, weather):
+        #Sparrow et al. (1979)
         return 0.5 * self._hf_sparrow_windward(surface, weather)
 
     def _hf_blocken_windward(self, surface, weather):
+        #Blocken et al. (2009)
         v_10m = weather['wind_speed_10m_ms']
         wind_angle_diff = abs(weather['wind_direction_deg'] - surface['azimuth'])
         theta = min(wind_angle_diff, 360 - wind_angle_diff)
@@ -174,6 +169,7 @@ class AdaptiveConvectionAlgorithm:
             return 4.5 * (v_10m ** 0.81)
             
     def _hf_emmel_vertical(self, surface, weather):
+        #Emmel et al. (2007)
         v_10m = weather['wind_speed_10m_ms']
         wind_angle_diff = abs(weather['wind_direction_deg'] - surface['azimuth'])
         theta = min(wind_angle_diff, 360 - wind_angle_diff)
@@ -190,6 +186,7 @@ class AdaptiveConvectionAlgorithm:
             return 3.34 * (v_10m ** 0.84)
             
     def _hf_emmel_roof(self, surface, weather):
+        #Emmel et al. (2007)
         v_10m = weather['wind_speed_10m_ms']
         wind_angle_diff = abs(weather['wind_direction_deg'] - surface['azimuth'])
         theta = min(wind_angle_diff, 360 - wind_angle_diff)
@@ -202,6 +199,7 @@ class AdaptiveConvectionAlgorithm:
             return 3.67 * (v_10m ** 0.85)
 
     def _hf_mitchell(self, surface, weather):
+        #Palyvos (2008) form in SI units based on Mitchell (1976).
         if 'building_volume_m3' not in surface or surface['building_volume_m3'] <= 0:
             raise ValueError("Building volume must be provided for Mitchell model.")
         l_char = surface['building_volume_m3'] ** (1./3.)
@@ -220,14 +218,17 @@ class AdaptiveConvectionAlgorithm:
         return models[model_name](delta_t, surface['tilt'])
 
     def _hn_walton_unstable(self, delta_t, tilt):
+        #Walton (1983)
         cos_sigma = abs(math.cos(math.radians(tilt)))
         return (9.482 * (delta_t ** (1./3.))) / (7.238 - cos_sigma)
 
     def _hn_walton_stable(self, delta_t, tilt):
+        #Walton (1983)
         cos_sigma = abs(math.cos(math.radians(tilt)))
         return (1.810 * (delta_t ** (1./3.))) / (1.382 + cos_sigma)
 
     def _hn_ashrae_vertical(self, delta_t, tilt):
+        #Walton (1983)
         return 1.31 * (delta_t ** (1./3.))
 
 

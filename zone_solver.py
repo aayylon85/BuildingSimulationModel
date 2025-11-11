@@ -11,7 +11,7 @@ class ZoneHeatBalanceSolver:
     Assembles and solves the fully coupled system of linear equations for all
     fabric nodes and the single zone air node.
     """
-    def __init__(self, all_surfaces_props, constructions, dt_seconds, # <-- CHANGED
+    def __init__(self, all_surfaces_props, constructions, dt_seconds,
                  zone_volume, zone_sensible_heat_capacity_multiplier):
         """
         Initializes the solver, creates fabric solvers for each surface, and
@@ -29,7 +29,7 @@ class ZoneHeatBalanceSolver:
         self.surface_props = all_surfaces_props
         self.total_fabric_nodes = 0
 
-        # --- NEW LOGIC for flexible constructions ---
+        
         for name, props in self.surface_props.items():
             construction_name = props.get('construction_name')
             if not construction_name:
@@ -41,7 +41,7 @@ class ZoneHeatBalanceSolver:
                                  f"'{name}' not found in constructions dictionary.")
             
             solver = CondFDSolver(construction_obj, dt_seconds)
-            # --- END NEW LOGIC ---
+            
             
             self.fabric_solvers[name] = {'solver': solver, 'props': props}
             self.total_fabric_nodes += len(solver.nodes)
@@ -61,21 +61,15 @@ class ZoneHeatBalanceSolver:
 
     def solve_step(self, T_air_prev, weather, windows, air_exchange_manager,
                      interior_convection_model, exterior_convection_model,
-                     internal_gains_w, solar_gains_w_dict, hvac_power_w, # <-- CHANGED
+                     internal_gains_w, solar_gains_w_dict, hvac_power_w,
                      window_open_fraction,
-                     max_iterations=10, tolerance=0.01): # <-- NEW solver params
+                     max_iterations=10, tolerance=0.01): 
         """
         Assembles and solves the matrix for one timestep using an
         iterative approach for non-linear coefficients.
-        
-        Args:
-            ...
-            solar_gains_w_dict (dict): A dictionary mapping surface names
-                to the solar gain (in Watts) striking their INTERIOR face.
-            ...
         """
         
-        # --- NEW: Setup for iterative solver ---
+        
         num_eq = self.total_fabric_nodes + 1
         
         # Create initial guess for T_new using previous timestep's values
@@ -107,17 +101,16 @@ class ZoneHeatBalanceSolver:
                 T_surf_in_guess = T_iter_guess[node_offset]
                 
                 # --- Calculate h_in using T_iter_guess ---
-                # We mock just enough of the 'surface_data' object
-                # for the convection model to work.
+                
                 mock_solver = types.SimpleNamespace(nodes=[{'T': T_surf_in_guess}])
                 temp_surface_data = {
-                'solver': mock_solver, # <-- This is now an object, not a dict
+                'solver': mock_solver,
                 'props': props
                 }
                 h_in = interior_convection_model.calculate_h_c(temp_surface_data, T_air_guess)
-                h_in_values[name] = h_in # Store for later
+                h_in_values[name] = h_in 
 
-                # --- Calculate h_out using T_iter_guess ---
+            
                 h_out = 0.0 # Default for non-exterior surfaces
                 if props['is_exterior']:
                     T_surf_out_guess = T_iter_guess[node_offset + num_nodes - 1]
@@ -130,15 +123,15 @@ class ZoneHeatBalanceSolver:
                 solver.populate_matrix_equations(
                     A, B, node_offset, self.total_fabric_nodes,
                     h_in, h_out, weather['air_temp_c'],
-                    props['area'],           # <-- PASS Area
-                    surface_solar_gain_w   # <-- PASS Solar Gain
+                    props['area'],           
+                    surface_solar_gain_w   
                 )
                 node_offset += num_nodes
 
             # --- Populate the final row for the Zone Air Heat Balance ---
             air_node_idx = self.total_fabric_nodes
             
-            # Solar gains are now GONE from this equation
+            
             B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w + hvac_power_w
             A[air_node_idx, air_node_idx] = self.air_capacitance_term
 
@@ -146,7 +139,7 @@ class ZoneHeatBalanceSolver:
             for name, solver_data in self.fabric_solvers.items():
                 props = solver_data['props']
                 area = props['area']
-                h_in = h_in_values[name] # Use the stored h_in
+                h_in = h_in_values[name] 
                 
                 A[air_node_idx, air_node_idx] += h_in * area
                 A[air_node_idx, node_offset] -= h_in * area
@@ -162,7 +155,7 @@ class ZoneHeatBalanceSolver:
             if air_exchange_manager:
                 hvac_is_heating = hvac_power_w > 0
                 air_exchange_coeff = air_exchange_manager.get_mass_flow_rate_coeff_w_k(
-                    T_air_guess, weather['air_temp_c'], # <-- USE GUESS
+                    T_air_guess, weather['air_temp_c'],
                     weather['wind_speed_local_ms'],
                     window_open_fraction, hvac_is_heating
                 )
@@ -180,7 +173,7 @@ class ZoneHeatBalanceSolver:
 
             # --- Check for convergence ---
             if np.allclose(T_new, T_iter_guess, atol=tolerance):
-                break # Converged!
+                break # Converged
         
         # --- END of iterative loop ---
 

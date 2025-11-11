@@ -3,7 +3,7 @@ Defines building materials and functions to create constructions from a config f
 """
 from collections import namedtuple
 
-# This is the same as your old file
+
 Material = namedtuple("Material", ["name", "thickness", "conductivity", "density", "specific_heat"])
 
 def create_materials_dict(config):
@@ -24,13 +24,11 @@ def create_constructions_dict(config):
     """
     Creates a dictionary of construction layer lists from the config.
     The CondFDSolver expects a list of Material objects.
-    
-    This replaces the old 'create_construction_from_config' function.
     """
     materials_db = create_materials_dict(config)
     constructions = {}
     
-    # config['constructions'] is now a dictionary
+    
     for name, const_data in config.get('constructions', {}).items():
         layers = []
         for layer_name in const_data['layers']:

@@ -34,7 +34,7 @@ class InternalAdaptiveConvection:
         surface_temp = surface_data['solver'].nodes[0]['T']
         surface_props = surface_data['props'] # Access the nested properties dictionary
         delta_t = surface_temp - zone_air_temp_c
-        tilt = surface_props['tilt'] # Correctly access the 'tilt' value
+        tilt = surface_props['tilt'] 
 
         if 90 > tilt > 0 or 180 > tilt > 90: # Tilted Surface
              if delta_t > 0: # Heated surface
@@ -70,13 +70,16 @@ class InternalAdaptiveConvection:
         return dispatch_map[model_name](delta_t_abs, tilt)
 
     def _h_ashrae_vertical(self, delta_t_abs, tilt):
+        #Walton (1983)
         return 1.31 * (delta_t_abs ** (1./3.))
 
     def _h_walton_unstable(self, delta_t_abs, tilt):
+        #Walton (1983)
         cos_sigma = abs(math.cos(math.radians(tilt)))
         return (9.482 * (delta_t_abs ** (1./3.))) / (7.238 - cos_sigma)
 
     def _h_walton_stable(self, delta_t_abs, tilt):
+        #Walton (1983)
         cos_sigma = abs(math.cos(math.radians(tilt)))
         return (1.810 * (delta_t_abs ** (1./3.))) / (1.382 + cos_sigma)
 

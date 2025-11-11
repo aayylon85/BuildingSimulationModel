@@ -154,9 +154,6 @@ class Zone:
                             solar_gains_w_dict[surface] += gain_share
                 
                 
-
-
-            
             
             q_hvac = hvac_system.calculate_hvac_power(T_air_prev, current_heating_setpoint, current_cooling_setpoint)
 

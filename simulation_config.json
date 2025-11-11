@@ -104,7 +104,8 @@
     "temp_base_c": 15,
     "temp_amplitude_c": 5,
     "temp_phase_shift_hr": 14,
-    "solar_max_irradiance_w_m2": 0
+    "solar_max_irradiance_w_m2": 0,
+    "wind_Speed_ms": 3.0
   },
   "convection_models": {
     "exterior_hf": {
