@@ -180,6 +180,114 @@ class StatefulHVAC:
         return self.current_output_w
 
 
+class PIDControlledHVAC:
+    """
+    Implements a PID (Proportional-Integral-Derivative) controller for HVAC.
+    This provides smoother control than on/off or simple proportional systems,
+    mimicking inverter-driven or modulating HVAC systems.
+    """
+    def __init__(self, heating_capacity_w, cooling_capacity_w, kp, ki, kd, dt_seconds):
+        """
+        Args:
+            heating_capacity_w (float): Max heating power (W)
+            cooling_capacity_w (float): Max cooling power (W)
+            kp (float): Proportional gain
+            ki (float): Integral gain
+            kd (float): Derivative gain
+            dt_seconds (float): Simulation timestep size
+        """
+        self.heating_capacity_w = heating_capacity_w
+        self.cooling_capacity_w = cooling_capacity_w
+        
+        # PID Parameters
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.dt = dt_seconds
+        
+        # State variables for PID
+        self._integral = 0.0
+        self._prev_error = 0.0
+        
+        # We track the previous mode to reset integral when switching modes
+        # Modes: 0 = Off/Deadband, 1 = Heating, -1 = Cooling
+        self._last_mode = 0 
+
+    def calculate_hvac_power(self, T_air_prev, T_heating_setpoint, T_cooling_setpoint):
+        """
+        Calculates power using PID logic.
+        """
+        error = 0.0
+        current_mode = 0 # 0: Neutral, 1: Heating, -1: Cooling
+        
+        # 1. Determine Error and Mode
+        # Note: We treat error as positive = "needs action"
+        if T_air_prev < T_heating_setpoint:
+            error = T_heating_setpoint - T_air_prev
+            current_mode = 1
+        elif T_air_prev > T_cooling_setpoint:
+            error = T_air_prev - T_cooling_setpoint
+            current_mode = -1
+        else:
+            # Inside deadband
+            error = 0.0
+            current_mode = 0
+
+        # 2. Reset logic (Anti-windup / Mode switching)
+        # If we switched modes (e.g., heating to cooling) or entered deadband,
+        # we should reset the integral term to prevent fighting the new direction.
+        if current_mode != self._last_mode:
+            self._integral = 0.0
+            self._prev_error = 0.0 # Reset derivative kick
+        
+        self._last_mode = current_mode
+
+        if current_mode == 0:
+            return 0.0
+
+        # 3. PID Calculation
+        
+        # Proportional term
+        P = self.kp * error
+        
+        # Integral term
+        self._integral += error * self.dt
+        I = self.ki * self._integral
+        
+        # Derivative term
+        derivative = (error - self._prev_error) / self.dt
+        D = self.kd * derivative
+        
+        self._prev_error = error
+        
+        # Total raw PID output (unscaled)
+        pid_output = P + I + D
+        
+        # 4. Apply Output to Capacity
+        q_hvac = 0.0
+        
+        if current_mode == 1: # Heating
+            # Clamp integral to avoid "windup" where I-term grows infinitely
+            # Simple clamping strategy: If output is maxed out, stop growing integral
+            if pid_output > self.heating_capacity_w:
+                pid_output = self.heating_capacity_w
+                # Anti-windup: Back-calculate integral to keep it at the limit
+                # (Optional, but simple clamping prevents growth)
+                self._integral -= error * self.dt 
+            
+            q_hvac = max(0.0, pid_output)
+            
+        elif current_mode == -1: # Cooling
+            if pid_output > self.cooling_capacity_w:
+                pid_output = self.cooling_capacity_w
+                self._integral -= error * self.dt 
+
+            # Cooling power is returned as negative Watts
+            q_hvac = -max(0.0, pid_output)
+
+        return q_hvac
+
+
 def create_hvac_system(hvac_props: dict, dt_seconds: float):
     """
     Factory function to create an HVAC system object from config properties.
@@ -189,7 +297,7 @@ def create_hvac_system(hvac_props: dict, dt_seconds: float):
         dt_seconds: The simulation time step in seconds.
         
     Returns:
-        An instantiated HVAC object (e.g., StatefulHVAC or VerySimpleHVAC).
+        An instantiated HVAC object (e.g., StatefulHVAC, VerySimpleHVAC, PIDControlledHVAC).
     """
     
     # Get the model type, default to 'StatefulHVAC' if not specified
@@ -198,7 +306,6 @@ def create_hvac_system(hvac_props: dict, dt_seconds: float):
 
     try:
         if model_type == 'StatefulHVAC':
-            # Extract parameters specific to StatefulHVAC
             return StatefulHVAC(
                 heating_capacity_w=hvac_props['heating_capacity_w'],
                 cooling_capacity_w=hvac_props['cooling_capacity_w'],
@@ -211,11 +318,20 @@ def create_hvac_system(hvac_props: dict, dt_seconds: float):
             )
             
         elif model_type == 'VerySimpleHVAC':
-            # Extract parameters specific to VerySimpleHVAC
             return VerySimpleHVAC(
                 heating_capacity_w=hvac_props['heating_capacity_w'],
                 cooling_capacity_w=hvac_props['cooling_capacity_w'],
                 proportional_gain_w_k=hvac_props['proportional_gain_w_k']
+            )
+
+        elif model_type == 'PIDControlledHVAC':
+            return PIDControlledHVAC(
+                heating_capacity_w=hvac_props['heating_capacity_w'],
+                cooling_capacity_w=hvac_props['cooling_capacity_w'],
+                kp=hvac_props.get('kp', 1000),   # Default if not in config
+                ki=hvac_props.get('ki', 10),     # Default if not in config
+                kd=hvac_props.get('kd', 0),      # Default if not in config
+                dt_seconds=dt_seconds
             )
             
         else:
@@ -224,4 +340,3 @@ def create_hvac_system(hvac_props: dict, dt_seconds: float):
     except KeyError as e:
         print(f"Error: Missing required HVAC parameter {e} for model '{model_type}' in config file.")
         raise
-

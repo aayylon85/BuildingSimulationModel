@@ -1,7 +1,14 @@
 {
   "simulation_settings": {
     "dt_minutes": 1,
-    "duration_hours": 250
+    "duration_days": 365,
+    "start_date": "2020-01-01"
+  },
+  "location": {
+    "latitude": 50.9105,
+    "longitude": -1.4049,
+    "place_name": "Southampton",
+    "time_zone": "GMT"
   },
   "zone_properties": {
     "length": 10.0,
@@ -83,6 +90,7 @@
     }
   },
   "hvac_system": {
+    "model_type": "PIDControlledHVAC",
     "heating_capacity_w": 5000.0,
     "cooling_capacity_w": 5000.0,
     "heating_deadband_c": 1.0,
@@ -107,34 +115,34 @@
         "name": "Alice",
         "work_start_hr": 8,
         "work_end_hr": 17,
-        "window_preference": "opener",
+        "window_preference": "neutral",
         "window_temp_c": 23.0,
-        "thermostat_preference": "changer",
+        "thermostat_preference": "neutral",
         "thermostat_temp_c": 21.0
       },
       {
         "name": "Bob",
         "work_start_hr": 9,
         "work_end_hr": 18,
-        "window_preference": "opener",
+        "window_preference": "neutral",
         "window_temp_c": 19.0,
-        "thermostat_preference": "changer",
+        "thermostat_preference": "neutral",
         "thermostat_temp_c": 18.0
       },
       {
         "name": "Charlie",
         "work_start_hr": 9,
         "work_end_hr": 17,
-        "window_preference": "opener",
+        "window_preference": "neutral",
         "window_temp_c": 24.0,
-        "thermostat_preference": "changer",
+        "thermostat_preference": "neutral",
         "thermostat_temp_c": 22.5
       }
     ]
   },
 
   "weather": {
-    "type": "simple_sinusoidal",
+    "type": "file",
     "temp_base_c": -10,
     "temp_amplitude_c": 3,
     "temp_phase_shift_hr": 14,

@@ -42,7 +42,10 @@ def run_simulation_from_config(config_path):
         # --- 1. Simulation Setup from Config ---
         sim_settings = config['simulation_settings']
         dt_minutes = sim_settings['dt_minutes']
-        duration_hours = sim_settings['duration_hours']
+        duration_days = sim_settings['duration_days']
+        duration_hours = duration_days * 24
+        
+        
         dt_sec = dt_minutes * 60
         num_steps = int(duration_hours * 3600 / dt_sec)
         

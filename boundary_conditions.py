@@ -24,7 +24,14 @@ def create_boundary_conditions(config, num_steps, time_hours):
             - weather_data (list[dict])
     """
     schedules = config['schedules']
-    weather_conf = config['weather']
+    
+    # FIX 1: Pass the FULL config to the generator factory, not just the weather section.
+    # This allows WeatherFromFile to access 'location' and 'simulation_settings'.
+    weather_gen = get_weather_generator(config)
+
+    # FIX 2: Remove 'num_steps' from this call. 
+    # The new generator classes only accept (time_hours).
+    weather_data = weather_gen.generate_weather_data(time_hours)
 
     # Get occupancy config, with defaults if not present
     occupancy_config = config.get('occupancy', {})
@@ -36,13 +43,7 @@ def create_boundary_conditions(config, num_steps, time_hours):
     internal_gains_profile = np.zeros(num_steps)
     window_opening_profile = np.zeros(num_steps)
 
-    
-    
-    weather_gen = get_weather_generator(weather_conf)
-    weather_data = weather_gen.generate_weather_data(num_steps, time_hours)
-
     occ_start, occ_end = schedules['occupied_hours']
-    
 
     for i, t_hr in enumerate(time_hours):
         hour_of_day = t_hr % 24

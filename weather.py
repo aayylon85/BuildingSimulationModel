@@ -2,6 +2,9 @@
 Defines classes for generating weather data for the thermal simulation.
 """
 import numpy as np
+import pandas as pd
+from datetime import timedelta
+from weather_import import get_hourly_weather
 
 class SimpleSinusoidal:
     """
@@ -16,12 +19,11 @@ class SimpleSinusoidal:
         """
         self.config = config
 
-    def generate_weather_data(self, num_steps, time_hours):
+    def generate_weather_data(self, time_hours):
         """
         Generates the time-series list of weather data.
 
         Args:
-            num_steps (int): The total number of simulation steps.
             time_hours (np.array): A numpy array of the simulation time in hours
                                    for each step.
         
@@ -36,7 +38,8 @@ class SimpleSinusoidal:
         temp_amp = self.config['temp_amplitude_c']
         temp_phase = self.config['temp_phase_shift_hr']
 
-        for i, t_hr in enumerate(time_hours):
+        # Fix: Iterate directly over values, not enumerate tuple (index, value)
+        for t_hr in time_hours:
             # --- Simple Sinusoidal Weather Model ---
             
             # Calculate solar radiation, ensuring it's non-negative
@@ -58,45 +61,121 @@ class SimpleSinusoidal:
     
 class WeatherFromFile:
     """
-    (Placeholder) Loads weather data from an external file.
+    Generates weather data by fetching hourly data from a file/API and interpolating
+    it to the simulation time steps.
     """
     def __init__(self, config):
         """
         Initializes the weather generator.
         
         Args:
-            config (dict): The 'weather' section of the main config dictionary.
-                           Expected to contain a 'filepath' key.
+            config (dict): The FULL main simulation config dictionary.
+                           Must contain 'location' and 'simulation_settings'.
         """
         self.config = config
-        self.filepath = config.get('filepath', None)
-        if not self.filepath:
-            print("Warning: WeatherFromFile generator created, but no 'filepath' specified in config.")
-            
-    def generate_weather_data(self, num_steps, time_hours):
+        self.df_hourly = None
+        self._fetch_hourly_data()
+
+    def _fetch_hourly_data(self):
         """
-        (Placeholder) Generates the time-series list of weather data.
-        This method would typically read from self.filepath and interpolate.
+        Fetches hourly weather data based on config location and duration.
+        """
+        # 1. Extract required parameters
+        loc_config = self.config.get('location')
+        if not loc_config:
+            raise ValueError("WeatherFromFile requires a 'location' key in the config.")
+            
+        lat = loc_config.get('latitude')
+        lon = loc_config.get('longitude')
+        
+        sim_settings = self.config.get('simulation_settings', {})
+        start_date_str = sim_settings.get('start_date')
+        duration_days = sim_settings.get('duration_days', 1)
+        
+        if not start_date_str:
+            raise ValueError("WeatherFromFile requires 'start_date' in 'simulation_settings'.")
+            
+        # 2. Calculate end date
+        # Note: We localize to UTC here to be consistent, though the API call uses string dates
+        start_dt = pd.to_datetime(start_date_str)
+        
+        # Add 1 day buffer to ensure we cover the final hours
+        end_dt = start_dt + timedelta(days=duration_days + 1) 
+        end_date_str = end_dt.strftime('%Y-%m-%d')
+
+        # 3. Fetch data
+        print(f"Fetching weather for Lat: {lat}, Lon: {lon} from {start_date_str} to {end_date_str}...")
+        df = get_hourly_weather(lat, lon, start_date_str, end_date_str)
+        
+        if df.empty:
+            raise RuntimeError("Failed to fetch weather data.")
+            
+        # 4. Process DataFrame
+        # Ensure 'date' is datetime objects and set as index
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+        
+        self.df_hourly = df
+
+    def generate_weather_data(self, time_hours):
+        """
+        Generates the interpolated time-series list of weather data.
 
         Args:
-            num_steps (int): The total number of simulation steps.
-            time_hours (np.array): A numpy array of the simulation time in hours
-                                   for each step.
+            time_hours (np.array): A numpy array of the simulation time in hours.
         
         Returns:
-            list[dict]: A list of weather data dictionaries, one for each time step.
+            list[dict]: A list of weather data dictionaries.
         """
-        print(f"Notice: Using placeholder WeatherFromFile. Simulating zero weather for {num_steps} steps.")
-        # Placeholder data:
+        if self.df_hourly is None:
+            raise RuntimeError("Weather data has not been fetched.")
+
+        # 1. Create target DatetimeIndex from time_hours
+        start_date_str = self.config['simulation_settings']['start_date']
+        
+        # FIX: Localize to UTC. 
+        # The weather API returns UTC (timezone-aware) timestamps.
+        # We must make our simulation start time UTC as well to allow merging/union.
+        start_dt = pd.to_datetime(start_date_str).tz_localize('UTC')
+        
+        # Convert simulation hours to actual timestamps
+        target_index = [start_dt + timedelta(hours=float(t)) for t in time_hours]
+        target_dt_index = pd.DatetimeIndex(target_index)
+
+        # 2. Interpolate
+        # To interpolate correctly, we combine the hourly index with our target minute-level index,
+        # interpolate, and then select only our target points.
+        
+        # Union of indices
+        combined_index = self.df_hourly.index.union(target_dt_index).sort_values()
+        
+        # Reindex to combined, then interpolate time-wise
+        # Limit direction='both' handles slight edge cases at start/end
+        df_interp = self.df_hourly.reindex(combined_index).interpolate(method='time').ffill().bfill()
+        
+        # Select only the target simulation steps
+        df_final = df_interp.loc[target_dt_index]
+
+        # 3. Convert to list of dicts matching simulation requirements
         weather_data = []
-        for _ in range(num_steps):
+        
+        # Pre-fetch column series to avoid repeated lookups in loop
+        temps = df_final.get('temperature_2m', np.zeros(len(df_final)))
+        wind_speeds = df_final.get('wind_speed_10m', np.zeros(len(df_final)))
+        wind_dirs = df_final.get('wind_direction_10m', np.zeros(len(df_final)))
+        
+        # Use shortwave radiation (GHI) if available, else defaults
+        solars = df_final.get('shortwave_radiation_instant', np.zeros(len(df_final)))
+
+        for i in range(len(df_final)):
             weather_data.append({
-                'air_temp_c': 20.0, # Fixed placeholder temp
-                'wind_speed_local_ms': 0.0,
-                'wind_speed_10m_ms': 0.0,
-                'wind_direction_deg': 0,
-                'solar_irradiance_w_m2': 0.0
+                'air_temp_c': float(temps.iloc[i]),
+                'wind_speed_local_ms': float(wind_speeds.iloc[i]), # Using 10m speed as local proxy
+                'wind_speed_10m_ms': float(wind_speeds.iloc[i]),
+                'wind_direction_deg': float(wind_dirs.iloc[i]),
+                'solar_irradiance_w_m2': max(0.0, float(solars.iloc[i]))
             })
+            
         return weather_data
 
 # --- Weather Generator Factory ---
@@ -111,19 +190,31 @@ def get_weather_generator(config):
     Factory function to get the appropriate weather generator instance.
     
     Args:
-        config (dict): The 'weather' section of the main config dictionary.
-                       Must contain a 'type' key.
+        config (dict): The FULL simulation configuration dictionary.
+                       (Changed from just 'weather' section to support accessing 
+                       sibling keys like 'location' and 'simulation_settings')
 
     Returns:
-        An instance of a weather generator class (e.g., SimpleSinusoidal).
+        An instance of a weather generator class.
     """
+    # Extract weather specific config
+    weather_config = config.get("weather", {})
+    
     # Default to simple_sinusoidal if 'type' key is missing
-    weather_type = config.get("type", "simple_sinusoidal") 
+    weather_type = weather_config.get("type", "simple_sinusoidal") 
     
     GeneratorClass = WEATHER_GENERATOR_MAP.get(weather_type)
     
     if not GeneratorClass:
         raise ValueError(f"Unknown weather generator type: '{weather_type}'. "
                          f"Available types are: {list(WEATHER_GENERATOR_MAP.keys())}")
-                         
-    return GeneratorClass(config)
+    
+    # Instantiate
+    if weather_type == "simple_sinusoidal":
+        # Simple model only needs the weather section
+        return GeneratorClass(weather_config)
+    elif weather_type == "file":
+        # File model needs the full config to access Location and Settings
+        return GeneratorClass(config)
+    else:
+        return GeneratorClass(config)
