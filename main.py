@@ -9,6 +9,9 @@ import json
 import numpy as np
 import argparse
 import sys
+import os
+import datetime
+import shutil
 
 from materials import create_constructions_dict 
 from zone import Zone
@@ -24,8 +27,11 @@ from occupants import Occupant
 def run_simulation_from_config(config_path):
     """
     Loads a JSON configuration, runs the simulation step-by-step,
-    and plots the results.
+    plots the results, and saves the results to disk.
     """
+    # Capture start time for accurate file timestamping
+    start_dt = datetime.datetime.now()
+
     try:
         with open(config_path, 'r') as f:
             config = json.load(f)
@@ -230,6 +236,59 @@ def run_simulation_from_config(config_path):
             'internal_gains': internal_gains_profile,
             'window_state': window_state_profile # Add window state to results
         }
+
+        # --- SAVE RESULTS ---
+        # Format date and time strings
+        date_str = start_dt.strftime("%Y-%m-%d")
+        time_str = start_dt.strftime("%H-%M-%S")
+        
+        # Define directory structure: results/YYYY-MM-DD/
+        results_dir = os.path.join("results", date_str)
+        
+        # Create directory if it doesn't exist
+        try:
+            os.makedirs(results_dir, exist_ok=True)
+        except OSError as e:
+            print(f"Error creating results directory '{results_dir}': {e}", file=sys.stderr)
+        
+        # Define base filename
+        base_filename = f"{date_str}_{time_str}_{duration_days}days"
+        
+        # 1. Save copy of configuration file
+        config_save_path = os.path.join(results_dir, f"{base_filename}_config.json")
+        try:
+            shutil.copy(config_path, config_save_path)
+            print(f"Saved configuration copy to: {config_save_path}")
+        except Exception as e:
+            print(f"Warning: Could not save configuration copy: {e}")
+
+        # 2. Save Simulation Data to CSV
+        csv_save_path = os.path.join(results_dir, f"{base_filename}_results.csv")
+        try:
+            # Extract outside air temps from weather data list/array
+            outside_temps = np.array([w['air_temp_c'] for w in weather_data])
+            
+            # Prepare data columns
+            # Columns: Time, Zone Temp, Outside Temp, HVAC Power, Fabric Loss, Air Ex Loss, Solar, Internal, Window State
+            header = "Time (hrs),Zone Temp (C),Outside Temp (C),HVAC Power (W),Fabric Loss (W),Air Exchange Loss (W),Solar Gains (W),Internal Gains (W),Window State (0-1)"
+            
+            data_to_save = np.column_stack((
+                time_hours,
+                zone_air_temps,
+                outside_temps,
+                hvac_energy,
+                fabric_loss,
+                air_exchange_loss,
+                solar_gains,
+                internal_gains_profile,
+                window_state_profile
+            ))
+            
+            np.savetxt(csv_save_path, data_to_save, delimiter=",", header=header, comments="", fmt="%.4f")
+            print(f"Saved simulation results to: {csv_save_path}")
+        except Exception as e:
+            print(f"Error saving CSV results: {e}", file=sys.stderr)
+        
         
         # --- 10. Plot Results ---
         plot_simulation_results(
