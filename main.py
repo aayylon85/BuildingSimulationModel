@@ -98,11 +98,12 @@ def run_simulation_from_config(config_path):
         print(f"Initialized {len(occupant_objects)} occupants.")
 
         # --- 7. Run Warm-up ---
-        print("Starting dynamic stabilization warm-up...")
+        stabilization_days = sim_settings.get('stabilization_days', 3)
+        print(f"Starting dynamic stabilization warm-up ({stabilization_days} days)...")
         T_air_prev = zone.run_warmup(
             heating_setpoint_profile, cooling_setpoint_profile, weather_data,
             internal_gains_profile, interior_convection_model,
-            exterior_convection_model, hvac_system
+            exterior_convection_model, hvac_system, stabilization_days
         )
         print("Warm-up complete. Starting main simulation.")
 
@@ -123,12 +124,14 @@ def run_simulation_from_config(config_path):
         dynamic_cooling_setpoint = np.copy(cooling_setpoint_profile)
         
         # --- Occupant Action Setup ---
-        occupant_check_interval_minutes = 60
+        # Get parameters from config or use defaults
+        occupant_check_interval_minutes = config.get('occupancy', {}).get('check_interval_minutes', 60)
         steps_per_occupant_check = int(occupant_check_interval_minutes / dt_minutes)
         if steps_per_occupant_check == 0:
             steps_per_occupant_check = 1 # Check every step if dt > 10 min
-        
-        thermostat_adjustment_c = 1.0 # How much to change setpoint per vote
+
+        # How much to change setpoint per occupant vote
+        thermostat_adjustment_c = config.get('occupancy', {}).get('thermostat_adjustment_c', 1.0)
 
         zone_air_temps[0] = T_air_prev # Start from the warmed-up temperature
 

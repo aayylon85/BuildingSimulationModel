@@ -3,6 +3,7 @@ Defines the fully coupled heat balance solver for the zone.
 """
 import numpy as np
 import types
+import warnings
 from fabric_heat_transfer import CondFDSolver
 from constants import AIR_DENSITY_KG_M3, AIR_SPECIFIC_HEAT_J_KG_K
 
@@ -63,10 +64,22 @@ class ZoneHeatBalanceSolver:
                      interior_convection_model, exterior_convection_model,
                      internal_gains_w, solar_gains_w_dict, hvac_power_w,
                      window_open_fraction,
-                     max_iterations=10, tolerance=0.01): 
+                     max_iterations=10, tolerance=0.01, temp_min_c=-50.0, temp_max_c=80.0): 
         """
         Assembles and solves the matrix for one timestep using an
         iterative approach for non-linear coefficients.
+
+        Args:
+            max_iterations (int): Maximum number of iterations for convergence.
+            tolerance (float): Convergence tolerance in degrees C.
+            temp_min_c (float): Minimum physically reasonable temperature (C).
+            temp_max_c (float): Maximum physically reasonable temperature (C).
+
+        Returns:
+            tuple: (T_new, q_fabric_total, q_window_total, air_exchange_load)
+
+        Raises:
+            RuntimeError: If the matrix is singular or temperatures are out of bounds.
         """
         
         
@@ -79,8 +92,10 @@ class ZoneHeatBalanceSolver:
         T_new = np.array(T_old_fabric + [T_air_prev])
 
         T_iter_guess = np.zeros(num_eq)
-        
-        for _ in range(max_iterations):
+        converged = False
+        iteration_count = 0
+
+        for iteration_count in range(max_iterations):
             # Store the result of the previous iteration to check for convergence
             T_iter_guess = np.copy(T_new)
             T_air_guess = T_iter_guess[-1]
@@ -165,17 +180,39 @@ class ZoneHeatBalanceSolver:
             # --- Solve the system for this iteration ---
             try:
                 T_new = np.linalg.solve(A, B)
-            except np.linalg.LinAlgError:
-                # Handle potential singular matrix, e.g., by
-                # falling back to previous solution or stopping.
-                T_new = T_iter_guess
-                break # Exit loop on failure
+            except np.linalg.LinAlgError as e:
+                # Handle singular matrix with informative error
+                raise RuntimeError(
+                    f"Matrix solver failed at iteration {iteration_count + 1}: {str(e)}. "
+                    "This may indicate an ill-conditioned system. "
+                    "Check construction definitions, convection coefficients, or timestep size."
+                )
 
             # --- Check for convergence ---
             if np.allclose(T_new, T_iter_guess, atol=tolerance):
+                converged = True
                 break # Converged
-        
+
         # --- END of iterative loop ---
+
+        # --- Warn if convergence not achieved ---
+        if not converged:
+            warnings.warn(
+                f"Heat balance solver did not converge after {max_iterations} iterations. "
+                f"Maximum temperature change: {np.max(np.abs(T_new - T_iter_guess)):.4f}°C. "
+                f"Consider increasing max_iterations or reducing timestep.",
+                RuntimeWarning
+            )
+
+        # --- Check temperature bounds ---
+        if np.any(T_new < temp_min_c) or np.any(T_new > temp_max_c):
+            out_of_bounds = T_new[(T_new < temp_min_c) | (T_new > temp_max_c)]
+            raise RuntimeError(
+                f"Temperature solution out of physical bounds: "
+                f"Found temperatures {out_of_bounds}°C outside range [{temp_min_c}, {temp_max_c}]°C. "
+                f"This indicates an unstable solution. Check timestep size, boundary conditions, "
+                f"or material properties."
+            )
 
         # --- Update state with final converged solution ---
         T_new_fabric = T_new[:-1]

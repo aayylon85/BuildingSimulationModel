@@ -61,16 +61,20 @@ class Zone:
             self.air_exchange_manager = AirExchangeManager(air_exchange_data, zone_volume)
 
 
-    def run_warmup(self, heating_setpoint_profile, cooling_setpoint_profile, 
+    def run_warmup(self, heating_setpoint_profile, cooling_setpoint_profile,
                    weather_profile, internal_gains_profile,
-                   interior_convection_model, exterior_convection_model, hvac_system):
+                   interior_convection_model, exterior_convection_model, hvac_system,
+                   stabilization_days=3):
         """
         Runs a dynamic stabilization warm-up and returns the final
         zone air temperature.
+
+        Args:
+            stabilization_days (int): Number of days to cycle through for warm-up.
+                                      Default is 3 days.
         """
-        
-        # --- DYNAMIC STABILIZATION WARM-UP ---
-        stabilization_days = 3 
+
+        # --- DYNAMIC STABILIZATION WARM-UP --- 
         steps_per_day = int(24 * 3600 / self.dt_sec)
         
         if steps_per_day == 0 or steps_per_day > len(weather_profile):
