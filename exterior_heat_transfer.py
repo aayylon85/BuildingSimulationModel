@@ -82,14 +82,20 @@ class AdaptiveConvectionAlgorithm:
         """Determines the surface classification."""
         if surface['type'].lower() == 'roof':
             return 'RoofUnstable' if surface['surface_temp_c'] > weather['air_temp_c'] else 'RoofStable'
-        
+
+        elif surface['type'].lower() == 'floor':
+            # Floor (downward-facing) has inverse stability compared to roof
+            # When floor is warmer than air, stratification is stable (like heated ceiling)
+            # When floor is cooler than air, stratification is unstable (like cooled ceiling)
+            return 'RoofStable' if surface['surface_temp_c'] > weather['air_temp_c'] else 'RoofUnstable'
+
         elif surface['type'].lower() == 'wall':
             wind_angle_diff = abs(weather['wind_direction_deg'] - surface['azimuth'])
             incidence_angle = min(wind_angle_diff, 360 - wind_angle_diff)
             return 'VerticalWallWindward' if incidence_angle <= 90 else 'VerticalWallLeeward'
-        
+
         else:
-            raise ValueError("Invalid surface type. Must be 'roof' or 'wall'.")
+            raise ValueError("Invalid surface type. Must be 'roof', 'floor', or 'wall'.")
             
     def _calculate_h_combined(self, model_name, surface, weather):
         """Dispatcher for combined convection models."""

@@ -1,0 +1,509 @@
+{
+  "metadata": {
+    "standard": "ASHRAE 140-2020",
+    "section": "5.2",
+    "title": "Building Thermal Envelope and Fabric Load Tests",
+    "version": "2020",
+    "created": "2025-12-03",
+    "notes": "Test case definitions for validation of building simulation models"
+  },
+
+  "base_case": {
+    "case_id": "600",
+    "description": "Base Case - Low Mass Building",
+
+    "geometry": {
+      "length": 8.0,
+      "width": 6.0,
+      "height": 2.7,
+      "floor_area": 48.0,
+      "volume": 129.6,
+      "zone_sensible_heat_capacity_multiplier": 1.0
+    },
+
+    "surfaces": {
+      "south_wall": {
+        "area": 21.6,
+        "perimeter": 10.7,
+        "tilt": 90,
+        "azimuth": 180,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction": "LightweightWall",
+        "is_exterior": true
+      },
+      "north_wall": {
+        "area": 21.6,
+        "perimeter": 10.7,
+        "tilt": 90,
+        "azimuth": 0,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction": "LightweightWall",
+        "is_exterior": true
+      },
+      "east_wall": {
+        "area": 16.2,
+        "perimeter": 8.7,
+        "tilt": 90,
+        "azimuth": 90,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction": "LightweightWall",
+        "is_exterior": true
+      },
+      "west_wall": {
+        "area": 16.2,
+        "perimeter": 8.7,
+        "tilt": 90,
+        "azimuth": 270,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction": "LightweightWall",
+        "is_exterior": true
+      },
+      "roof": {
+        "area": 48.0,
+        "perimeter": 28.0,
+        "tilt": 0,
+        "azimuth": 0,
+        "type": "roof",
+        "roughness_index": 3,
+        "construction": "LightweightRoof",
+        "is_exterior": true
+      },
+      "floor": {
+        "area": 48.0,
+        "perimeter": 28.0,
+        "tilt": 180,
+        "azimuth": 0,
+        "type": "floor",
+        "roughness_index": 3,
+        "construction": "LightweightFloor",
+        "is_exterior": true
+      }
+    },
+
+    "materials": [
+      {
+        "name": "WoodSiding",
+        "thickness": 0.009,
+        "conductivity": 0.14,
+        "density": 530.0,
+        "specific_heat": 900.0,
+        "source": "ASHRAE 140-2020 Table B8-3"
+      },
+      {
+        "name": "FiberglassInsulation_Wall",
+        "thickness": 0.066,
+        "conductivity": 0.040,
+        "density": 12.0,
+        "specific_heat": 840.0,
+        "source": "ASHRAE 140-2020 Table B8-3"
+      },
+      {
+        "name": "Plasterboard",
+        "thickness": 0.012,
+        "conductivity": 0.16,
+        "density": 950.0,
+        "specific_heat": 840.0,
+        "source": "ASHRAE 140-2020 Table B8-3"
+      },
+      {
+        "name": "RoofDeck",
+        "thickness": 0.019,
+        "conductivity": 0.14,
+        "density": 530.0,
+        "specific_heat": 900.0,
+        "source": "ASHRAE 140-2020 Table B8-3"
+      },
+      {
+        "name": "FiberglassInsulation_Roof",
+        "thickness": 0.1118,
+        "conductivity": 0.040,
+        "density": 12.0,
+        "specific_heat": 840.0,
+        "source": "ASHRAE 140-2020 Table B8-3"
+      },
+      {
+        "name": "TimberFlooring",
+        "thickness": 0.025,
+        "conductivity": 0.14,
+        "density": 650.0,
+        "specific_heat": 1200.0,
+        "source": "ASHRAE 140-2020 Table B8-3"
+      },
+      {
+        "name": "InsulationBatt_Floor",
+        "thickness": 0.2,
+        "conductivity": 0.008,
+        "density": 12.0,
+        "specific_heat": 840.0,
+        "source": "ASHRAE 140-2020 (adjusted thickness/conductivity for numerical stability, R-value=25 m²K/W maintained)"
+      }
+    ],
+
+    "constructions": {
+      "LightweightWall": {
+        "layers": ["WoodSiding", "FiberglassInsulation_Wall", "Plasterboard"],
+        "u_value_target": 0.514,
+        "notes": "ASHRAE 140 Case 600 lightweight exterior wall"
+      },
+      "LightweightRoof": {
+        "layers": ["RoofDeck", "FiberglassInsulation_Roof", "Plasterboard"],
+        "u_value_target": 0.318,
+        "notes": "ASHRAE 140 Case 600 lightweight roof"
+      },
+      "LightweightFloor": {
+        "layers": ["TimberFlooring", "InsulationBatt_Floor"],
+        "u_value_target": 0.039,
+        "notes": "ASHRAE 140 Case 600 insulated floor"
+      }
+    },
+
+    "windows": [
+      {
+        "wall_name": "south_wall",
+        "area": 12.0,
+        "u_value": 3.0,
+        "shgc": 0.789,
+        "solar_distribution": {
+          "floor": 1.0
+        },
+        "notes": "ASHRAE 140 double-pane clear glass, 12 m² on south wall"
+      }
+    ],
+
+    "hvac": {
+      "model_type": "IdealLoadsHVAC",
+      "heating_capacity_w": 1000000000,
+      "cooling_capacity_w": 1000000000,
+      "heating_setpoint_c": 20.0,
+      "cooling_setpoint_c": 27.0,
+      "proportional_gain_w_k": 100000,
+      "notes": "Ideal loads with infinite capacity for BESTEST validation"
+    },
+
+    "infiltration": {
+      "method": "constant",
+      "ach_design": 0.5,
+      "notes": "0.5 ACH constant infiltration per ASHRAE 140"
+    },
+
+    "ventilation": {
+      "type": "none",
+      "open_window_ach": 0.0,
+      "notes": "No mechanical ventilation in base case"
+    },
+
+    "internal_gains": {
+      "sensible_w": 200.0,
+      "schedule": "constant",
+      "notes": "Constant 200W sensible internal gains"
+    },
+
+    "weather": {
+      "file": "Denver_CO.epw",
+      "notes": "ASHRAE 140-2020 TMY weather for Denver, Colorado"
+    },
+
+    "simulation_settings": {
+      "dt_minutes": 1,
+      "duration_days": 7,
+      "warmup_days": 3,
+      "start_date": "2020-01-01",
+      "notes": "1-minute timestep, short duration for initial testing"
+    },
+
+    "convection": {
+      "interior": "ASHRAE_Simple",
+      "exterior": "DOE2",
+      "notes": "Standard correlations for BESTEST"
+    }
+  },
+
+  "test_cases": [
+    {
+      "case_id": "600",
+      "description": "Base Case - Low Mass Building with South Windows",
+      "inherits_from": "base_case",
+      "modifications": {}
+    },
+    {
+      "case_id": "610",
+      "description": "Case 600 with South Shading",
+      "inherits_from": "base_case",
+      "modifications": {
+        "windows": [
+          {
+            "wall_name": "south_wall",
+            "area": 12.0,
+            "u_value": 3.0,
+            "shgc": 0.55,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "Shading approximated with reduced SHGC from 0.789 to 0.55 (shading geometry not yet implemented)"
+          }
+        ]
+      },
+      "notes": "Shading not yet implemented - approximated with reduced SHGC"
+    },
+    {
+      "case_id": "620",
+      "description": "East and West Windows (6 m² each)",
+      "inherits_from": "base_case",
+      "modifications": {
+        "windows": [
+          {
+            "wall_name": "east_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.789,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on east wall"
+          },
+          {
+            "wall_name": "west_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.789,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on west wall"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "630",
+      "description": "East/West Windows with Shading",
+      "inherits_from": "base_case",
+      "modifications": {
+        "windows": [
+          {
+            "wall_name": "east_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.55,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on east wall with shading (SHGC reduced from 0.789 to 0.55)"
+          },
+          {
+            "wall_name": "west_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.55,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on west wall with shading (SHGC reduced from 0.789 to 0.55)"
+          }
+        ]
+      },
+      "notes": "Shading approximated with reduced SHGC"
+    },
+    {
+      "case_id": "640",
+      "description": "Case 600 with Night Setback",
+      "inherits_from": "base_case",
+      "modifications": {
+        "hvac": {
+          "model_type": "IdealLoadsHVAC",
+          "heating_capacity_w": 1000000000,
+          "cooling_capacity_w": 1000000000,
+          "heating_setpoint_c": 20.0,
+          "cooling_setpoint_c": 27.0,
+          "proportional_gain_w_k": 100000,
+          "setback_schedule": {
+            "occupied_hours": [7, 23],
+            "occupied_heating_setpoint_c": 20.0,
+            "unoccupied_heating_setpoint_c": 10.0,
+            "occupied_cooling_setpoint_c": 27.0,
+            "unoccupied_cooling_setpoint_c": 27.0
+          },
+          "notes": "Night setback: heating setpoint drops to 10°C from 23:00-07:00"
+        }
+      }
+    },
+    {
+      "case_id": "650",
+      "description": "Case 600 with Night Ventilation",
+      "inherits_from": "base_case",
+      "modifications": {
+        "ventilation": {
+          "type": "scheduled",
+          "schedule": {
+            "night_hours": [18, 7],
+            "night_ach": 3.0,
+            "day_ach": 0.0
+          },
+          "notes": "3.0 ACH during night hours (18:00-07:00)"
+        }
+      },
+      "notes": "Schedule-based ventilation not yet fully implemented - may need custom handling"
+    },
+    {
+      "case_id": "900",
+      "description": "High Thermal Mass with South Windows",
+      "inherits_from": "base_case",
+      "modifications": {
+        "geometry": {
+          "length": 8.0,
+          "width": 6.0,
+          "height": 2.7,
+          "floor_area": 48.0,
+          "volume": 129.6,
+          "zone_sensible_heat_capacity_multiplier": 10.0
+        }
+      },
+      "notes": "High mass: zone_sensible_heat_capacity_multiplier increased from 1.0 to 10.0"
+    },
+    {
+      "case_id": "910",
+      "description": "High Mass with South Shading",
+      "inherits_from": "base_case",
+      "modifications": {
+        "geometry": {
+          "length": 8.0,
+          "width": 6.0,
+          "height": 2.7,
+          "floor_area": 48.0,
+          "volume": 129.6,
+          "zone_sensible_heat_capacity_multiplier": 10.0
+        },
+        "windows": [
+          {
+            "wall_name": "south_wall",
+            "area": 12.0,
+            "u_value": 3.0,
+            "shgc": 0.55,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "Shading approximated with reduced SHGC from 0.789 to 0.55"
+          }
+        ]
+      },
+      "notes": "High mass + south shading (SHGC reduced)"
+    },
+    {
+      "case_id": "920",
+      "description": "High Mass with East/West Windows",
+      "inherits_from": "base_case",
+      "modifications": {
+        "geometry": {
+          "length": 8.0,
+          "width": 6.0,
+          "height": 2.7,
+          "floor_area": 48.0,
+          "volume": 129.6,
+          "zone_sensible_heat_capacity_multiplier": 10.0
+        },
+        "windows": [
+          {
+            "wall_name": "east_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.789,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on east wall"
+          },
+          {
+            "wall_name": "west_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.789,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on west wall"
+          }
+        ]
+      },
+      "notes": "High mass + east/west windows"
+    },
+    {
+      "case_id": "930",
+      "description": "High Mass with East/West Shading",
+      "inherits_from": "base_case",
+      "modifications": {
+        "geometry": {
+          "length": 8.0,
+          "width": 6.0,
+          "height": 2.7,
+          "floor_area": 48.0,
+          "volume": 129.6,
+          "zone_sensible_heat_capacity_multiplier": 10.0
+        },
+        "windows": [
+          {
+            "wall_name": "east_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.55,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on east wall with shading (SHGC reduced)"
+          },
+          {
+            "wall_name": "west_wall",
+            "area": 6.0,
+            "u_value": 3.0,
+            "shgc": 0.55,
+            "solar_distribution": {"floor": 1.0},
+            "notes": "6 m² on west wall with shading (SHGC reduced)"
+          }
+        ]
+      },
+      "notes": "High mass + east/west shading (SHGC reduced)"
+    },
+    {
+      "case_id": "940",
+      "description": "High Mass with Night Setback",
+      "inherits_from": "base_case",
+      "modifications": {
+        "geometry": {
+          "length": 8.0,
+          "width": 6.0,
+          "height": 2.7,
+          "floor_area": 48.0,
+          "volume": 129.6,
+          "zone_sensible_heat_capacity_multiplier": 10.0
+        },
+        "hvac": {
+          "model_type": "IdealLoadsHVAC",
+          "heating_capacity_w": 1000000000,
+          "cooling_capacity_w": 1000000000,
+          "heating_setpoint_c": 20.0,
+          "cooling_setpoint_c": 27.0,
+          "proportional_gain_w_k": 100000,
+          "setback_schedule": {
+            "occupied_hours": [7, 23],
+            "occupied_heating_setpoint_c": 20.0,
+            "unoccupied_heating_setpoint_c": 10.0,
+            "occupied_cooling_setpoint_c": 27.0,
+            "unoccupied_cooling_setpoint_c": 27.0
+          },
+          "notes": "Night setback: heating setpoint drops to 10°C from 23:00-07:00"
+        }
+      },
+      "notes": "High mass + night setback"
+    },
+    {
+      "case_id": "950",
+      "description": "High Mass with Night Ventilation",
+      "inherits_from": "base_case",
+      "modifications": {
+        "geometry": {
+          "length": 8.0,
+          "width": 6.0,
+          "height": 2.7,
+          "floor_area": 48.0,
+          "volume": 129.6,
+          "zone_sensible_heat_capacity_multiplier": 10.0
+        },
+        "ventilation": {
+          "type": "scheduled",
+          "schedule": {
+            "night_hours": [18, 7],
+            "night_ach": 3.0,
+            "day_ach": 0.0
+          },
+          "notes": "3.0 ACH during night hours (18:00-07:00)"
+        }
+      },
+      "notes": "High mass + night ventilation"
+    }
+  ]
+}

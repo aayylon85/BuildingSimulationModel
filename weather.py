@@ -58,7 +58,128 @@ class SimpleSinusoidal:
             })
             
         return weather_data
-    
+
+
+class EPWWeatherLoader:
+    """
+    Loads EnergyPlus Weather (EPW) files for BESTEST validation.
+
+    EPW files are standard EnergyPlus weather files with 8 header lines
+    followed by 8760 hourly data records (for a full year).
+    """
+    def __init__(self, epw_path: str):
+        """
+        Initializes the EPW weather loader.
+
+        Args:
+            epw_path (str): Path to the EPW file
+        """
+        self.epw_path = epw_path
+        self.df_hourly = None
+        self._parse_epw()
+
+    def _parse_epw(self):
+        """
+        Parses the EPW file and stores hourly weather data.
+
+        EPW Format:
+        - Lines 1-8: Header information
+        - Lines 9+: Hourly data (comma-separated)
+        """
+        try:
+            # Read EPW file, skipping first 8 header lines
+            df = pd.read_csv(
+                self.epw_path,
+                skiprows=8,
+                header=None,
+                low_memory=False
+            )
+
+            # EPW column definitions (partial - we only need key columns)
+            # 0: Year, 1: Month, 2: Day, 3: Hour, 4: Minute
+            # 6: Dry Bulb Temperature (C)
+            # 21: Wind Speed (m/s)
+            # 20: Wind Direction (degrees)
+            # 13: Global Horizontal Radiation (Wh/m2) - needs conversion to W/m2
+
+            # Create datetime index
+            df['datetime'] = pd.to_datetime(
+                df[[0, 1, 2]].rename(columns={0: 'year', 1: 'month', 2: 'day'}),
+                errors='coerce'
+            ) + pd.to_timedelta(df[3] - 1, unit='h')  # Hour field is 1-24, convert to 0-23
+
+            # Extract and rename relevant columns
+            self.df_hourly = pd.DataFrame({
+                'date': df['datetime'],
+                'temperature_2m': df[6],  # Dry bulb temperature
+                'wind_speed_10m': df[21],  # Wind speed
+                'wind_direction_10m': df[20],  # Wind direction
+                'shortwave_radiation_instant': df[13]  # Global horizontal irradiance (already in W/m2 in EPW)
+            })
+
+            # Set datetime as index
+            self.df_hourly.set_index('date', inplace=True)
+
+            # Localize to UTC for consistency with WeatherFromFile
+            self.df_hourly.index = self.df_hourly.index.tz_localize('UTC')
+
+            print(f"Successfully loaded EPW file: {self.epw_path}")
+            print(f"Weather data spans: {self.df_hourly.index[0]} to {self.df_hourly.index[-1]}")
+
+        except FileNotFoundError:
+            raise FileNotFoundError(f"EPW file not found: {self.epw_path}")
+        except Exception as e:
+            raise RuntimeError(f"Error parsing EPW file {self.epw_path}: {e}")
+
+    def generate_weather_data(self, time_hours):
+        """
+        Generates interpolated weather data for the simulation timesteps.
+
+        Args:
+            time_hours (np.array): Array of simulation time in hours
+
+        Returns:
+            list[dict]: List of weather data dictionaries matching simulation format
+        """
+        if self.df_hourly is None:
+            raise RuntimeError("EPW data has not been parsed.")
+
+        # Assume simulation starts at the first timestamp in the EPW file
+        # (In practice, BESTEST cases run for a full year)
+        start_dt = self.df_hourly.index[0]
+
+        # Convert simulation hours to actual timestamps
+        target_index = [start_dt + timedelta(hours=float(t)) for t in time_hours]
+        target_dt_index = pd.DatetimeIndex(target_index)
+
+        # Combine indices for interpolation
+        combined_index = self.df_hourly.index.union(target_dt_index).sort_values()
+
+        # Reindex and interpolate
+        df_interp = self.df_hourly.reindex(combined_index).interpolate(method='time').ffill().bfill()
+
+        # Select only target simulation steps
+        df_final = df_interp.loc[target_dt_index]
+
+        # Convert to list of dicts
+        weather_data = []
+        temps = df_final['temperature_2m'].values
+        wind_speeds = df_final['wind_speed_10m'].values
+        wind_dirs = df_final['wind_direction_10m'].values
+        solars = df_final['shortwave_radiation_instant'].values
+
+        for i in range(len(df_final)):
+            weather_data.append({
+                'air_temp_c': float(temps[i]),
+                'wind_speed_local_ms': float(wind_speeds[i]),
+                'wind_speed_10m_ms': float(wind_speeds[i]),
+                'wind_direction_deg': float(wind_dirs[i]),
+                'solar_irradiance_w_m2': max(0.0, float(solars[i]))
+            })
+
+        return weather_data
+
+
 class WeatherFromFile:
     """
     Generates weather data by fetching hourly data from a file/API and interpolating
@@ -182,7 +303,8 @@ class WeatherFromFile:
 
 WEATHER_GENERATOR_MAP = {
     "simple_sinusoidal": SimpleSinusoidal,
-    "file": WeatherFromFile
+    "file": WeatherFromFile,
+    "epw": EPWWeatherLoader
 }
 
 def get_weather_generator(config):
@@ -216,5 +338,11 @@ def get_weather_generator(config):
     elif weather_type == "file":
         # File model needs the full config to access Location and Settings
         return GeneratorClass(config)
+    elif weather_type == "epw":
+        # EPW model needs the EPW file path from weather config
+        epw_path = weather_config.get('epw_path')
+        if not epw_path:
+            raise ValueError("EPW weather type requires 'epw_path' in weather config")
+        return GeneratorClass(epw_path)
     else:
         return GeneratorClass(config)

@@ -288,6 +288,65 @@ class PIDControlledHVAC:
         return q_hvac
 
 
+class IdealLoadsHVAC:
+    """
+    Ideal loads HVAC system with effectively infinite capacity for BESTEST validation.
+
+    This system approximates ideal loads by using a very high proportional gain,
+    ensuring that setpoints are met exactly (within numerical precision).
+    Capacity is set to a very high value (1e9 W) to simulate infinite capacity.
+
+    This is the recommended HVAC model for ASHRAE Standard 140 BESTEST validation.
+    """
+    def __init__(self, heating_capacity_w=1e9, cooling_capacity_w=1e9, proportional_gain_w_k=100000):
+        """
+        Initializes the ideal loads HVAC system.
+
+        Args:
+            heating_capacity_w (float): Maximum heating capacity (default: 1e9 W ~ infinite)
+            cooling_capacity_w (float): Maximum cooling capacity (default: 1e9 W ~ infinite)
+            proportional_gain_w_k (float): Proportional gain (default: 100000 W/K for tight control)
+        """
+        self.heating_capacity_w = heating_capacity_w
+        self.cooling_capacity_w = cooling_capacity_w
+        self.proportional_gain_w_k = proportional_gain_w_k
+
+    def calculate_hvac_power(self, T_air_prev, T_heating_setpoint, T_cooling_setpoint):
+        """
+        Calculates the required HVAC power using very high gain proportional control.
+
+        The high gain ensures that the zone temperature tracks the setpoint very closely,
+        approximating ideal loads behavior.
+
+        Args:
+            T_air_prev (float): Previous timestep zone air temperature (°C)
+            T_heating_setpoint (float): Heating setpoint temperature (°C)
+            T_cooling_setpoint (float): Cooling setpoint temperature (°C)
+
+        Returns:
+            float: HVAC power in Watts (positive for heating, negative for cooling)
+        """
+        q_hvac = 0.0
+
+        # Heating demand
+        if T_air_prev < T_heating_setpoint:
+            heating_error = T_heating_setpoint - T_air_prev
+            ideal_heating_power = self.proportional_gain_w_k * heating_error
+            q_hvac = min(ideal_heating_power, self.heating_capacity_w)
+
+        # Cooling demand
+        elif T_air_prev > T_cooling_setpoint:
+            cooling_error = T_air_prev - T_cooling_setpoint
+            ideal_cooling_power = self.proportional_gain_w_k * cooling_error
+            q_hvac = -min(ideal_cooling_power, self.cooling_capacity_w)
+
+        # Within deadband (between heating and cooling setpoints)
+        else:
+            q_hvac = 0.0
+
+        return q_hvac
+
+
 def create_hvac_system(hvac_props: dict, dt_seconds: float):
     """
     Factory function to create an HVAC system object from config properties.
@@ -333,7 +392,14 @@ def create_hvac_system(hvac_props: dict, dt_seconds: float):
                 kd=hvac_props.get('kd', 0),      # Default if not in config
                 dt_seconds=dt_seconds
             )
-            
+
+        elif model_type == 'IdealLoadsHVAC':
+            return IdealLoadsHVAC(
+                heating_capacity_w=hvac_props.get('heating_capacity_w', 1e9),
+                cooling_capacity_w=hvac_props.get('cooling_capacity_w', 1e9),
+                proportional_gain_w_k=hvac_props.get('proportional_gain_w_k', 100000)
+            )
+
         else:
             raise ValueError(f"Unknown HVAC model_type in config: '{model_type}'")
             

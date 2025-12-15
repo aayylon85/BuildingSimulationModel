@@ -11,7 +11,18 @@ class AirExchangeManager:
     """
     def __init__(self, air_exchange_data, zone_volume):
         self.zone_volume_m3 = zone_volume
-        self.infiltration = InfiltrationFlowCoefficient(air_exchange_data['infiltration'])
+
+        # Determine infiltration model type
+        infiltration_config = air_exchange_data['infiltration']
+        infiltration_type = infiltration_config.get('type', 'flow_coefficient')
+
+        if infiltration_type == 'constant_ach':
+            self.infiltration = ConstantACHInfiltration(infiltration_config, zone_volume)
+        elif infiltration_type == 'flow_coefficient':
+            self.infiltration = InfiltrationFlowCoefficient(infiltration_config)
+        else:
+            raise ValueError(f"Unknown infiltration type: '{infiltration_type}'")
+
         self.ventilation_config = air_exchange_data['ventilation']
 
     def get_mass_flow_rate_coeff_w_k(self, T_zone_c, T_ext_c, wind_speed_ms,
@@ -59,13 +70,50 @@ class InfiltrationFlowCoefficient:
     def calculate_flow_rate(self, T_zone_c, T_ext_c, wind_speed_ms):
         """Calculates the infiltration flow rate."""
         delta_T_abs = abs(T_zone_c - T_ext_c)
-        
+
         delta_P_stack = self.Cs * delta_T_abs
         delta_P_wind = self.Cw * (self.s * wind_speed_ms)**2
-        
+
         delta_P_total = (delta_P_stack**2 + delta_P_wind**2)**0.5
-        
+
         flow_rate_m3_s = self.c * (delta_P_total**self.n)
+        return flow_rate_m3_s
+
+
+class ConstantACHInfiltration:
+    """
+    Constant air change rate (ACH) infiltration model for BESTEST validation.
+
+    This model provides a constant infiltration rate independent of temperature
+    difference or wind speed, as specified in ASHRAE Standard 140 BESTEST cases.
+    """
+    def __init__(self, config, zone_volume_m3):
+        """
+        Initializes the constant ACH infiltration model.
+
+        Args:
+            config (dict): Configuration with 'constant_ach' key
+            zone_volume_m3 (float): Zone volume in m³
+        """
+        self.ach = config['constant_ach']
+        self.zone_volume_m3 = zone_volume_m3
+
+    def calculate_flow_rate(self, T_zone_c, T_ext_c, wind_speed_ms):
+        """
+        Calculates the constant infiltration flow rate.
+
+        Temperature and wind speed are ignored - flow rate is constant.
+
+        Args:
+            T_zone_c (float): Zone temperature (°C) - ignored
+            T_ext_c (float): External temperature (°C) - ignored
+            wind_speed_ms (float): Wind speed (m/s) - ignored
+
+        Returns:
+            float: Infiltration flow rate (m³/s)
+        """
+        # Convert ACH to m³/s: volume * ACH / 3600 seconds/hour
+        flow_rate_m3_s = self.zone_volume_m3 * self.ach / 3600.0
         return flow_rate_m3_s
 
 

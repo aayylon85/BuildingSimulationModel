@@ -9,28 +9,50 @@ class CondFDSolver:
     Handles the discretization of a construction and populates the relevant rows
     of a larger, coupled system of linear equations for transient heat conduction.
     """
-    def __init__(self, construction, dt_seconds, space_discretization_const=3.0):
+    def __init__(self, construction, dt_seconds, space_discretization_const=3.0, max_nodes_per_layer=20):
         """
         Initializes the solver and discretizes the construction into nodes.
+
+        Args:
+            construction: List of Material namedtuples
+            dt_seconds: Timestep in seconds
+            space_discretization_const: Spatial discretization constant (default: 3.0)
+            max_nodes_per_layer: Maximum nodes per layer to limit matrix size (default: 20)
         """
         self.dt = dt_seconds
+        self.max_nodes_per_layer = max_nodes_per_layer
         self.nodes = []
         self._discretize(construction, space_discretization_const)
 
     def _discretize(self, construction, space_discretization_const):
         """Creates the grid of calculation nodes based on material properties."""
+        import warnings
         for material in reversed(construction):
             alpha = material.conductivity / (material.density * material.specific_heat)
             dx = np.sqrt(space_discretization_const * alpha * self.dt)
             num_nodes_layer = int(np.ceil(material.thickness / dx))
+
+            # Apply maximum nodes per layer limit
+            if num_nodes_layer > self.max_nodes_per_layer:
+                warnings.warn(
+                    f"Layer '{material.name}' would have {num_nodes_layer} nodes with dx={dx:.6f}m. "
+                    f"Limiting to {self.max_nodes_per_layer} nodes for numerical stability. "
+                    f"New dx={material.thickness/self.max_nodes_per_layer:.6f}m",
+                    RuntimeWarning
+                )
+                num_nodes_layer = self.max_nodes_per_layer
+
+            # Ensure minimum of 3 nodes per layer for accuracy
+            num_nodes_layer = max(3, num_nodes_layer)
+
             actual_dx = material.thickness / num_nodes_layer
-            
+
             for _ in range(num_nodes_layer):
                 self.nodes.insert(0, {
                     'T': 20.0,
-                    'k': material.conductivity, 
-                    'rho': material.density, 
-                    'cp': material.specific_heat, 
+                    'k': material.conductivity,
+                    'rho': material.density,
+                    'cp': material.specific_heat,
                     'dx': actual_dx
                 })
     

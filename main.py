@@ -69,7 +69,10 @@ def run_simulation_from_config(config_path):
                     dt_seconds=dt_sec,
                     windows_data=config['windows'],
                     air_exchange_data=config.get('air_exchange'),
-                    zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0)
+                    zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0),
+                    max_nodes_per_layer=sim_settings.get('max_nodes_per_layer', 20),
+                    hvac_coupling_mode=sim_settings.get('hvac_coupling_mode', 'auto'),
+                    hvac_max_power_rate_w_s=sim_settings.get('hvac_max_power_rate_w_s', 50000.0)
                    )
 
         # --- 3. Define HVAC System from Config ---
@@ -103,7 +106,8 @@ def run_simulation_from_config(config_path):
         T_air_prev = zone.run_warmup(
             heating_setpoint_profile, cooling_setpoint_profile, weather_data,
             internal_gains_profile, interior_convection_model,
-            exterior_convection_model, hvac_system, stabilization_days
+            exterior_convection_model, hvac_system, stabilization_days,
+            use_adaptive_timestepping=sim_settings.get('use_adaptive_timestepping', True)
         )
         print("Warm-up complete. Starting main simulation.")
 
@@ -205,10 +209,11 @@ def run_simulation_from_config(config_path):
                 current_internal_gains,
                 current_heating_setpoint,
                 current_cooling_setpoint,
-                current_window_fraction, # Pass the dynamic value
+                current_window_fraction,  # Pass the dynamic value
                 interior_convection_model,
                 exterior_convection_model,
-                hvac_system
+                hvac_system,
+                use_adaptive_timestepping=sim_settings.get('use_adaptive_timestepping', True)
             )
             
             # --- (D) Store results ---

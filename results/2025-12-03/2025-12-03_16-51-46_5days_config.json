@@ -13,9 +13,7 @@
     "dt_minutes": 1,
     "duration_days": 5,
     "start_date": "2020-01-01",
-    "stabilization_days": 3,
-    "hvac_coupling_mode": "auto",
-    "hvac_max_power_rate_w_s": 50000.0
+    "stabilization_days": 3
   },
   "location": {
     "latitude": 50.9105,

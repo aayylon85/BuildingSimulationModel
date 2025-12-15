@@ -13,19 +13,29 @@ class ZoneHeatBalanceSolver:
     fabric nodes and the single zone air node.
     """
     def __init__(self, all_surfaces_props, constructions, dt_seconds,
-                 zone_volume, zone_sensible_heat_capacity_multiplier):
+                 zone_volume, zone_sensible_heat_capacity_multiplier,
+                 max_nodes_per_layer=20, hvac_coupling_mode='auto',
+                 hvac_max_power_rate_w_s=50000.0):
         """
         Initializes the solver, creates fabric solvers for each surface, and
         determines the total size of the system matrix.
-        
+
         Args:
             all_surfaces_props (dict): Dict of properties for each surface.
                 Must include a 'construction_name' key.
             constructions (dict): A dictionary mapping 'construction_name'
                 strings to CondFD-compatible construction objects.
-            ...
+            dt_seconds (float): Timestep in seconds
+            zone_volume (float): Volume of the zone in m³
+            zone_sensible_heat_capacity_multiplier (float): Multiplier for zone thermal mass
+            max_nodes_per_layer (int): Maximum nodes per construction layer (default: 20)
+            hvac_coupling_mode (str): HVAC coupling strategy - 'auto', 'implicit', or 'explicit' (default: 'auto')
+            hvac_max_power_rate_w_s (float): Max HVAC power rate of change for explicit coupling (default: 50000.0 W/s)
         """
         self.dt = dt_seconds
+        self.max_nodes_per_layer = max_nodes_per_layer
+        self.hvac_coupling_mode = hvac_coupling_mode
+        self.hvac_max_power_rate_w_s = hvac_max_power_rate_w_s
         self.fabric_solvers = {}
         self.surface_props = all_surfaces_props
         self.total_fabric_nodes = 0
@@ -40,15 +50,19 @@ class ZoneHeatBalanceSolver:
             if not construction_obj:
                 raise ValueError(f"Construction '{construction_name}' for surface "
                                  f"'{name}' not found in constructions dictionary.")
-            
-            solver = CondFDSolver(construction_obj, dt_seconds)
-            
-            
+
+            solver = CondFDSolver(construction_obj, dt_seconds,
+                                 max_nodes_per_layer=self.max_nodes_per_layer)
+
+
             self.fabric_solvers[name] = {'solver': solver, 'props': props}
             self.total_fabric_nodes += len(solver.nodes)
             
         self.air_thermal_mass = (zone_volume * AIR_DENSITY_KG_M3 * AIR_SPECIFIC_HEAT_J_KG_K * zone_sensible_heat_capacity_multiplier)
         self.air_capacitance_term = self.air_thermal_mass / self.dt
+
+        # Track previous HVAC power for rate limiting (explicit coupling only)
+        self.q_hvac_prev = 0.0
 
     def reduce_surface_area(self, surface_name, area_to_subtract):
         """Reduces a surface's area, e.g., to account for a window."""
@@ -64,19 +78,26 @@ class ZoneHeatBalanceSolver:
                      interior_convection_model, exterior_convection_model,
                      internal_gains_w, solar_gains_w_dict, hvac_power_w,
                      window_open_fraction,
-                     max_iterations=10, tolerance=0.01, temp_min_c=-50.0, temp_max_c=80.0): 
+                     max_iterations=50, tolerance=0.01, temp_min_c=-50.0, temp_max_c=80.0,
+                     relaxation_factor=0.7,
+                     hvac_system=None, heating_setpoint=None, cooling_setpoint=None):
         """
         Assembles and solves the matrix for one timestep using an
-        iterative approach for non-linear coefficients.
+        iterative approach for non-linear coefficients with under-relaxation.
 
         Args:
-            max_iterations (int): Maximum number of iterations for convergence.
-            tolerance (float): Convergence tolerance in degrees C.
-            temp_min_c (float): Minimum physically reasonable temperature (C).
-            temp_max_c (float): Maximum physically reasonable temperature (C).
+            max_iterations (int): Maximum number of iterations for convergence (default: 50).
+            tolerance (float): Convergence tolerance in degrees C (default: 0.01).
+            temp_min_c (float): Minimum physically reasonable temperature in C (default: -50).
+            temp_max_c (float): Maximum physically reasonable temperature in C (default: 80).
+            relaxation_factor (float): Under-relaxation factor for damping (0.5-0.9, default: 0.7).
+                Higher values converge faster but may oscillate. Lower values are more stable.
+            hvac_system: Optional HVAC system object for implicit coupling
+            heating_setpoint: Optional heating setpoint for implicit HVAC
+            cooling_setpoint: Optional cooling setpoint for implicit HVAC
 
         Returns:
-            tuple: (T_new, q_fabric_total, q_window_total, air_exchange_load)
+            tuple: (T_new, q_fabric_total, q_window_total, air_exchange_load, q_hvac)
 
         Raises:
             RuntimeError: If the matrix is singular or temperatures are out of bounds.
@@ -145,10 +166,71 @@ class ZoneHeatBalanceSolver:
 
             # --- Populate the final row for the Zone Air Heat Balance ---
             air_node_idx = self.total_fabric_nodes
-            
-            
-            B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w + hvac_power_w
-            A[air_node_idx, air_node_idx] = self.air_capacitance_term
+
+            # Determine if we should use implicit HVAC coupling (auto-detection)
+            use_implicit_hvac = False
+            if hvac_system is not None and heating_setpoint is not None and cooling_setpoint is not None:
+                # Check config override
+                if self.hvac_coupling_mode == 'explicit':
+                    use_implicit_hvac = False
+                elif self.hvac_coupling_mode == 'implicit':
+                    use_implicit_hvac = True
+                else:  # 'auto' mode
+                    # Auto mode: use implicit for high-gain proportional controllers only
+                    if hasattr(hvac_system, 'proportional_gain_w_k'):
+                        gain = hvac_system.proportional_gain_w_k
+                        # Use implicit if gain > 5000 W/K
+                        use_implicit_hvac = (gain > 5000.0)
+                    # For complex HVAC (StatefulHVAC, PID), use_implicit_hvac remains False
+
+            if use_implicit_hvac:
+                # Implicit HVAC: include proportional gain in matrix
+                # This path is only taken for high-gain proportional controllers
+                if hasattr(hvac_system, 'proportional_gain_w_k'):
+                    K_hvac = hvac_system.proportional_gain_w_k
+                    # Limit gain to prevent over-stiffness (max 10,000 W/K)
+                    K_hvac = min(K_hvac, 10000.0)
+
+                    # Determine which setpoint to use based on current temperature estimate
+                    T_air_guess = T_iter_guess[-1]
+                    if T_air_guess < heating_setpoint:
+                        # Heating mode: add gain to diagonal and setpoint to RHS
+                        A[air_node_idx, air_node_idx] = self.air_capacitance_term + K_hvac
+                        B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w + K_hvac * heating_setpoint
+                    elif T_air_guess > cooling_setpoint:
+                        # Cooling mode: add gain to diagonal and setpoint to RHS
+                        A[air_node_idx, air_node_idx] = self.air_capacitance_term + K_hvac
+                        B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w + K_hvac * cooling_setpoint
+                    else:
+                        # Deadband: no HVAC
+                        A[air_node_idx, air_node_idx] = self.air_capacitance_term
+                        B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w
+                else:
+                    # Explicit HVAC (fallback) with rate limiting
+                    max_power_change = self.hvac_max_power_rate_w_s * self.dt
+                    power_change = hvac_power_w - self.q_hvac_prev
+
+                    if abs(power_change) > max_power_change:
+                        hvac_power_w = self.q_hvac_prev + np.sign(power_change) * max_power_change
+
+                    self.q_hvac_prev = hvac_power_w
+
+                    B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w + hvac_power_w
+                    A[air_node_idx, air_node_idx] = self.air_capacitance_term
+            else:
+                # Explicit HVAC (original approach) with rate limiting
+                # Limit HVAC power rate of change for stability
+                max_power_change = self.hvac_max_power_rate_w_s * self.dt
+                power_change = hvac_power_w - self.q_hvac_prev
+
+                if abs(power_change) > max_power_change:
+                    hvac_power_w = self.q_hvac_prev + np.sign(power_change) * max_power_change
+
+                # Update tracked power for next timestep
+                self.q_hvac_prev = hvac_power_w
+
+                B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w + hvac_power_w
+                A[air_node_idx, air_node_idx] = self.air_capacitance_term
 
             node_offset = 0
             for name, solver_data in self.fabric_solvers.items():
@@ -179,7 +261,7 @@ class ZoneHeatBalanceSolver:
 
             # --- Solve the system for this iteration ---
             try:
-                T_new = np.linalg.solve(A, B)
+                T_computed = np.linalg.solve(A, B)
             except np.linalg.LinAlgError as e:
                 # Handle singular matrix with informative error
                 raise RuntimeError(
@@ -188,10 +270,22 @@ class ZoneHeatBalanceSolver:
                     "Check construction definitions, convection coefficients, or timestep size."
                 )
 
+            # --- Apply under-relaxation ---
+            T_new = relaxation_factor * T_computed + (1.0 - relaxation_factor) * T_iter_guess
+
             # --- Check for convergence ---
-            if np.allclose(T_new, T_iter_guess, atol=tolerance):
+            max_change = np.max(np.abs(T_new - T_iter_guess))
+            if max_change < tolerance:
                 converged = True
-                break # Converged
+                break  # Converged
+
+            # Log progress every 10 iterations if struggling to converge
+            if (iteration_count + 1) % 10 == 0:
+                warnings.warn(
+                    f"Convergence progress at iteration {iteration_count + 1}: "
+                    f"max temperature change = {max_change:.4f}°C (tolerance: {tolerance}°C)",
+                    RuntimeWarning
+                )
 
         # --- END of iterative loop ---
 
@@ -252,4 +346,12 @@ class ZoneHeatBalanceSolver:
         # q_air_exchange = (m_dot * C_p) * (T_air - T_outside)
         air_exchange_load = air_exchange_coeff * (T_air_new - weather['air_temp_c'])
 
-        return T_new, q_fabric_total, q_window_total, air_exchange_load
+        # Calculate actual HVAC power delivered
+        if use_implicit_hvac and hvac_system and hasattr(hvac_system, 'proportional_gain_w_k'):
+            # Calculate actual HVAC power based on final temperature
+            q_hvac_actual = hvac_system.calculate_hvac_power(T_air_new, heating_setpoint, cooling_setpoint)
+        else:
+            # Use the explicit hvac_power_w that was passed in
+            q_hvac_actual = hvac_power_w
+
+        return T_new, q_fabric_total, q_window_total, air_exchange_load, q_hvac_actual
