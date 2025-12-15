@@ -1,8 +1,8 @@
 {
   "simulation_settings": {
     "dt_minutes": 1,
-    "duration_days": 7,
-    "stabilization_days": 3,
+    "duration_days": 365,
+    "stabilization_days": 25,
     "start_date": "2020-01-01"
   },
   "zone_properties": {

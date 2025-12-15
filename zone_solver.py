@@ -346,12 +346,12 @@ class ZoneHeatBalanceSolver:
         # q_air_exchange = (m_dot * C_p) * (T_air - T_outside)
         air_exchange_load = air_exchange_coeff * (T_air_new - weather['air_temp_c'])
 
-        # Calculate actual HVAC power delivered
-        if use_implicit_hvac and hvac_system and hasattr(hvac_system, 'proportional_gain_w_k'):
-            # Calculate actual HVAC power based on final temperature
-            q_hvac_actual = hvac_system.calculate_hvac_power(T_air_new, heating_setpoint, cooling_setpoint)
-        else:
-            # Use the explicit hvac_power_w that was passed in
-            q_hvac_actual = hvac_power_w
+        # Calculate actual HVAC power delivered from energy balance
+        # Energy balance: C_air * dT/dt = -q_fabric - q_window - q_air_exchange + q_internal + q_hvac
+        # Solving for q_hvac:
+        dT_air = T_air_new - T_air_prev
+        q_hvac_actual = (self.air_thermal_mass * dT_air / self.dt +
+                         q_fabric_total + q_window_total + air_exchange_load -
+                         internal_gains_w)
 
         return T_new, q_fabric_total, q_window_total, air_exchange_load, q_hvac_actual

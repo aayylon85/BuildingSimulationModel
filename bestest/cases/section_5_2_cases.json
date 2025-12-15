@@ -209,10 +209,10 @@
 
     "simulation_settings": {
       "dt_minutes": 1,
-      "duration_days": 7,
-      "warmup_days": 3,
+      "duration_days": 365,
+      "warmup_days": 25,
       "start_date": "2020-01-01",
-      "notes": "1-minute timestep, short duration for initial testing"
+      "notes": "Full annual simulation per ASHRAE 140-2020 requirements"
     },
 
     "convection": {

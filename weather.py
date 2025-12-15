@@ -135,6 +135,10 @@ class EPWWeatherLoader:
         """
         Generates interpolated weather data for the simulation timesteps.
 
+        EPW files contain exactly one year (8760 hours) of data. This method
+        cycles/wraps the annual data to support warm-up periods and multi-year
+        simulations.
+
         Args:
             time_hours (np.array): Array of simulation time in hours
 
@@ -144,37 +148,49 @@ class EPWWeatherLoader:
         if self.df_hourly is None:
             raise RuntimeError("EPW data has not been parsed.")
 
-        # Assume simulation starts at the first timestamp in the EPW file
-        # (In practice, BESTEST cases run for a full year)
-        start_dt = self.df_hourly.index[0]
+        # EPW files are annual - use modulo to wrap hours beyond 8760
+        hours_per_year = 8760
 
-        # Convert simulation hours to actual timestamps
-        target_index = [start_dt + timedelta(hours=float(t)) for t in time_hours]
-        target_dt_index = pd.DatetimeIndex(target_index)
+        if len(self.df_hourly) != hours_per_year:
+            print(f"Warning: EPW file has {len(self.df_hourly)} hours instead of expected {hours_per_year}")
+            hours_per_year = len(self.df_hourly)
 
-        # Combine indices for interpolation
-        combined_index = self.df_hourly.index.union(target_dt_index).sort_values()
-
-        # Reindex and interpolate
-        df_interp = self.df_hourly.reindex(combined_index).interpolate(method='time').ffill().bfill()
-
-        # Select only target simulation steps
-        df_final = df_interp.loc[target_dt_index]
-
-        # Convert to list of dicts
         weather_data = []
-        temps = df_final['temperature_2m'].values
-        wind_speeds = df_final['wind_speed_10m'].values
-        wind_dirs = df_final['wind_direction_10m'].values
-        solars = df_final['shortwave_radiation_instant'].values
 
-        for i in range(len(df_final)):
+        for t_hr in time_hours:
+            # Wrap hour index to stay within annual data
+            wrapped_hour = t_hr % hours_per_year
+
+            # Get the two bounding hours for interpolation
+            hour_before = int(np.floor(wrapped_hour))
+            hour_after = int(np.ceil(wrapped_hour)) % hours_per_year
+
+            # Fractional part for interpolation
+            frac = wrapped_hour - hour_before
+
+            # Interpolate between hourly values
+            # Handle wrap-around case where hour_after might equal hour_before
+            if hour_after == hour_before:
+                temp = self.df_hourly.iloc[hour_before]['temperature_2m']
+                wind_speed = self.df_hourly.iloc[hour_before]['wind_speed_10m']
+                wind_dir = self.df_hourly.iloc[hour_before]['wind_direction_10m']
+                solar = self.df_hourly.iloc[hour_before]['shortwave_radiation_instant']
+            else:
+                temp = (1 - frac) * self.df_hourly.iloc[hour_before]['temperature_2m'] + \
+                       frac * self.df_hourly.iloc[hour_after]['temperature_2m']
+                wind_speed = (1 - frac) * self.df_hourly.iloc[hour_before]['wind_speed_10m'] + \
+                             frac * self.df_hourly.iloc[hour_after]['wind_speed_10m']
+                wind_dir = (1 - frac) * self.df_hourly.iloc[hour_before]['wind_direction_10m'] + \
+                           frac * self.df_hourly.iloc[hour_after]['wind_direction_10m']
+                solar = (1 - frac) * self.df_hourly.iloc[hour_before]['shortwave_radiation_instant'] + \
+                        frac * self.df_hourly.iloc[hour_after]['shortwave_radiation_instant']
+
             weather_data.append({
-                'air_temp_c': float(temps[i]),
-                'wind_speed_local_ms': float(wind_speeds[i]),
-                'wind_speed_10m_ms': float(wind_speeds[i]),
-                'wind_direction_deg': float(wind_dirs[i]),
-                'solar_irradiance_w_m2': max(0.0, float(solars[i]))
+                'air_temp_c': float(temp),
+                'wind_speed_local_ms': float(wind_speed),
+                'wind_speed_10m_ms': float(wind_speed),
+                'wind_direction_deg': float(wind_dir),
+                'solar_irradiance_w_m2': max(0.0, float(solar))
             })
 
         return weather_data
