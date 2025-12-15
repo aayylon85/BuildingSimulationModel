@@ -571,7 +571,7 @@ pip install -r requirements.txt --upgrade
 
 ## BESTEST Validation
 
-This simulator has been validated against ASHRAE Standard 140-2020 Section 5.2 (Building Thermal Envelope and Fabric Load Tests).
+
 
 ### Supported Test Cases
 
@@ -616,19 +616,6 @@ results/bestest_suite/bestest_validation_report.md
 - No geometric shading or obstruction modeling
 - Time-dependent schedules limited to occupied/unoccupied periods (no arbitrary time-based controls)
 
-## Contributing
-
-Contributions are welcome! Priority areas for improvement:
-- **BESTEST completeness**: Implement geometric shading, time-dependent schedules for remaining test cases
-- **Multi-zone capability**: Extend to multiple connected zones with inter-zone heat transfer
-- **Humidity and latent loads**: Add moisture balance equations and latent HVAC loads
-- **Ground heat transfer modeling**: Implement soil temperature models (ISO 13370 or similar)
-- **Integration of longwave radiation**: Complete exterior surface radiation exchange
-- **Solar position calculations**: Add solar angles calculation from lat/lon/time (currently uses weather data)
-- **Additional validation**: ASHRAE 140 Section 5.3 (mechanical systems), IEA BESTEST
-- **Unit tests**: Comprehensive test coverage for all physics modules
-- **Performance optimization**: Sparse matrix solvers, parallel execution for batch testing
-- **GUI**: Web-based or desktop interface for configuration and results visualization
 
 ## License
 
@@ -636,25 +623,6 @@ Contributions are welcome! Priority areas for improvement:
 
 ## References
 
-### Validation Standards
-- **ASHRAE Standard 140-2020**: "Standard Method of Test for the Evaluation of Building Energy Analysis Computer Programs"
-  - Section 5.2: Building Thermal Envelope and Fabric Load Tests (BESTEST)
-  - Available from: https://www.ashrae.org/
-
-### Convection Correlations
-- Walton, G.N. (1983). "Thermal Analysis Research Program Reference Manual". NBSIR 83-2655
-- ASHRAE Handbook of Fundamentals (2021). Chapter 26: Heat, Air, and Moisture Control in Building Assemblies
-- Sparrow, E.M., Ramsey, J.W., and Mass, E.A. (1979). "Effect of Finite Width on Heat Transfer and Fluid Flow about an Inclined Rectangular Plate". Journal of Heat Transfer, Vol. 101, pp. 199-204
-- Blocken, B., Defraeye, T., Derome, D., and Carmeliet, J. (2009). "High-resolution CFD simulations for forced convective heat transfer coefficients at the facade of a low-rise building". Building and Environment, Vol. 44, pp. 2396-2412
-
-### Building Physics
-- ASHRAE AIM-2 Model: "Handbook of Fundamentals" (2001). Chapter 26: Infiltration and Ventilation
-- ISO 13790 (2008): "Energy performance of buildings - Calculation of energy use for space heating and cooling"
-- ISO 13370 (2017): "Thermal performance of buildings - Heat transfer via the ground"
-
-### Numerical Methods
-- Pedersen, C.O., Fisher, D.E., and Liesen, R.J. (1997). "Development of a Heat Balance Procedure for Calculating Cooling Loads". ASHRAE Transactions, Vol. 103, Pt. 2
-- Seems, J.E. (1987). "Heat Transfer in Buildings". University of Wisconsin-Madison
 
 ## Contact
 
@@ -663,4 +631,4 @@ Contributions are welcome! Priority areas for improvement:
 ---
 
 **Last Updated**: December 2025
-**BESTEST Status**: 4 of 12 cases validated (Cases 600, 620, 900, 920)
+
