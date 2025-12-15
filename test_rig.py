@@ -223,7 +223,7 @@ class BESTESTRunner(TestRunner):
     def __init__(self, output_base_dir: str = "results/bestest_suite",
                  reference_results_path: Optional[str] = None):
         super().__init__(output_base_dir)
-        self.case_library = BESTESTCaseLibrary()
+        self.case_library = BESTESTCaseLibrary('bestest/cases/section_5_2_cases.json')
         self.config_builder = BESTESTConfigBuilder()
         self.reference_results = self._load_reference_results(reference_results_path)
 
@@ -236,8 +236,7 @@ class BESTESTRunner(TestRunner):
 
     def _discover_bestest_cases(self) -> List[str]:
         """Find all available BESTEST cases"""
-        self.case_library.load_from_json('bestest/cases/section_5_2_cases.json')
-        return list(self.case_library.cases.keys())
+        return self.case_library.list_cases()
 
     def run_full_bestest(self, case_ids: Optional[List[str]] = None) -> List[TestResult]:
         """Run all or specified BESTEST cases"""
@@ -286,19 +285,14 @@ class BESTESTRunner(TestRunner):
         for case_id in case_ids:
             # Generate config for this case
             case_spec = self.case_library.get_case(case_id)
-            config_dict = self.config_builder.build_config(case_spec)
 
-            # Save temporary config file
-            self.output_base_dir.mkdir(parents=True, exist_ok=True)
-            config_path = self.output_base_dir / f"case_{case_id}_config.json"
-
-            with open(config_path, 'w') as f:
-                json.dump(config_dict, f, indent=2)
+            # build_config() saves the config file and returns the path
+            config_path = self.config_builder.build_config(case_spec)
 
             configs.append(TestConfiguration(
                 case_id=case_id,
-                config_path=str(config_path),
-                description=case_spec.description
+                config_path=config_path,
+                description=case_spec['description']
             ))
 
         # Run all tests

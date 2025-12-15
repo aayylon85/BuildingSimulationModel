@@ -9,7 +9,7 @@
     "length": 8.0,
     "width": 6.0,
     "height": 2.7,
-    "zone_sensible_heat_capacity_multiplier": 1.0
+    "zone_sensible_heat_capacity_multiplier": 10.0
   },
   "geometry": {
     "exterior_surfaces": [

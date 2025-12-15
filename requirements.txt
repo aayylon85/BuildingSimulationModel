@@ -1,15 +1,15 @@
 # Building Simulation Model - Python Dependencies
 # Core numerical computing
-numpy>=1.24.0,<2.0.0
+numpy>=1.24.0
 
 # Data handling and analysis
-pandas>=2.0.0,<3.0.0
+pandas>=2.0.0
 
 # Plotting and visualization
-matplotlib>=3.7.0,<4.0.0
+matplotlib>=3.7.0
 
 # Weather data fetching
-openmeteo-requests>=1.0.0
+openmeteo-requests>=1.0.0pip
 requests-cache>=1.1.0
 retry-requests>=2.0.0
 
