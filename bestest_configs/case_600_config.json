@@ -3,7 +3,8 @@
     "dt_minutes": 1,
     "duration_days": 365,
     "stabilization_days": 25,
-    "start_date": "2020-01-01"
+    "start_date": "2020-01-01",
+    "enable_opaque_solar_absorption": true
   },
   "zone_properties": {
     "length": 8.0,
@@ -17,8 +18,7 @@
       "north_wall",
       "east_wall",
       "west_wall",
-      "roof",
-      "floor"
+      "roof"
     ],
     "surface_definitions": {
       "south_wall": {
@@ -84,6 +84,8 @@
       "conductivity": 0.14,
       "density": 530.0,
       "specific_heat": 900.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
       "source": "ASHRAE 140-2020 Table B8-3"
     },
     {
@@ -92,6 +94,8 @@
       "conductivity": 0.04,
       "density": 12.0,
       "specific_heat": 840.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
       "source": "ASHRAE 140-2020 Table B8-3"
     },
     {
@@ -100,6 +104,8 @@
       "conductivity": 0.16,
       "density": 950.0,
       "specific_heat": 840.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
       "source": "ASHRAE 140-2020 Table B8-3"
     },
     {
@@ -108,6 +114,8 @@
       "conductivity": 0.14,
       "density": 530.0,
       "specific_heat": 900.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
       "source": "ASHRAE 140-2020 Table B8-3"
     },
     {
@@ -116,6 +124,8 @@
       "conductivity": 0.04,
       "density": 12.0,
       "specific_heat": 840.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
       "source": "ASHRAE 140-2020 Table B8-3"
     },
     {
@@ -124,15 +134,59 @@
       "conductivity": 0.14,
       "density": 650.0,
       "specific_heat": 1200.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
       "source": "ASHRAE 140-2020 Table B8-3"
     },
     {
       "name": "InsulationBatt_Floor",
-      "thickness": 0.2,
-      "conductivity": 0.008,
-      "density": 12.0,
-      "specific_heat": 840.0,
-      "source": "ASHRAE 140-2020 (adjusted thickness/conductivity for numerical stability, R-value=25 m\u00b2K/W maintained)"
+      "thickness": 1.003,
+      "conductivity": 0.04,
+      "density": 0.01,
+      "specific_heat": 1.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-2 (minimum density/cp per specification)"
+    },
+    {
+      "name": "ConcreteBlock",
+      "thickness": 0.1,
+      "conductivity": 0.51,
+      "density": 1400.0,
+      "specific_heat": 1000.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (High-Mass exterior wall)"
+    },
+    {
+      "name": "FoamInsulation_Wall",
+      "thickness": 0.0615,
+      "conductivity": 0.04,
+      "density": 10.0,
+      "specific_heat": 1400.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (High-Mass exterior wall)"
+    },
+    {
+      "name": "ConcreteSlab",
+      "thickness": 0.08,
+      "conductivity": 1.13,
+      "density": 1400.0,
+      "specific_heat": 1000.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (High-Mass floor)"
+    },
+    {
+      "name": "InsulationBatt_Floor_HighMass",
+      "thickness": 1.007,
+      "conductivity": 0.04,
+      "density": 0.01,
+      "specific_heat": 1.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (minimum density/cp per specification)"
     }
   ],
   "constructions": {
@@ -155,16 +209,39 @@
         "TimberFlooring",
         "InsulationBatt_Floor"
       ]
+    },
+    "HighMassWall": {
+      "layers": [
+        "ConcreteBlock",
+        "FoamInsulation_Wall",
+        "WoodSiding"
+      ]
+    },
+    "HighMassFloor": {
+      "layers": [
+        "ConcreteSlab",
+        "InsulationBatt_Floor_HighMass"
+      ]
     }
   },
   "windows": [
     {
       "wall_name": "south_wall",
       "area": 12.0,
-      "u_value": 3.0,
+      "u_value": 2.1,
       "shgc": 0.789,
       "solar_distribution": {
-        "floor": 1.0
+        "floor": 0.642,
+        "roof": 0.167,
+        "south_wall": 0.027,
+        "north_wall": 0.053,
+        "east_wall": 0.038,
+        "west_wall": 0.038
+      },
+      "angular_dependence": {
+        "enabled": true,
+        "model": "ashrae_140_table_7_12",
+        "solar_lost_fraction": 0.035
       }
     }
   ],
@@ -179,7 +256,7 @@
   "air_exchange": {
     "infiltration": {
       "type": "constant_ach",
-      "constant_ach": 0.5
+      "constant_ach": 0.414
     },
     "ventilation": {
       "open_window_ach": 0.0

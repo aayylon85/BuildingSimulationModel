@@ -46,11 +46,13 @@ class InternalAdaptiveConvection:
             return 'VerticalWall'
 
         else: # Horizontal Surface (Floor or Roof/Ceiling)
-            surface_type = surface_props['type'].lower()
+            # Use tilt to distinguish floor (180°) from ceiling/roof (0°)
+            # Heated floor (warm at bottom) = STABLE stratification → lower convection
+            # Heated ceiling (warm at top) = UNSTABLE stratification → higher convection
             if delta_t > 0: # Heated surface
-                return 'UnstableHorizontal' if surface_type in ['floor', 'roof'] else 'StableHorizontal'
+                return 'StableHorizontal' if tilt == 180 else 'UnstableHorizontal'
             else: # Cooled surface
-                return 'StableHorizontal' if surface_type in ['floor', 'roof'] else 'UnstableHorizontal'
+                return 'UnstableHorizontal' if tilt == 180 else 'StableHorizontal'
 
     def _calculate_h(self, model_name, surface_data, zone_air_temp_c):
         """Dispatcher for the convection models."""

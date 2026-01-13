@@ -12,6 +12,12 @@ class AirExchangeManager:
     def __init__(self, air_exchange_data, zone_volume):
         self.zone_volume_m3 = zone_volume
 
+        # Validate required configuration sections exist
+        if 'infiltration' not in air_exchange_data:
+            raise ValueError("air_exchange_data must include 'infiltration' configuration")
+        if 'ventilation' not in air_exchange_data:
+            raise ValueError("air_exchange_data must include 'ventilation' configuration")
+
         # Determine infiltration model type
         infiltration_config = air_exchange_data['infiltration']
         infiltration_type = infiltration_config.get('type', 'flow_coefficient')

@@ -129,8 +129,90 @@ class ExternalLongwaveRadiation:
 
         # Total flux is the sum of all components
         total_flux = q_sky + q_air + q_ground + q_surrounding
-        
+
         return total_flux
+
+    def calculate_linearized_coefficient(
+        self,
+        surface_temperature_K: float,
+        air_temperature_K: float,
+        sky_temperature_K: float,
+        ground_surfaces=None,
+        surrounding_surfaces=None
+    ) -> float:
+        """
+        Calculate linearized radiation heat transfer coefficient for implicit treatment.
+
+        Instead of calculating q_lwr = ε·σ·F·(T_other^4 - T_surf^4), this method
+        calculates a linearized coefficient h_r such that:
+            q_lwr ≈ h_r · (T_other - T_surf)
+
+        The linearization is done using the previous iteration's temperature:
+            h_r = ε·σ·F·(T_other + T_surf)·(T_other² + T_surf²)
+
+        This allows h_r to be added to the A matrix diagonal, making the radiation
+        term implicit and greatly improving convergence.
+
+        Args:
+            surface_temperature_K: Exterior surface temperature (K) from previous iteration
+            air_temperature_K: Outdoor air temperature (K)
+            sky_temperature_K: Effective sky temperature (K)
+            ground_surfaces: List of tuples (view_factor, temperature_K) for ground surfaces
+            surrounding_surfaces: List of tuples (view_factor, temperature_K) for surrounding surfaces
+
+        Returns:
+            h_r: Linearized radiation heat transfer coefficient (W/m²·K)
+
+        References:
+            - EnergyPlus Engineering Reference, Section "Exterior Surface Heat Balance"
+            - ASHRAE Fundamentals 2021, Chapter 25 "Heat Transfer"
+        """
+        ground_surfaces = ground_surfaces or []
+        surrounding_surfaces = surrounding_surfaces or []
+
+        # View factor sanity check (same as calculate_flux)
+        total_ground_f = sum(f for f, t in ground_surfaces)
+        total_surrounding_f = sum(f for f, t in surrounding_surfaces)
+        total_f = self.f_sky + total_ground_f + total_surrounding_f
+        if not math.isclose(total_f, 1.0, rel_tol=1e-5):
+            raise ValueError(
+                f"The sum of view factors must be 1.0. "
+                f"Current sum: {total_f} (Sky: {self.f_sky}, "
+                f"Ground: {total_ground_f}, Surrounding: {total_surrounding_f})"
+            )
+
+        t_surf = surface_temperature_K
+        h_r_total = 0.0
+
+        # 1. Sky component: h_r_sky = ε·σ·F_sky·β·(T_sky + T_surf)·(T_sky² + T_surf²)
+        t_sky = sky_temperature_K
+        h_r_sky = (self.emissivity * STEFAN_BOLTZMANN * self.f_sky * self.beta *
+                   (t_sky + t_surf) * (t_sky**2 + t_surf**2))
+        h_r_total += h_r_sky
+
+        # 2. Air component: h_r_air = ε·σ·F_sky·(1-β)·(T_air + T_surf)·(T_air² + T_surf²)
+        t_air = air_temperature_K
+        h_r_air = (self.emissivity * STEFAN_BOLTZMANN * self.f_sky * (1.0 - self.beta) *
+                   (t_air + t_surf) * (t_air**2 + t_surf**2))
+        h_r_total += h_r_air
+
+        # 3. Ground components
+        for f_gnd, t_gnd in ground_surfaces:
+            if t_gnd < 0:
+                raise ValueError("Ground temperatures must be non-negative Kelvin.")
+            h_r_gnd = (self.emissivity * STEFAN_BOLTZMANN * f_gnd *
+                       (t_gnd + t_surf) * (t_gnd**2 + t_surf**2))
+            h_r_total += h_r_gnd
+
+        # 4. Surrounding surface components
+        for f_srd, t_srd in surrounding_surfaces:
+            if t_srd < 0:
+                raise ValueError("Surrounding surface temperatures must be non-negative Kelvin.")
+            h_r_srd = (self.emissivity * STEFAN_BOLTZMANN * f_srd *
+                       (t_srd + t_surf) * (t_srd**2 + t_surf**2))
+            h_r_total += h_r_srd
+
+        return h_r_total
 
 
 if __name__ == '__main__':

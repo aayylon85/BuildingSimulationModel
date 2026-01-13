@@ -56,15 +56,16 @@ def create_boundary_conditions(config, num_steps, time_hours):
         else:
             heating_setpoint_profile[i] = schedules['unoccupied_heating_setpoint_c']
             cooling_setpoint_profile[i] = schedules['unoccupied_cooling_setpoint_c']
-            internal_gains_profile[i] = 0
-            
+            internal_gains_profile[i] = schedules['unoccupied_internal_gains_w']
+
         # --- Dynamic Internal Gains (based on specific occupants) ---
+        # ADD occupant-based gains to the scheduled base gains (don't overwrite!)
         num_occupants_present = 0
         for occ_data in occupants:
             if occ_data.get('work_start_hr', 9) <= hour_of_day < occ_data.get('work_end_hr', 17):
                 num_occupants_present += 1
-                
-        internal_gains_profile[i] = num_occupants_present * gain_per_occupant
+
+        internal_gains_profile[i] += num_occupants_present * gain_per_occupant
 
         
     return (

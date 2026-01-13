@@ -10,8 +10,9 @@ This class now provides:
 import numpy as np
 import types
 from zone_solver import ZoneHeatBalanceSolver
-from windows import SimpleWindow 
+from windows import SimpleWindow, AngularDependentWindow
 from air_exchange import AirExchangeManager
+from solar_irradiance import SolarIrradianceCalculator
 
 class Zone:
     """
@@ -23,7 +24,9 @@ class Zone:
                  windows_data, air_exchange_data,
                  zone_sensible_heat_capacity_multiplier=1.0,
                  max_nodes_per_layer=20, hvac_coupling_mode='auto',
-                 hvac_max_power_rate_w_s=50000.0):
+                 hvac_max_power_rate_w_s=50000.0,
+                 internal_gains_convective_fraction=0.40,
+                 enable_opaque_solar_absorption=False):
         """
         Initializes the zone and its thermal properties.
 
@@ -38,7 +41,12 @@ class Zone:
             max_nodes_per_layer: Maximum nodes per construction layer for numerical stability (default: 20)
             hvac_coupling_mode: HVAC coupling strategy - 'auto', 'implicit', or 'explicit' (default: 'auto')
             hvac_max_power_rate_w_s: Max HVAC power rate of change for explicit coupling (default: 50000.0 W/s)
+            internal_gains_convective_fraction: Fraction of internal gains that is convective
+                (default: 0.40 per ASHRAE 140). Remainder is radiative.
+            enable_opaque_solar_absorption: Enable solar absorption on exterior opaque surfaces (default: False)
         """
+        # Store configurable internal gains split
+        self.internal_gains_convective_fraction = internal_gains_convective_fraction
         self.dimensions = zone_properties
         self.dt_sec = dt_seconds
 
@@ -55,27 +63,85 @@ class Zone:
             zone_volume, zone_sensible_heat_capacity_multiplier,
             max_nodes_per_layer=max_nodes_per_layer,
             hvac_coupling_mode=hvac_coupling_mode,
-            hvac_max_power_rate_w_s=hvac_max_power_rate_w_s
+            hvac_max_power_rate_w_s=hvac_max_power_rate_w_s,
+            enable_opaque_solar_absorption=enable_opaque_solar_absorption
         )
         
         self.windows = {}
+        # Store surface definitions for later use (e.g., solar calculations)
+        self.surface_definitions = geometry_data['surface_definitions']
+
         # Create windows and adjust parent wall areas
         if windows_data:
             for i, win_data in enumerate(windows_data):
                 parent_wall_name = win_data['wall_name']
-                self.solver.reduce_surface_area(parent_wall_name, win_data['area'])
+                window_area = win_data['area']
+
+                # Validate window area doesn't exceed parent wall area
+                parent_surface = self.surface_definitions.get(parent_wall_name)
+                if parent_surface is None:
+                    raise ValueError(f"Window references non-existent wall '{parent_wall_name}'")
+
+                # Get current wall area from solver (may have been reduced by previous windows)
+                current_wall_area = self.solver.surface_props.get(parent_wall_name, {}).get(
+                    'area', parent_surface.get('area', 0)
+                )
+                if window_area > current_wall_area:
+                    raise ValueError(
+                        f"Window area ({window_area} m2) exceeds remaining wall area "
+                        f"({current_wall_area} m2) for wall '{parent_wall_name}'"
+                    )
+
+                self.solver.reduce_surface_area(parent_wall_name, window_area)
                 win_name = f"Window_{i+1}_{parent_wall_name}"
                 ratios = win_data.get('solar_distribution', {}) # Corrected key
-                self.windows[win_name] = SimpleWindow(
-                   win_data['area'], 
-                   win_data['u_value'], 
-                   win_data['shgc'],
-                   ratios 
-                )
+
+                # Get parent wall orientation for solar calculations
+                parent_surface = self.surface_definitions.get(parent_wall_name, {})
+                tilt = parent_surface.get('tilt', 90)  # Default to vertical
+                azimuth = parent_surface.get('azimuth', 180)  # Default to south
+
+                # Check if angular dependence is enabled
+                angular_config = win_data.get('angular_dependence', {})
+                use_angular = angular_config.get('enabled', False)
+
+                if use_angular:
+                    # Use angular-dependent window (ASHRAE 140 Table 7-12)
+                    window_obj = AngularDependentWindow(
+                        win_data['area'],
+                        win_data['u_value'],
+                        win_data['shgc'],
+                        ratios,
+                        angular_config,
+                        glass_fraction=win_data.get('glass_fraction', 1.0)
+                    )
+                else:
+                    # Use simple window (constant SHGC, backward compatible)
+                    window_obj = SimpleWindow(
+                        win_data['area'],
+                        win_data['u_value'],
+                        win_data['shgc'],
+                        ratios,
+                        glass_fraction=win_data.get('glass_fraction', 1.0)
+                    )
+
+                self.windows[win_name] = {
+                    'window': window_obj,
+                    'tilt': tilt,
+                    'azimuth': azimuth,
+                    'parent_wall': parent_wall_name,
+                    'uses_angular_model': use_angular
+                }
         
         self.air_exchange_manager = None
         if air_exchange_data:
             self.air_exchange_manager = AirExchangeManager(air_exchange_data, zone_volume)
+
+        # Initialize solar irradiance calculator for surface-specific calculations
+        self.solar_calc = SolarIrradianceCalculator(
+            diffuse_model='perez',  # Use Perez anisotropic sky model
+            ground_reflectance=0.2  # Default ground albedo
+        )
 
 
     def run_warmup(self, heating_setpoint_profile, cooling_setpoint_profile,
@@ -269,6 +335,11 @@ class Zone:
                 for solver_data in self.solver.fabric_solvers.values():
                     solver_data['solver'].dt = old_dt
 
+        # Defensive: should never reach here - loop should always return or raise
+        raise RuntimeError(
+            "Unexpected exit from adaptive timestepping loop without result"
+        )
+
     def run_simulation_step(self, T_air_prev, current_weather,
                             current_internal_gains, current_heating_setpoint,
                             current_cooling_setpoint, current_window_fraction,
@@ -284,19 +355,51 @@ class Zone:
         # --- Calculate Solar Gains ---
         solar_gains_w_dict = {}
         q_solar_total_gain_for_plotting = 0.0
-        irradiance = current_weather.get('solar_irradiance_w_m2', 0)
 
-        for win_name, win in self.windows.items():
-            # Note: T_air_prev is used for window conduction calculation
-            q_cond_window, q_solar_window = win.calculate_heat_flow(
-                T_air_prev, 
-                current_weather['air_temp_c'], 
-                irradiance
-            )
-            
+        for win_name, win_dict in self.windows.items():
+            win = win_dict['window']  # Extract window object
+            tilt = win_dict['tilt']
+            azimuth = win_dict['azimuth']
+            uses_angular = win_dict.get('uses_angular_model', False)
+
+            # Calculate surface-specific irradiance for this window
+            if current_weather.get('is_sunlit', False):
+                irrad_result = self.solar_calc.calculate_surface_irradiance(
+                    weather_data=current_weather,
+                    surface_tilt_deg=tilt,
+                    surface_azimuth_deg=azimuth
+                )
+                incident_angle_deg = irrad_result.get('incident_angle_deg', 90.0)
+            else:
+                # No sunlight - set all components to zero
+                irrad_result = {
+                    'beam': 0.0,
+                    'diffuse_sky': 0.0,
+                    'ground_reflected': 0.0,
+                    'total': 0.0
+                }
+                incident_angle_deg = 90.0
+
+            # Calculate window heat flows based on window type
+            if uses_angular:
+                # Angular-dependent window: pass irradiance components and incident angle
+                q_cond_window, q_solar_window = win.calculate_heat_flow(
+                    T_air_prev,
+                    current_weather['air_temp_c'],
+                    irrad_result,  # Pass components dict
+                    incident_angle_deg
+                )
+            else:
+                # Simple window: pass total irradiance only (backward compatible)
+                q_cond_window, q_solar_window = win.calculate_heat_flow(
+                    T_air_prev,
+                    current_weather['air_temp_c'],
+                    irrad_result['total']  # Pass total irradiance
+                )
+
             # This is the solar energy that enters the zone
             q_solar_total_gain_for_plotting += q_solar_window
-            
+
             ratios = win.ratios
             if not ratios or sum(ratios.values()) == 0:
                 # Default: 100% of solar gain goes to the floor
@@ -311,11 +414,39 @@ class Zone:
                         if surface not in solar_gains_w_dict:
                             solar_gains_w_dict[surface] = 0.0
                         solar_gains_w_dict[surface] += gain_share
-            
+
+        # --- Split Internal Gains into Convective and Radiative Components ---
+        # Per ASHRAE 140 / EnergyPlus BESTEST reference: default 40% convective, 60% radiative
+        convective_fraction = self.internal_gains_convective_fraction
+        radiative_fraction = 1.0 - convective_fraction
+
+        internal_gains_convective = current_internal_gains * convective_fraction
+        internal_gains_radiative = current_internal_gains * radiative_fraction
+
+        # Distribute radiative component area-weighted across ALL interior surfaces
+        # Per ASHRAE 140: "60% radiative distributed uniformly among zone interior surfaces (area-weighted distribution)"
+        if internal_gains_radiative > 0:
+            # Calculate total interior surface area
+            total_interior_area = 0.0
+            for surface_name, solver_data in self.solver.fabric_solvers.items():
+                area = solver_data['props']['area']
+                total_interior_area += area
+
+            # Distribute proportionally to each surface based on area
+            if total_interior_area > 0:
+                for surface_name, solver_data in self.solver.fabric_solvers.items():
+                    area = solver_data['props']['area']
+                    fraction = area / total_interior_area
+                    radiative_to_surface = internal_gains_radiative * fraction
+
+                    if surface_name not in solar_gains_w_dict:
+                        solar_gains_w_dict[surface_name] = 0.0
+                    solar_gains_w_dict[surface_name] += radiative_to_surface
+
         # --- Use adaptive or direct solve based on flag ---
         if use_adaptive_timestepping:
             result = self._solve_step_adaptive(
-                T_air_prev, current_weather, current_internal_gains,
+                T_air_prev, current_weather, internal_gains_convective,
                 current_heating_setpoint, current_cooling_setpoint,
                 current_window_fraction, interior_convection_model,
                 exterior_convection_model, hvac_system, solar_gains_w_dict
@@ -334,7 +465,7 @@ class Zone:
             all_new_temps, q_fabric, q_window, q_air_exchange, q_hvac_actual = self.solver.solve_step(
                 T_air_prev, current_weather, self.windows, self.air_exchange_manager,
                 interior_convection_model, exterior_convection_model,
-                current_internal_gains,
+                internal_gains_convective,
                 solar_gains_w_dict,
                 q_hvac,
                 current_window_fraction,

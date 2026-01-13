@@ -6,6 +6,8 @@ import types
 import warnings
 from fabric_heat_transfer import CondFDSolver
 from constants import AIR_DENSITY_KG_M3, AIR_SPECIFIC_HEAT_J_KG_K
+from exterior_longwave_rad import ExternalLongwaveRadiation
+from solar_irradiance import SolarIrradianceCalculator
 
 class ZoneHeatBalanceSolver:
     """
@@ -15,7 +17,8 @@ class ZoneHeatBalanceSolver:
     def __init__(self, all_surfaces_props, constructions, dt_seconds,
                  zone_volume, zone_sensible_heat_capacity_multiplier,
                  max_nodes_per_layer=20, hvac_coupling_mode='auto',
-                 hvac_max_power_rate_w_s=50000.0):
+                 hvac_max_power_rate_w_s=50000.0,
+                 enable_opaque_solar_absorption=False):
         """
         Initializes the solver, creates fabric solvers for each surface, and
         determines the total size of the system matrix.
@@ -31,14 +34,25 @@ class ZoneHeatBalanceSolver:
             max_nodes_per_layer (int): Maximum nodes per construction layer (default: 20)
             hvac_coupling_mode (str): HVAC coupling strategy - 'auto', 'implicit', or 'explicit' (default: 'auto')
             hvac_max_power_rate_w_s (float): Max HVAC power rate of change for explicit coupling (default: 50000.0 W/s)
+            enable_opaque_solar_absorption (bool): Enable solar absorption on exterior opaque surfaces (default: False)
         """
         self.dt = dt_seconds
         self.max_nodes_per_layer = max_nodes_per_layer
         self.hvac_coupling_mode = hvac_coupling_mode
         self.hvac_max_power_rate_w_s = hvac_max_power_rate_w_s
+        self.enable_opaque_solar_absorption = enable_opaque_solar_absorption
         self.fabric_solvers = {}
         self.surface_props = all_surfaces_props
         self.total_fabric_nodes = 0
+
+        # Create solar irradiance calculator if opaque solar absorption is enabled
+        if self.enable_opaque_solar_absorption:
+            self.solar_calc = SolarIrradianceCalculator(
+                diffuse_model='perez',
+                ground_reflectance=0.2
+            )
+        else:
+            self.solar_calc = None
 
         
         for name, props in self.surface_props.items():
@@ -54,6 +68,12 @@ class ZoneHeatBalanceSolver:
             solver = CondFDSolver(construction_obj, dt_seconds,
                                  max_nodes_per_layer=self.max_nodes_per_layer)
 
+            # Extract optical properties from exterior surface material
+            # For exterior surfaces, use the properties from the first layer (exterior)
+            if construction_obj and len(construction_obj) > 0:
+                exterior_material = construction_obj[0]  # First layer is exterior surface
+                props['solar_absorptance'] = exterior_material.solar_absorptance
+                props['thermal_emissivity'] = exterior_material.thermal_emissivity
 
             self.fabric_solvers[name] = {'solver': solver, 'props': props}
             self.total_fabric_nodes += len(solver.nodes)
@@ -101,9 +121,14 @@ class ZoneHeatBalanceSolver:
 
         Raises:
             RuntimeError: If the matrix is singular or temperatures are out of bounds.
+            ValueError: If required weather data keys are missing.
         """
-        
-        
+        # Validate required weather data keys
+        required_weather_keys = ['air_temp_c', 'wind_speed_local_ms']
+        missing_keys = [k for k in required_weather_keys if k not in weather]
+        if missing_keys:
+            raise ValueError(f"Missing required weather data keys: {missing_keys}")
+
         num_eq = self.total_fabric_nodes + 1
         
         # Create initial guess for T_new using previous timestep's values
@@ -146,12 +171,77 @@ class ZoneHeatBalanceSolver:
                 h_in = interior_convection_model.calculate_h_c(temp_surface_data, T_air_guess)
                 h_in_values[name] = h_in 
 
-            
+
                 h_out = 0.0 # Default for non-exterior surfaces
+                h_exterior_lwr = 0.0
+                T_exterior_rad = weather['air_temp_c']
+
                 if props['is_exterior']:
                     T_surf_out_guess = T_iter_guess[node_offset + num_nodes - 1]
                     surface_props_for_ext_hc = {**props, 'surface_temp_c': T_surf_out_guess}
                     h_out = exterior_convection_model.calculate_hc(surface_props_for_ext_hc, weather)
+
+                    # Get sky temperature from weather with fallback
+                    T_air_K = weather['air_temp_c'] + 273.15
+                    if 'sky_temp_k' in weather:
+                        T_sky_K = weather['sky_temp_k']
+                    else:
+                        # Fallback: simple clear-sky depression
+                        T_sky_K = T_air_K - 11.0
+
+                    # Calculate linearized radiation coefficient
+                    lwr_model = ExternalLongwaveRadiation(
+                        surface_emissivity=props.get('thermal_emissivity', 0.9),
+                        surface_tilt_angle_deg=props.get('tilt', 90.0)
+                    )
+
+                    T_surf_K = T_surf_out_guess + 273.15
+
+                    # For ground surface, assume it's at air temperature
+                    # View factor to ground is (1 - f_sky)
+                    f_ground = 1.0 - lwr_model.f_sky
+                    ground_surfaces = [(f_ground, T_air_K)] if f_ground > 0 else []
+
+                    h_exterior_lwr = lwr_model.calculate_linearized_coefficient(
+                        surface_temperature_K=T_surf_K,
+                        air_temperature_K=T_air_K,
+                        sky_temperature_K=T_sky_K,
+                        ground_surfaces=ground_surfaces
+                    )
+
+                    # Calculate effective radiation temperature (weighted average)
+                    # T_rad_eff = (β·f_sky·T_sky + (1-β)·f_sky·T_air + f_ground·T_ground) / total_f
+                    # Since total_f = 1.0 and ground is at T_air, this simplifies
+                    beta = lwr_model.beta
+                    f_sky = lwr_model.f_sky
+                    T_exterior_rad = (beta * f_sky * (T_sky_K - 273.15) +
+                                     (1.0 - beta) * f_sky * weather['air_temp_c'] +
+                                     f_ground * weather['air_temp_c'])
+
+                # --- Exterior Surface Solar Absorption ---
+                # Calculate surface-specific solar irradiance for exterior opaque surfaces
+                exterior_solar_absorbed_w_m2 = 0.0
+
+                if (self.enable_opaque_solar_absorption and
+                    props['is_exterior'] and
+                    self.solar_calc is not None and
+                    weather.get('is_sunlit', False)):
+
+                    # Get surface orientation
+                    surface_tilt = props.get('tilt', 90.0)  # Default vertical
+                    surface_azimuth = props.get('azimuth', 180.0)  # Default south
+
+                    # Calculate surface-specific irradiance using Perez model
+                    irrad_result = self.solar_calc.calculate_surface_irradiance(
+                        weather_data=weather,
+                        surface_tilt_deg=surface_tilt,
+                        surface_azimuth_deg=surface_azimuth
+                    )
+
+                    # Apply solar absorptance to total incident irradiance
+                    total_irradiance = irrad_result.get('total', 0.0)
+                    solar_absorptance = props.get('solar_absorptance', 0.6)  # Default 0.6 per ASHRAE 140
+                    exterior_solar_absorbed_w_m2 = total_irradiance * solar_absorptance
 
                 # --- Get solar gains for this surface ---
                 surface_solar_gain_w = solar_gains_w_dict.get(name, 0.0)
@@ -159,8 +249,11 @@ class ZoneHeatBalanceSolver:
                 solver.populate_matrix_equations(
                     A, B, node_offset, self.total_fabric_nodes,
                     h_in, h_out, weather['air_temp_c'],
-                    props['area'],           
-                    surface_solar_gain_w   
+                    props['area'],
+                    surface_solar_gain_w,
+                    h_exterior_longwave=h_exterior_lwr,
+                    T_exterior_radiation=T_exterior_rad,
+                    exterior_solar_absorbed_w_m2=exterior_solar_absorbed_w_m2
                 )
                 node_offset += num_nodes
 
@@ -205,21 +298,12 @@ class ZoneHeatBalanceSolver:
                         # Deadband: no HVAC
                         A[air_node_idx, air_node_idx] = self.air_capacitance_term
                         B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w
-                else:
-                    # Explicit HVAC (fallback) with rate limiting
-                    max_power_change = self.hvac_max_power_rate_w_s * self.dt
-                    power_change = hvac_power_w - self.q_hvac_prev
-
-                    if abs(power_change) > max_power_change:
-                        hvac_power_w = self.q_hvac_prev + np.sign(power_change) * max_power_change
-
-                    self.q_hvac_prev = hvac_power_w
-
-                    B[air_node_idx] = self.air_capacitance_term * T_air_prev + internal_gains_w + hvac_power_w
-                    A[air_node_idx, air_node_idx] = self.air_capacitance_term
             else:
                 # Explicit HVAC (original approach) with rate limiting
                 # Limit HVAC power rate of change for stability
+                # Note: This correctly handles heating/cooling mode switching because
+                # np.sign(power_change) returns the appropriate direction (+1 for heating
+                # ramp-up, -1 for cooling), limiting the rate of change in either direction.
                 max_power_change = self.hvac_max_power_rate_w_s * self.dt
                 power_change = hvac_power_w - self.q_hvac_prev
 
@@ -242,7 +326,8 @@ class ZoneHeatBalanceSolver:
                 A[air_node_idx, node_offset] -= h_in * area
                 node_offset += len(solver_data['solver'].nodes)
                 
-            for window in windows.values():
+            for win_dict in windows.values():
+                window = win_dict['window']  # Extract window object from dict
                 u_eff = window.u_value * window.area
                 A[air_node_idx, air_node_idx] += u_eff
                 B[air_node_idx] += u_eff * weather['air_temp_c']
@@ -339,7 +424,8 @@ class ZoneHeatBalanceSolver:
             q_fabric_total += h_in_final * props['area'] * (T_air_new - T_surf_in_new)
             node_offset += len(solver_data['solver'].nodes)
 
-        for window in windows.values():
+        for win_dict in windows.values():
+            window = win_dict['window']  # Extract window object from dict
             # q_window = U * A * (T_air - T_outside)
             q_window_total += window.u_value * window.area * (T_air_new - weather['air_temp_c'])
             

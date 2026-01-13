@@ -28,8 +28,21 @@ class CondFDSolver:
         """Creates the grid of calculation nodes based on material properties."""
         import warnings
         for material in reversed(construction):
+            # Validate material has positive thickness
+            if material.thickness <= 0:
+                raise ValueError(
+                    f"Material '{material.name}' has invalid thickness: {material.thickness}. "
+                    "All layers must have positive thickness."
+                )
             alpha = material.conductivity / (material.density * material.specific_heat)
-            dx = np.sqrt(space_discretization_const * alpha * self.dt)
+
+            # Use tighter discretization for high-conductivity materials (concrete, etc.)
+            # to better capture thermal wave penetration in high-mass constructions
+            if material.conductivity > 0.5:
+                dx = np.sqrt(1.5 * alpha * self.dt)
+            else:
+                dx = np.sqrt(space_discretization_const * alpha * self.dt)
+
             num_nodes_layer = int(np.ceil(material.thickness / dx))
 
             # Apply maximum nodes per layer limit
@@ -68,13 +81,29 @@ class CondFDSolver:
         for i, node in enumerate(self.nodes):
             node['T'] = new_temperatures[i]
 
-    def populate_matrix_equations(self, A, B, node_offset, air_node_idx, 
+    def populate_matrix_equations(self, A, B, node_offset, air_node_idx,
                                 h_inside, h_outside, T_outside_air,
-                                surface_area, solar_gain_w=0.0):
+                                surface_area, solar_gain_w=0.0,
+                                exterior_longwave_w_m2=0.0,
+                                exterior_solar_absorbed_w_m2=0.0,
+                                h_exterior_longwave=0.0,
+                                T_exterior_radiation=None):
         """
         Populates the rows of the main A and B matrices corresponding to this
         fabric construction's nodes.
+
+        Args:
+            exterior_longwave_w_m2: Net exterior longwave radiation flux (W/m²) [DEPRECATED]
+                                   Use h_exterior_longwave instead for better convergence
+            exterior_solar_absorbed_w_m2: Solar radiation absorbed at exterior surface (W/m²)
+            h_exterior_longwave: Linearized radiation heat transfer coefficient (W/m²·K)
+                                Treated implicitly by adding to A matrix diagonal
+            T_exterior_radiation: Effective radiation temperature (°C) - weighted average of
+                                 T_sky, T_air, and T_ground. If None, uses T_outside_air
         """
+        # Use effective radiation temperature if provided, otherwise fall back to air temp
+        if T_exterior_radiation is None:
+            T_exterior_radiation = T_outside_air
         N = len(self.nodes)
         T_old = np.array([node['T'] for node in self.nodes])
 
@@ -99,10 +128,23 @@ class CondFDSolver:
         capacitance = rho * cp * dx / self.dt
         k_west = (self.nodes[N-2]['k'] + k) / 2
         dx_west = (self.nodes[N-2]['dx'] + dx) / 2
-        
-        A[idx, idx - 1] = (-k_west / dx_west) * surface_area 
-        A[idx, idx] = (capacitance + h_outside + k_west / dx_west) * surface_area 
-        B[idx] = (capacitance * T_old[N-1] + h_outside * T_outside_air) * surface_area
+
+        A[idx, idx - 1] = (-k_west / dx_west) * surface_area
+
+        # Add linearized radiation coefficient to A matrix diagonal for implicit treatment
+        # This greatly improves convergence compared to explicit treatment
+        A[idx, idx] = (capacitance + h_outside + h_exterior_longwave + k_west / dx_west) * surface_area
+
+        # Exterior boundary condition: q″αsol + q″LWR + q″conv = q″ko
+        # With linearized radiation: q″LWR ≈ h_r·(T_rad_eff - T_surf)
+        # where h_r is in the A matrix and T_rad_eff contribution is in B vector
+        # Use convection with T_outside_air and radiation with T_exterior_radiation
+        q_exterior_w_m2 = (h_outside * T_outside_air +
+                          h_exterior_longwave * T_exterior_radiation +
+                          exterior_longwave_w_m2 +  # Keep for backward compatibility (will be 0)
+                          exterior_solar_absorbed_w_m2)
+
+        B[idx] = (capacitance * T_old[N-1] + q_exterior_w_m2) * surface_area
         
         # Internal nodes
         for i in range(1, N - 1):

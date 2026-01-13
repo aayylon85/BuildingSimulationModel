@@ -3,8 +3,10 @@ Defines classes for generating weather data for the thermal simulation.
 """
 import numpy as np
 import pandas as pd
-from datetime import timedelta
+from datetime import timedelta, datetime
 from weather_import import get_hourly_weather
+from sky_temperature import SkyTemperatureCalculator
+from solar_position import SolarPositionCalculator
 
 class SimpleSinusoidal:
     """
@@ -76,7 +78,48 @@ class EPWWeatherLoader:
         """
         self.epw_path = epw_path
         self.df_hourly = None
+        self.sky_temp_calc = SkyTemperatureCalculator(model='clark_allen')
+
+        # Parse location from EPW header for solar position calculations
+        self._parse_location()
+
+        # Initialize solar position calculator with location
+        self.solar_calc = SolarPositionCalculator(
+            latitude=self.latitude,
+            longitude=self.longitude,
+            timezone_offset_hours=self.tz_offset
+        )
+
         self._parse_epw()
+
+    def _parse_location(self):
+        """
+        Parse location data from EPW file header (line 1).
+
+        EPW LOCATION line format:
+        LOCATION,City,State,Country,Source,WMO,Lat,Lon,TZ,Elev
+        Example: LOCATION,DENVER INTL AP,CO,USA,TMY3,725650,39.83,-104.65,-7.0,1650.0
+        """
+        try:
+            with open(self.epw_path, 'r') as f:
+                location_line = f.readline().strip()
+
+            parts = location_line.split(',')
+            if parts[0] != 'LOCATION':
+                raise ValueError(f"Expected LOCATION header, got: {parts[0]}")
+
+            self.location_name = f"{parts[1]}, {parts[2]}, {parts[3]}"
+            self.latitude = float(parts[6])
+            self.longitude = float(parts[7])
+            self.tz_offset = float(parts[8])
+            self.elevation = float(parts[9])
+
+            print(f"EPW Location: {self.location_name}")
+            print(f"  Latitude: {self.latitude}°, Longitude: {self.longitude}°")
+            print(f"  Timezone: UTC{self.tz_offset:+.1f}, Elevation: {self.elevation}m")
+
+        except Exception as e:
+            raise RuntimeError(f"Error parsing EPW location header: {e}")
 
     def _parse_epw(self):
         """
@@ -95,12 +138,23 @@ class EPWWeatherLoader:
                 low_memory=False
             )
 
-            # EPW column definitions (partial - we only need key columns)
-            # 0: Year, 1: Month, 2: Day, 3: Hour, 4: Minute
-            # 6: Dry Bulb Temperature (C)
-            # 21: Wind Speed (m/s)
-            # 20: Wind Direction (degrees)
-            # 13: Global Horizontal Radiation (Wh/m2) - needs conversion to W/m2
+            # EPW column definitions (0-based pandas indexing, EPW Field N = df[N-1])
+            # Reference: https://bigladdersoftware.com/epx/docs/8-3/auxiliary-programs/
+            #            energyplus-weather-file-epw-data-dictionary.html
+            #
+            # EPW/TMY3 format - using standard EnergyPlus field definitions:
+            #
+            # df[0-5]: Year, Month, Day, Hour (1-24), Minute, Data Source/Uncertainty
+            # df[6]: Dry Bulb Temperature (°C) - EPW Field 7
+            # df[13]: Global Horizontal Radiation GHI (Wh/m²) - EPW Field 14 ← USED FOR SOLAR
+            # df[14]: Direct Normal Radiation DNI (Wh/m²) - EPW Field 15 ← FOR FUTURE USE
+            # df[15]: Diffuse Horizontal Radiation DHI (Wh/m²) - EPW Field 16 ← FOR FUTURE USE
+            # df[20]: Wind Direction (degrees) - EPW Field 21
+            # df[21]: Wind Speed (m/s) - EPW Field 22
+            #
+            # Note: Field 11 (df[10]) may contain extraterrestrial radiation values
+            # Note: Field 13 (df[12]) contains non-zero values at night - quality flags
+            # Note: Wh/m² values are numerically equivalent to W/m² for hourly averages
 
             # Create datetime index
             df['datetime'] = pd.to_datetime(
@@ -111,14 +165,62 @@ class EPWWeatherLoader:
             # Extract and rename relevant columns
             self.df_hourly = pd.DataFrame({
                 'date': df['datetime'],
-                'temperature_2m': df[6],  # Dry bulb temperature
-                'wind_speed_10m': df[21],  # Wind speed
-                'wind_direction_10m': df[20],  # Wind direction
-                'shortwave_radiation_instant': df[13]  # Global horizontal irradiance (already in W/m2 in EPW)
+                'temperature_2m': df[6],  # Dry bulb temperature (°C)
+                'wind_speed_10m': df[21],  # Wind speed (m/s)
+                'wind_direction_10m': df[20],  # Wind direction (degrees)
+                'shortwave_radiation_instant': df[13],  # GHI (Wh/m²) - EPW Field 14
+                'direct_normal_radiation': df[14],  # DNI (Wh/m²) - EPW Field 15
+                'diffuse_horizontal_radiation': df[15]  # DHI (Wh/m²) - EPW Field 16
             })
 
             # Set datetime as index
             self.df_hourly.set_index('date', inplace=True)
+
+            # === DIAGNOSTIC: Verify time indexing ===
+            print("\n=== EPW TIME INDEXING CHECK ===")
+            print("EPW Hour field uses 1-24 format (hour ENDING timestamp)")
+            print("First 3 hours of parsed data:")
+            for i in range(3):
+                epw_hour = df.iloc[i][3]
+                timestamp = self.df_hourly.index[i]
+                ghi = self.df_hourly.iloc[i]['shortwave_radiation_instant']
+                print(f"  EPW Hour {epw_hour:2.0f} → {timestamp.strftime('%Y-%m-%d %H:%M')} | GHI: {ghi:5.1f} Wh/m²")
+            print("===================================\n")
+
+            # === DIAGNOSTIC: Verify solar data columns (TEMPORARY - REMOVE AFTER VALIDATION) ===
+            print("=== EPW SOLAR DATA CHECK (TMY3 FORMAT) ===")
+
+            # Check midnight (Hour 1, index 0)
+            print("Midnight check (Hour 1):")
+            idx_midnight = 0
+            if len(df) > idx_midnight:
+                ghi_midnight = df.iloc[idx_midnight][13]  # Field 14
+                dni_midnight = df.iloc[idx_midnight][14]  # Field 15
+                dhi_midnight = df.iloc[idx_midnight][15]  # Field 16
+                print(f"  GHI (df[13]/Field14): {ghi_midnight:.1f} Wh/m² (must be 0 at night)")
+                print(f"  DNI (df[14]/Field15): {dni_midnight:.1f} Wh/m²")
+                print(f"  DHI (df[15]/Field16): {dhi_midnight:.1f} Wh/m²")
+                if ghi_midnight == 0 and dni_midnight == 0 and dhi_midnight == 0:
+                    print("  ✓ All solar values correctly zero at midnight")
+                else:
+                    print(f"  ⚠️  WARNING: Non-zero solar at midnight!")
+
+            # Check sunny morning (Hour 9, index 8)
+            print("\nDaytime check (Hour 9):")
+            idx_day = 8
+            if len(df) > idx_day:
+                ghi_day = df.iloc[idx_day][13]  # Field 14
+                dni_day = df.iloc[idx_day][14]  # Field 15
+                dhi_day = df.iloc[idx_day][15]  # Field 16
+                field11_day = df.iloc[idx_day][10]  # Previously tested field
+                print(f"  GHI (df[13]/Field14): {ghi_day:.1f} Wh/m² ← USING THIS (standard EPW)")
+                print(f"  df[10]/Field11:       {field11_day:.1f} Wh/m² (extraterrestrial radiation)")
+                print(f"  DNI (df[14]/Field15): {dni_day:.1f} Wh/m²")
+                print(f"  DHI (df[15]/Field16): {dhi_day:.1f} Wh/m²")
+                print(f"  Physics check: GHI ≈ DNI×cos(zenith) + DHI")
+                print(f"  Simulation will use: {self.df_hourly.iloc[idx_day]['shortwave_radiation_instant']:.1f} Wh/m²")
+
+            print("==========================================\n")
 
             # Localize to UTC for consistency with WeatherFromFile
             self.df_hourly.index = self.df_hourly.index.tz_localize('UTC')
@@ -175,6 +277,8 @@ class EPWWeatherLoader:
                 wind_speed = self.df_hourly.iloc[hour_before]['wind_speed_10m']
                 wind_dir = self.df_hourly.iloc[hour_before]['wind_direction_10m']
                 solar = self.df_hourly.iloc[hour_before]['shortwave_radiation_instant']
+                dni = self.df_hourly.iloc[hour_before]['direct_normal_radiation']
+                dhi = self.df_hourly.iloc[hour_before]['diffuse_horizontal_radiation']
             else:
                 temp = (1 - frac) * self.df_hourly.iloc[hour_before]['temperature_2m'] + \
                        frac * self.df_hourly.iloc[hour_after]['temperature_2m']
@@ -184,13 +288,41 @@ class EPWWeatherLoader:
                            frac * self.df_hourly.iloc[hour_after]['wind_direction_10m']
                 solar = (1 - frac) * self.df_hourly.iloc[hour_before]['shortwave_radiation_instant'] + \
                         frac * self.df_hourly.iloc[hour_after]['shortwave_radiation_instant']
+                dni = (1 - frac) * self.df_hourly.iloc[hour_before]['direct_normal_radiation'] + \
+                      frac * self.df_hourly.iloc[hour_after]['direct_normal_radiation']
+                dhi = (1 - frac) * self.df_hourly.iloc[hour_before]['diffuse_horizontal_radiation'] + \
+                      frac * self.df_hourly.iloc[hour_after]['diffuse_horizontal_radiation']
+
+            # Calculate sky temperature for longwave radiation
+            air_temp_k = float(temp) + 273.15
+            sky_temp_k = self.sky_temp_calc.calculate_sky_temperature(
+                air_temp_k=air_temp_k,
+                cloud_cover_fraction=0.0  # EPW doesn't provide cloud cover, assume clear sky
+            )
+
+            # Calculate sun position for this timestep
+            # Convert simulation time to datetime
+            timestamp = self.df_hourly.index[0] + timedelta(hours=float(t_hr))
+            # Remove timezone for sun position calculation (uses local time)
+            timestamp_local = timestamp.replace(tzinfo=None)
+
+            zenith_deg, azimuth_deg, extraterrestrial, is_sunlit = \
+                self.solar_calc.calculate_sun_position(timestamp_local)
 
             weather_data.append({
                 'air_temp_c': float(temp),
                 'wind_speed_local_ms': float(wind_speed),
                 'wind_speed_10m_ms': float(wind_speed),
                 'wind_direction_deg': float(wind_dir),
-                'solar_irradiance_w_m2': max(0.0, float(solar))
+                'solar_irradiance_w_m2': max(0.0, float(solar)),  # Legacy GHI field
+                'solar_ghi_w_m2': max(0.0, float(solar)),  # Global horizontal
+                'solar_dni_w_m2': max(0.0, float(dni)),  # Direct normal
+                'solar_dhi_w_m2': max(0.0, float(dhi)),  # Diffuse horizontal
+                'sun_zenith_deg': zenith_deg,
+                'sun_azimuth_deg': azimuth_deg,
+                'extraterrestrial_w_m2': extraterrestrial,
+                'is_sunlit': is_sunlit,
+                'sky_temp_k': sky_temp_k
             })
 
         return weather_data

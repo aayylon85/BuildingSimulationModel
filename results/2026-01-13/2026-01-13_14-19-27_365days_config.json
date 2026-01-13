@@ -1,0 +1,307 @@
+{
+  "simulation_settings": {
+    "dt_minutes": 1,
+    "duration_days": 365,
+    "stabilization_days": 25,
+    "start_date": "2020-01-01"
+  },
+  "zone_properties": {
+    "length": 8.0,
+    "width": 6.0,
+    "height": 2.7,
+    "zone_sensible_heat_capacity_multiplier": 1.0
+  },
+  "geometry": {
+    "exterior_surfaces": [
+      "south_wall",
+      "north_wall",
+      "east_wall",
+      "west_wall",
+      "roof"
+    ],
+    "surface_definitions": {
+      "south_wall": {
+        "area": 21.6,
+        "perimeter": 10.7,
+        "tilt": 90,
+        "azimuth": 180,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction_name": "LightweightWall"
+      },
+      "north_wall": {
+        "area": 21.6,
+        "perimeter": 10.7,
+        "tilt": 90,
+        "azimuth": 0,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction_name": "LightweightWall"
+      },
+      "east_wall": {
+        "area": 16.2,
+        "perimeter": 8.7,
+        "tilt": 90,
+        "azimuth": 90,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction_name": "LightweightWall"
+      },
+      "west_wall": {
+        "area": 16.2,
+        "perimeter": 8.7,
+        "tilt": 90,
+        "azimuth": 270,
+        "type": "wall",
+        "roughness_index": 3,
+        "construction_name": "LightweightWall"
+      },
+      "roof": {
+        "area": 48.0,
+        "perimeter": 28.0,
+        "tilt": 0,
+        "azimuth": 0,
+        "type": "roof",
+        "roughness_index": 3,
+        "construction_name": "LightweightRoof"
+      },
+      "floor": {
+        "area": 48.0,
+        "perimeter": 28.0,
+        "tilt": 180,
+        "azimuth": 0,
+        "type": "floor",
+        "roughness_index": 3,
+        "construction_name": "LightweightFloor"
+      }
+    }
+  },
+  "materials": [
+    {
+      "name": "WoodSiding",
+      "thickness": 0.009,
+      "conductivity": 0.14,
+      "density": 530.0,
+      "specific_heat": 900.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table B8-3"
+    },
+    {
+      "name": "FiberglassInsulation_Wall",
+      "thickness": 0.066,
+      "conductivity": 0.04,
+      "density": 12.0,
+      "specific_heat": 840.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table B8-3"
+    },
+    {
+      "name": "Plasterboard",
+      "thickness": 0.012,
+      "conductivity": 0.16,
+      "density": 950.0,
+      "specific_heat": 840.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table B8-3"
+    },
+    {
+      "name": "RoofDeck",
+      "thickness": 0.019,
+      "conductivity": 0.14,
+      "density": 530.0,
+      "specific_heat": 900.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table B8-3"
+    },
+    {
+      "name": "FiberglassInsulation_Roof",
+      "thickness": 0.1118,
+      "conductivity": 0.04,
+      "density": 12.0,
+      "specific_heat": 840.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table B8-3"
+    },
+    {
+      "name": "TimberFlooring",
+      "thickness": 0.025,
+      "conductivity": 0.14,
+      "density": 650.0,
+      "specific_heat": 1200.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table B8-3"
+    },
+    {
+      "name": "InsulationBatt_Floor",
+      "thickness": 1.003,
+      "conductivity": 0.04,
+      "density": 0.01,
+      "specific_heat": 1.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-2 (minimum density/cp per specification)"
+    },
+    {
+      "name": "ConcreteBlock",
+      "thickness": 0.1,
+      "conductivity": 0.51,
+      "density": 1400.0,
+      "specific_heat": 1000.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (High-Mass exterior wall)"
+    },
+    {
+      "name": "FoamInsulation_Wall",
+      "thickness": 0.0615,
+      "conductivity": 0.04,
+      "density": 10.0,
+      "specific_heat": 1400.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (High-Mass exterior wall)"
+    },
+    {
+      "name": "ConcreteSlab",
+      "thickness": 0.08,
+      "conductivity": 1.13,
+      "density": 1400.0,
+      "specific_heat": 1000.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (High-Mass floor)"
+    },
+    {
+      "name": "InsulationBatt_Floor_HighMass",
+      "thickness": 1.007,
+      "conductivity": 0.04,
+      "density": 0.01,
+      "specific_heat": 1.0,
+      "solar_absorptance": 0.6,
+      "thermal_emissivity": 0.9,
+      "source": "ASHRAE 140-2020 Table 7-27 (minimum density/cp per specification)"
+    }
+  ],
+  "constructions": {
+    "LightweightWall": {
+      "layers": [
+        "WoodSiding",
+        "FiberglassInsulation_Wall",
+        "Plasterboard"
+      ]
+    },
+    "LightweightRoof": {
+      "layers": [
+        "RoofDeck",
+        "FiberglassInsulation_Roof",
+        "Plasterboard"
+      ]
+    },
+    "LightweightFloor": {
+      "layers": [
+        "TimberFlooring",
+        "InsulationBatt_Floor"
+      ]
+    },
+    "HighMassWall": {
+      "layers": [
+        "ConcreteBlock",
+        "FoamInsulation_Wall",
+        "WoodSiding"
+      ]
+    },
+    "HighMassFloor": {
+      "layers": [
+        "ConcreteSlab",
+        "InsulationBatt_Floor_HighMass"
+      ]
+    }
+  },
+  "windows": [
+    {
+      "wall_name": "south_wall",
+      "area": 12.0,
+      "u_value": 2.1,
+      "shgc": 0.789,
+      "solar_distribution": {
+        "floor": 0.642,
+        "roof": 0.167,
+        "south_wall": 0.027,
+        "north_wall": 0.053,
+        "east_wall": 0.038,
+        "west_wall": 0.038
+      },
+      "angular_dependence": {
+        "enabled": true,
+        "model": "ashrae_140_table_7_12",
+        "solar_lost_fraction": 0.035
+      }
+    }
+  ],
+  "hvac_system": {
+    "model_type": "IdealLoadsHVAC",
+    "heating_capacity_w": 1000000000,
+    "cooling_capacity_w": 1000000000,
+    "heating_setpoint_c": 20.0,
+    "cooling_setpoint_c": 27.0,
+    "proportional_gain_w_k": 100000
+  },
+  "air_exchange": {
+    "infiltration": {
+      "type": "constant_ach",
+      "constant_ach": 0.414
+    },
+    "ventilation": {
+      "open_window_ach": 0.0
+    }
+  },
+  "schedules": {
+    "occupied_hours": [
+      0,
+      24
+    ],
+    "occupied_heating_setpoint_c": 20.0,
+    "unoccupied_heating_setpoint_c": 20.0,
+    "occupied_cooling_setpoint_c": 27.0,
+    "unoccupied_cooling_setpoint_c": 27.0,
+    "occupied_internal_gains_w": 200.0,
+    "unoccupied_internal_gains_w": 200.0
+  },
+  "occupancy": {
+    "heat_gain_per_occupant_w": 0,
+    "check_interval_minutes": 60,
+    "thermostat_adjustment_c": 0.0,
+    "occupants": []
+  },
+  "weather": {
+    "type": "epw",
+    "epw_path": "/Users/lukenicholas/BuildingSimulationModel/bestest/weather/epw/Denver_CO.epw"
+  },
+  "convection_models": {
+    "exterior_hf": {
+      "RoofStable": "SparrowWindward",
+      "RoofUnstable": "SparrowWindward",
+      "VerticalWallWindward": "SparrowWindward",
+      "VerticalWallLeeward": "SparrowLeeward"
+    },
+    "exterior_hn": {
+      "RoofStable": "WaltonStableHorizontalOrTilt",
+      "RoofUnstable": "WaltonUnstableHorizontalOrTilt",
+      "VerticalWallWindward": "ASHRAEVerticalWall",
+      "VerticalWallLeeward": "ASHRAEVerticalWall"
+    },
+    "interior": {
+      "VerticalWall": "ASHRAEVerticalWall",
+      "StableHorizontal": "WaltonStableHorizontalOrTilt",
+      "UnstableHorizontal": "WaltonUnstableHorizontalOrTilt",
+      "StableTilted": "WaltonStableHorizontalOrTilt",
+      "UnstableTilted": "WaltonUnstableHorizontalOrTilt"
+    }
+  }
+}

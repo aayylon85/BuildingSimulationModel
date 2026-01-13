@@ -4,7 +4,7 @@ Defines building materials and functions to create constructions from a config f
 from collections import namedtuple
 
 
-Material = namedtuple("Material", ["name", "thickness", "conductivity", "density", "specific_heat"])
+Material = namedtuple("Material", ["name", "thickness", "conductivity", "density", "specific_heat", "solar_absorptance", "thermal_emissivity"])
 
 def create_materials_dict(config):
     """Creates a dictionary of Material objects from the config."""
@@ -15,7 +15,9 @@ def create_materials_dict(config):
             thickness=mat_props['thickness'],
             conductivity=mat_props['conductivity'],
             density=mat_props['density'],
-            specific_heat=mat_props['specific_heat']
+            specific_heat=mat_props['specific_heat'],
+            solar_absorptance=mat_props.get('solar_absorptance', 0.6),  # Default per ASHRAE 140
+            thermal_emissivity=mat_props.get('thermal_emissivity', 0.9)  # Default per ASHRAE 140
         )
         defined_materials[mat_props['name']] = material
     return defined_materials

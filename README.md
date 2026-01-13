@@ -13,7 +13,7 @@ A Python-based single-zone building thermal simulation model that solves coupled
 - **Real Weather Data**: Integration with Open-Meteo API for historical weather
 - **Occupant Behavior**: Modeling of window opening and thermostat adjustment preferences
 - **Air Exchange**: Physics-based infiltration (ASHRAE AIM-2) and ventilation modeling
-- **Solar Gains**: Window heat transfer with configurable solar distribution
+- **Solar Gains**: Window heat transfer with surface-specific irradiance and angular-dependent transmittance
 - **BESTEST Validation**: Full ASHRAE 140-2020 Section 5.2 test suite support
 - **Batch Testing Framework**: Automated test rig for running multiple simulation cases
 - **Results Export**: CSV output with timestamped results and configuration archiving
@@ -175,6 +175,7 @@ Define surfaces with their properties:
 
 #### 6. Windows
 
+**Simple Window** (constant SHGC, backward compatible):
 ```json
 "windows": [
   {
@@ -192,11 +193,38 @@ Define surfaces with their properties:
 ]
 ```
 
+**Angular-Dependent Window** (ASHRAE 140 compliant):
+```json
+"windows": [
+  {
+    "wall_name": "south_wall",
+    "area": 12.0,
+    "u_value": 3.0,
+    "shgc": 0.789,                          // SHGC at normal incidence
+    "glass_fraction": 1.0,                  // Fraction that is glazing (vs frame)
+    "angular_dependence": {
+      "enabled": true,
+      "hemispherical_avg_transmittance": 0.686,  // Optional: auto-calculated if omitted
+      "solar_lost_fraction": 0.035               // Per ASHRAE 140 Table 7-13
+    },
+    "solar_distribution": {
+      "floor": 1.0
+    }
+  }
+]
+```
+
+When `angular_dependence.enabled` is true, the window uses the `AngularDependentWindow` class which applies different SHGC values based on solar incidence angle per ASHRAE 140 Table 7-12. Direct beam radiation uses angle-dependent transmittance while diffuse radiation uses hemispherical-averaged SHGC.
+
 #### 7. Air Exchange
 
+Two infiltration model types are available:
+
+**Flow Coefficient Model** (ASHRAE AIM-2 for realistic buildings):
 ```json
 "air_exchange": {
   "infiltration": {
+    "type": "flow_coefficient",
     "flow_coefficient_m3_s_Pa_n": 0.00025,    // m³/(s·Pa^n)
     "pressure_exponent_n": 0.65,              // dimensionless
     "stack_coeff_Pa_K": 0.078,                // Pa/K
@@ -208,6 +236,21 @@ Define surfaces with their properties:
   }
 }
 ```
+
+**Constant ACH Model** (for BESTEST validation):
+```json
+"air_exchange": {
+  "infiltration": {
+    "type": "constant_ach",
+    "constant_ach": 0.5                        // Air changes per hour (constant)
+  },
+  "ventilation": {
+    "open_window_ach": 5.0
+  }
+}
+```
+
+The `constant_ach` model provides a fixed infiltration rate independent of temperature difference or wind speed, as specified in ASHRAE Standard 140 BESTEST cases.
 
 #### 8. HVAC System
 
@@ -362,10 +405,18 @@ BuildingSimulationModel/
 ├── Heat Transfer:
 │   ├── exterior_heat_transfer.py    # Exterior convection
 │   ├── interior_heat_transfer.py    # Interior convection
-│   └── exterior_longwave_rad.py     # Longwave radiation (not yet integrated)
+│   └── exterior_longwave_rad.py     # Exterior longwave radiation exchange
+│
+├── Solar Calculations:
+│   ├── solar_position.py            # Sun position (zenith, azimuth)
+│   ├── solar_incident_angle.py      # Angle of incidence for tilted surfaces
+│   ├── solar_irradiance.py          # Surface-specific irradiance calculator
+│   ├── solar_diffuse.py             # Perez anisotropic diffuse sky model
+│   ├── sky_temperature.py           # Sky temperature calculations
+│   └── window_angular_transmittance.py  # Angular-dependent SHGC (Table 7-12)
 │
 ├── Building Components:
-│   ├── windows.py              # Window model
+│   ├── windows.py              # Window models (Simple & AngularDependent)
 │   ├── air_exchange.py         # Infiltration & ventilation
 │   └── materials.py            # Material definitions
 │
@@ -382,10 +433,15 @@ BuildingSimulationModel/
 ├── BESTEST Validation:
 │   ├── bestest/
 │   │   ├── cases/
-│   │   │   ├── case_library.py              # Case management system
+│   │   │   ├── case_library.py              # Case management & inheritance
 │   │   │   └── section_5_2_cases.json       # ASHRAE 140 test definitions
-│   │   └── utils/
-│   │       └── config_builder.py            # Config generator for test cases
+│   │   ├── utils/
+│   │   │   └── config_builder.py            # Config generator for test cases
+│   │   ├── weather/                         # EPW weather files
+│   │   ├── reference_results/               # Reference result data
+│   │   ├── reporting/                       # Report generation
+│   │   ├── runner/                          # Test execution
+│   │   └── validation/                      # Validation logic
 │   └── bestest_configs/                     # Generated BESTEST configs
 │
 └── results/                                  # Output directory (auto-created)
@@ -571,7 +627,18 @@ pip install -r requirements.txt --upgrade
 
 ## BESTEST Validation
 
+### About ASHRAE Standard 140 (BESTEST)
 
+ASHRAE Standard 140, also known as BESTEST (Building Energy Simulation Test), provides a standardized method for testing building energy simulation software. The standard includes diagnostic test cases that isolate specific building physics phenomena to verify simulation accuracy.
+
+**Section 5.2 Cases** cover:
+- **Base building cases** (600, 900): Low-mass and high-mass construction with south-facing windows
+- **Window orientation variants** (620, 920): East/west glazing to test orientation handling
+- **Shading cases** (610, 630, 910, 930): Overhangs and fins (requires geometric shading)
+- **Setback cases** (640, 940): Thermostat scheduling (requires time-based setpoints)
+- **Ventilation cases** (650, 950): Night ventilation strategies
+
+Results are compared against reference ranges from multiple validated simulation programs including EnergyPlus, ESP-r, BLAST, DOE-2, SRES/SUN, and TRNSYS.
 
 ### Supported Test Cases
 
@@ -611,10 +678,29 @@ results/bestest_suite/bestest_validation_report.md
 - Single zone only (no multi-zone capability)
 - No humidity/latent loads modeling
 - No ground heat transfer (floor uses adiabatic or constant temperature boundary)
-- Longwave radiation model not yet integrated
-- Solar position not calculated (uses direct irradiance values from weather data)
-- No geometric shading or obstruction modeling
 - Time-dependent schedules limited to occupied/unoccupied periods (no arbitrary time-based controls)
+- Exterior surface solar absorption intentionally disabled for numerical stability
+
+### Solar Radiation Status
+
+**Implemented Features:**
+- Surface-specific irradiance calculations based on window orientation ([solar_irradiance.py](solar_irradiance.py))
+- Sun position tracking with solar zenith/azimuth ([solar_position.py](solar_position.py))
+- Angle of incidence for tilted surfaces ([solar_incident_angle.py](solar_incident_angle.py))
+- Perez anisotropic diffuse sky model ([solar_diffuse.py](solar_diffuse.py))
+- Angular-dependent window transmittance per ASHRAE 140 Table 7-12 ([window_angular_transmittance.py](window_angular_transmittance.py))
+- Sky temperature calculations for longwave radiation ([sky_temperature.py](sky_temperature.py))
+- Exterior longwave radiation exchange ([exterior_longwave_rad.py](exterior_longwave_rad.py))
+
+**Current Integration:**
+- Window solar gains: Fully integrated with surface-specific irradiance and angular SHGC
+- Longwave radiation: Integrated with sky temperature calculations
+- Exterior surface solar absorption: Disabled (see [zone_solver.py:203-224](zone_solver.py#L203-L224) for rationale)
+
+**Remaining Limitations:**
+1. No geometric shading (overhangs, fins, obstructions)
+2. Exterior opaque surface solar absorption disabled
+3. Ground reflection uses fixed albedo (0.2)
 
 
 ## License
@@ -630,5 +716,13 @@ results/bestest_suite/bestest_validation_report.md
 
 ---
 
-**Last Updated**: December 2025
+**Last Updated**: January 2026
+
+### Changelog
+
+**January 2026:**
+- Removed empty placeholder files: `devices.py`, `lighting.py`
+- Added comprehensive input validation for window areas, weather data, and construction layers
+- Made internal gains convective/radiative split configurable (default: 40/60 per ASHRAE)
+- Updated documentation to reflect implemented solar calculation modules
 

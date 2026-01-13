@@ -96,7 +96,8 @@ class BESTESTConfigBuilder:
             'dt_minutes': settings.get('dt_minutes', 10),
             'duration_days': settings.get('duration_days', 365),
             'stabilization_days': settings.get('warmup_days', 25),
-            'start_date': settings.get('start_date', '2020-01-01')
+            'start_date': settings.get('start_date', '2020-01-01'),
+            'enable_opaque_solar_absorption': settings.get('enable_opaque_solar_absorption', True)
         }
 
     def _build_zone_properties(self, case_data: dict) -> dict:
@@ -169,12 +170,20 @@ class BESTESTConfigBuilder:
                 'shgc': window_spec.get('shgc')
             }
 
+            # Glass fraction (ratio of glass to total window area, default 1.0 = no frame)
+            if 'glass_fraction' in window_spec:
+                window['glass_fraction'] = window_spec.get('glass_fraction')
+
             # Solar distribution (default all to floor if not specified)
             solar_dist = window_spec.get('solar_distribution', {})
             if not solar_dist:
                 solar_dist = {'floor': 1.0}
 
             window['solar_distribution'] = solar_dist
+
+            # Angular dependence (if present) - for ASHRAE 140 Table 7-12
+            if 'angular_dependence' in window_spec:
+                window['angular_dependence'] = window_spec['angular_dependence']
 
             # Shading (if present) - placeholder for future implementation
             if 'shading' in window_spec:

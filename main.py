@@ -72,7 +72,8 @@ def run_simulation_from_config(config_path):
                     zone_sensible_heat_capacity_multiplier=zone_props.get('zone_sensible_heat_capacity_multiplier', 1.0),
                     max_nodes_per_layer=sim_settings.get('max_nodes_per_layer', 20),
                     hvac_coupling_mode=sim_settings.get('hvac_coupling_mode', 'auto'),
-                    hvac_max_power_rate_w_s=sim_settings.get('hvac_max_power_rate_w_s', 50000.0)
+                    hvac_max_power_rate_w_s=sim_settings.get('hvac_max_power_rate_w_s', 50000.0),
+                    enable_opaque_solar_absorption=sim_settings.get('enable_opaque_solar_absorption', False)
                    )
 
         # --- 3. Define HVAC System from Config ---

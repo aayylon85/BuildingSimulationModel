@@ -80,7 +80,7 @@
         "type": "floor",
         "roughness_index": 3,
         "construction": "LightweightFloor",
-        "is_exterior": true
+        "is_exterior": false
       }
     },
 
@@ -91,6 +91,8 @@
         "conductivity": 0.14,
         "density": 530.0,
         "specific_heat": 900.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
         "source": "ASHRAE 140-2020 Table B8-3"
       },
       {
@@ -99,6 +101,8 @@
         "conductivity": 0.040,
         "density": 12.0,
         "specific_heat": 840.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
         "source": "ASHRAE 140-2020 Table B8-3"
       },
       {
@@ -107,6 +111,8 @@
         "conductivity": 0.16,
         "density": 950.0,
         "specific_heat": 840.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
         "source": "ASHRAE 140-2020 Table B8-3"
       },
       {
@@ -115,6 +121,8 @@
         "conductivity": 0.14,
         "density": 530.0,
         "specific_heat": 900.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
         "source": "ASHRAE 140-2020 Table B8-3"
       },
       {
@@ -123,6 +131,8 @@
         "conductivity": 0.040,
         "density": 12.0,
         "specific_heat": 840.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
         "source": "ASHRAE 140-2020 Table B8-3"
       },
       {
@@ -131,33 +141,85 @@
         "conductivity": 0.14,
         "density": 650.0,
         "specific_heat": 1200.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
         "source": "ASHRAE 140-2020 Table B8-3"
       },
       {
         "name": "InsulationBatt_Floor",
-        "thickness": 0.2,
-        "conductivity": 0.008,
-        "density": 12.0,
-        "specific_heat": 840.0,
-        "source": "ASHRAE 140-2020 (adjusted thickness/conductivity for numerical stability, R-value=25 m²K/W maintained)"
+        "thickness": 1.003,
+        "conductivity": 0.04,
+        "density": 0.01,
+        "specific_heat": 1.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
+        "source": "ASHRAE 140-2020 Table 7-2 (minimum density/cp per specification)"
+      },
+      {
+        "name": "ConcreteBlock",
+        "thickness": 0.100,
+        "conductivity": 0.51,
+        "density": 1400.0,
+        "specific_heat": 1000.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
+        "source": "ASHRAE 140-2020 Table 7-27 (High-Mass exterior wall)"
+      },
+      {
+        "name": "FoamInsulation_Wall",
+        "thickness": 0.0615,
+        "conductivity": 0.04,
+        "density": 10.0,
+        "specific_heat": 1400.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
+        "source": "ASHRAE 140-2020 Table 7-27 (High-Mass exterior wall)"
+      },
+      {
+        "name": "ConcreteSlab",
+        "thickness": 0.080,
+        "conductivity": 1.13,
+        "density": 1400.0,
+        "specific_heat": 1000.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
+        "source": "ASHRAE 140-2020 Table 7-27 (High-Mass floor)"
+      },
+      {
+        "name": "InsulationBatt_Floor_HighMass",
+        "thickness": 1.007,
+        "conductivity": 0.04,
+        "density": 0.01,
+        "specific_heat": 1.0,
+        "solar_absorptance": 0.6,
+        "thermal_emissivity": 0.9,
+        "source": "ASHRAE 140-2020 Table 7-27 (minimum density/cp per specification)"
       }
     ],
 
     "constructions": {
       "LightweightWall": {
         "layers": ["WoodSiding", "FiberglassInsulation_Wall", "Plasterboard"],
-        "u_value_target": 0.514,
+        "u_value_target": 0.418,
         "notes": "ASHRAE 140 Case 600 lightweight exterior wall"
       },
       "LightweightRoof": {
         "layers": ["RoofDeck", "FiberglassInsulation_Roof", "Plasterboard"],
-        "u_value_target": 0.318,
+        "u_value_target": 0.276,
         "notes": "ASHRAE 140 Case 600 lightweight roof"
       },
       "LightweightFloor": {
         "layers": ["TimberFlooring", "InsulationBatt_Floor"],
         "u_value_target": 0.039,
         "notes": "ASHRAE 140 Case 600 insulated floor"
+      },
+      "HighMassWall": {
+        "layers": ["ConcreteBlock", "FoamInsulation_Wall", "WoodSiding"],
+        "notes": "ASHRAE 140 Table 7-27 High-Mass exterior wall (inside to outside)"
+      },
+      "HighMassFloor": {
+        "layers": ["ConcreteSlab", "InsulationBatt_Floor_HighMass"],
+        "notes": "ASHRAE 140 Table 7-27 High-Mass floor (inside to outside)"
       }
     },
 
@@ -165,12 +227,22 @@
       {
         "wall_name": "south_wall",
         "area": 12.0,
-        "u_value": 3.0,
+        "u_value": 2.1,
         "shgc": 0.789,
-        "solar_distribution": {
-          "floor": 1.0
+        "angular_dependence": {
+          "enabled": true,
+          "model": "ashrae_140_table_7_12",
+          "solar_lost_fraction": 0.035
         },
-        "notes": "ASHRAE 140 double-pane clear glass, 12 m² on south wall"
+        "solar_distribution": {
+          "floor": 0.642,
+          "roof": 0.167,
+          "south_wall": 0.027,
+          "north_wall": 0.053,
+          "east_wall": 0.038,
+          "west_wall": 0.038
+        },
+        "notes": "ASHRAE 140-2023 Table 7-12 angular transmittance + Table 7-13 distribution (0.035 solar lost reradiated back out)"
       }
     ],
 
@@ -186,8 +258,8 @@
 
     "infiltration": {
       "method": "constant",
-      "ach_design": 0.5,
-      "notes": "0.5 ACH constant infiltration per ASHRAE 140"
+      "ach_design": 0.414,
+      "notes": "0.414 ACH for programs without automatic altitude adjustment (ASHRAE 140 Table 7-4 Option B, adjustment factor 0.829)"
     },
 
     "ventilation": {
@@ -224,6 +296,21 @@
 
   "test_cases": [
     {
+      "case_id": "high_mass_base",
+      "description": "High Thermal Mass Base Case per ASHRAE 140-2020 Table 7-27",
+      "inherits_from": "base_case",
+      "modifications": {
+        "surfaces": {
+          "south_wall": { "construction": "HighMassWall" },
+          "north_wall": { "construction": "HighMassWall" },
+          "east_wall": { "construction": "HighMassWall" },
+          "west_wall": { "construction": "HighMassWall" },
+          "floor": { "construction": "HighMassFloor" }
+        }
+      },
+      "notes": "Template for Cases 900-950. Walls use concrete block per Table 7-27, floor uses concrete slab. Roof stays lightweight per specification."
+    },
+    {
       "case_id": "600",
       "description": "Base Case - Low Mass Building with South Windows",
       "inherits_from": "base_case",
@@ -238,8 +325,13 @@
           {
             "wall_name": "south_wall",
             "area": 12.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.55,
+            "angular_dependence": {
+              "enabled": true,
+              "model": "ashrae_140_table_7_12",
+              "solar_lost_fraction": 0.035
+            },
             "solar_distribution": {"floor": 1.0},
             "notes": "Shading approximated with reduced SHGC from 0.789 to 0.55 (shading geometry not yet implemented)"
           }
@@ -256,16 +348,26 @@
           {
             "wall_name": "east_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.789,
+            "angular_dependence": {
+              "enabled": true,
+              "model": "ashrae_140_table_7_12",
+              "solar_lost_fraction": 0.035
+            },
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on east wall"
           },
           {
             "wall_name": "west_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.789,
+            "angular_dependence": {
+              "enabled": true,
+              "model": "ashrae_140_table_7_12",
+              "solar_lost_fraction": 0.035
+            },
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on west wall"
           }
@@ -281,16 +383,26 @@
           {
             "wall_name": "east_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.55,
+            "angular_dependence": {
+              "enabled": true,
+              "model": "ashrae_140_table_7_12",
+              "solar_lost_fraction": 0.035
+            },
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on east wall with shading (SHGC reduced from 0.789 to 0.55)"
           },
           {
             "wall_name": "west_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.55,
+            "angular_dependence": {
+              "enabled": true,
+              "model": "ashrae_140_table_7_12",
+              "solar_lost_fraction": 0.035
+            },
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on west wall with shading (SHGC reduced from 0.789 to 0.55)"
           }
@@ -341,37 +453,20 @@
     {
       "case_id": "900",
       "description": "High Thermal Mass with South Windows",
-      "inherits_from": "base_case",
-      "modifications": {
-        "geometry": {
-          "length": 8.0,
-          "width": 6.0,
-          "height": 2.7,
-          "floor_area": 48.0,
-          "volume": 129.6,
-          "zone_sensible_heat_capacity_multiplier": 10.0
-        }
-      },
-      "notes": "High mass: zone_sensible_heat_capacity_multiplier increased from 1.0 to 10.0"
+      "inherits_from": "high_mass_base",
+      "modifications": {},
+      "notes": "High mass base case with concrete walls/floor per Table 7-27"
     },
     {
       "case_id": "910",
       "description": "High Mass with South Shading",
-      "inherits_from": "base_case",
+      "inherits_from": "high_mass_base",
       "modifications": {
-        "geometry": {
-          "length": 8.0,
-          "width": 6.0,
-          "height": 2.7,
-          "floor_area": 48.0,
-          "volume": 129.6,
-          "zone_sensible_heat_capacity_multiplier": 10.0
-        },
         "windows": [
           {
             "wall_name": "south_wall",
             "area": 12.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.55,
             "solar_distribution": {"floor": 1.0},
             "notes": "Shading approximated with reduced SHGC from 0.789 to 0.55"
@@ -383,30 +478,32 @@
     {
       "case_id": "920",
       "description": "High Mass with East/West Windows",
-      "inherits_from": "base_case",
+      "inherits_from": "high_mass_base",
       "modifications": {
-        "geometry": {
-          "length": 8.0,
-          "width": 6.0,
-          "height": 2.7,
-          "floor_area": 48.0,
-          "volume": 129.6,
-          "zone_sensible_heat_capacity_multiplier": 10.0
-        },
         "windows": [
           {
             "wall_name": "east_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.789,
+            "angular_dependence": {
+              "enabled": true,
+              "model": "ashrae_140_table_7_12",
+              "solar_lost_fraction": 0.035
+            },
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on east wall"
           },
           {
             "wall_name": "west_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.789,
+            "angular_dependence": {
+              "enabled": true,
+              "model": "ashrae_140_table_7_12",
+              "solar_lost_fraction": 0.035
+            },
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on west wall"
           }
@@ -417,21 +514,13 @@
     {
       "case_id": "930",
       "description": "High Mass with East/West Shading",
-      "inherits_from": "base_case",
+      "inherits_from": "high_mass_base",
       "modifications": {
-        "geometry": {
-          "length": 8.0,
-          "width": 6.0,
-          "height": 2.7,
-          "floor_area": 48.0,
-          "volume": 129.6,
-          "zone_sensible_heat_capacity_multiplier": 10.0
-        },
         "windows": [
           {
             "wall_name": "east_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.55,
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on east wall with shading (SHGC reduced)"
@@ -439,7 +528,7 @@
           {
             "wall_name": "west_wall",
             "area": 6.0,
-            "u_value": 3.0,
+            "u_value": 2.1,
             "shgc": 0.55,
             "solar_distribution": {"floor": 1.0},
             "notes": "6 m² on west wall with shading (SHGC reduced)"
@@ -451,16 +540,8 @@
     {
       "case_id": "940",
       "description": "High Mass with Night Setback",
-      "inherits_from": "base_case",
+      "inherits_from": "high_mass_base",
       "modifications": {
-        "geometry": {
-          "length": 8.0,
-          "width": 6.0,
-          "height": 2.7,
-          "floor_area": 48.0,
-          "volume": 129.6,
-          "zone_sensible_heat_capacity_multiplier": 10.0
-        },
         "hvac": {
           "model_type": "IdealLoadsHVAC",
           "heating_capacity_w": 1000000000,
@@ -483,16 +564,8 @@
     {
       "case_id": "950",
       "description": "High Mass with Night Ventilation",
-      "inherits_from": "base_case",
+      "inherits_from": "high_mass_base",
       "modifications": {
-        "geometry": {
-          "length": 8.0,
-          "width": 6.0,
-          "height": 2.7,
-          "floor_area": 48.0,
-          "volume": 129.6,
-          "zone_sensible_heat_capacity_multiplier": 10.0
-        },
         "ventilation": {
           "type": "scheduled",
           "schedule": {

@@ -1,8 +1,8 @@
-import math
 """
 Defines the HVAC system model. This module is responsible for calculating
 the heating or cooling power required to meet the zone's setpoints.
 """
+import math
 
 class VerySimpleHVAC:
     """

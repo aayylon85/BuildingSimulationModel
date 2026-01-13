@@ -1,0 +1,13 @@
+Element,"k, W/(m·K)","Thickness, m","U, W/(m²·K)","R, m²·K/W","Density, kg/m³","cp, J/(kg·K)"
+Low-Mass Case: Exterior Wall (inside to outside),,,,,,
+Plasterboard,0.16,0.012,13.333,0.075,950,840
+Fiberglass quilt,0.04,0.066,0.606,1.650,12,840
+Wood siding,0.14,0.009,15.556,0.064,530,900
+Low-Mass Case: Raised Floor (inside to outside),,,,,,
+Timber flooring,0.14,0.025,5.600,0.179,650,1200
+Insulation,0.04,1.003,0.040,25.075,0 a,0 a
+Low-Mass Case: Roof (inside to outside),,,,,,
+Plasterboard,0.16,0.010,16.000,0.063,950,840
+Fiberglass quilt,0.04,0.1118,0.358,2.794,12,840
+Roofdeck,0.14,0.019,7.368,0.136,530,900
+"a. Underfloor insulation has the minimum density and specific heat the program being tested will allow, but not <0.",,,,,,

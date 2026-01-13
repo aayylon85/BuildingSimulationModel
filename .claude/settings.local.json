@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(source:*)",
+      "Bash(conda activate:*)",
+      "Bash(python test_rig.py:*)",
+      "Bash(tee:*)"
     ],
     "deny": [],
     "ask": []
