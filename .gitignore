@@ -1,22 +1,23 @@
+# Claude Code
+.claude/
+
+# Results directory
+results/
+
+# Documentation - large files and screenshots
 Documentation/ASHRAE-D-86892.pdf
-Documentation/Screenshots/Screenshot 2026-01-12 at 13.42.21.png
-Documentation/Screenshots/Screenshot 2026-01-12 at 13.39.43.png
-Documentation/Screenshots/Screenshot 2026-01-12 at 13.40.15.png
-Documentation/Screenshots/Screenshot 2026-01-12 at 13.40.36.png
-Documentation/Screenshots/Screenshot 2026-01-12 at 13.41.41.png
-Documentation/Screenshots/Screenshot 2026-01-12 at 13.42.08.png
-Documentation/Figures/Exterior Surfaces.png
-Documentation/Figures/Interior Surfaces.png
-Documentation/Figures/Table 7-10.png
-Documentation/Figures/Windows Spec.png
-Documentation/TableA3-1.csv
-Documentation/TableA3-2.csv
-Documentation/Table7-27.csv
-Documentation/Table7-12.csv
-Documentation/Table7-2.csv
-.gitignore
-Documentation/TableA3-3.csv
-Documentation/TableA3-4.csv
-results
+Documentation/Screenshots/
+Documentation/Figures/
+
+# Documentation - CSV tables
+Documentation/Table7-*.csv
+Documentation/TableA3-*.csv
+
+# Other
 docs/LLM_AGENT_ARCHITECTURE.md
-.claude
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
