@@ -624,7 +624,7 @@ Adaptive timestepping handles most cases automatically. If persists:
 
 # License
 
-MIT License
+Apache License
 
 ---
 
