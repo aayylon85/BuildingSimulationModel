@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bsm"
+version = "1.0.0"
+description = "Physics-based single-zone building thermal simulation with LLM-powered occupant agents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "Building Simulation Model Contributors"}
+]
+keywords = [
+    "building simulation",
+    "thermal modeling",
+    "energy modeling",
+    "ASHRAE",
+    "BESTEST",
+    "heat transfer",
+    "HVAC",
+    "occupant behavior",
+    "LLM agents"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "openmeteo-requests>=1.0.0",
+    "requests-cache>=1.1.0",
+    "retry-requests>=2.0.0",
+    "tabulate>=0.9.0",
+]
+
+[project.optional-dependencies]
+llm = [
+    "openai>=1.0.0",
+    "openai-agents>=0.1.0",
+    "pydantic>=2.0.0",
+    "pytz>=2023.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+all = [
+    "bsm[llm,dev]",
+]
+
+[project.scripts]
+bsm = "bsm.runner:main"
+bsm-test = "bsm.test_rig:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/BuildingSimulationModel"
+Documentation = "https://github.com/yourusername/BuildingSimulationModel#readme"
+Repository = "https://github.com/yourusername/BuildingSimulationModel"
+Issues = "https://github.com/yourusername/BuildingSimulationModel/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bsm*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.md", "*.epw"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

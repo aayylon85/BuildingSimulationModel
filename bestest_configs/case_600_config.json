@@ -286,10 +286,10 @@
   },
   "convection_models": {
     "exterior_hf": {
-      "RoofStable": "SparrowWindward",
-      "RoofUnstable": "SparrowWindward",
-      "VerticalWallWindward": "SparrowWindward",
-      "VerticalWallLeeward": "SparrowLeeward"
+      "RoofStable": "DOE2Windward",
+      "RoofUnstable": "DOE2Windward",
+      "VerticalWallWindward": "DOE2Windward",
+      "VerticalWallLeeward": "DOE2Leeward"
     },
     "exterior_hn": {
       "RoofStable": "WaltonStableHorizontalOrTilt",
@@ -302,7 +302,11 @@
       "StableHorizontal": "WaltonStableHorizontalOrTilt",
       "UnstableHorizontal": "WaltonUnstableHorizontalOrTilt",
       "StableTilted": "WaltonStableHorizontalOrTilt",
-      "UnstableTilted": "WaltonUnstableHorizontalOrTilt"
+      "UnstableTilted": "WaltonUnstableHorizontalOrTilt",
+      "HeatedFloor": "AwbiHattonHeatedFloor",
+      "CooledFloor": "AlamdariHammondUnstableHorizontal",
+      "HeatedCeiling": "WaltonUnstableHorizontalOrTilt",
+      "CooledCeiling": "WaltonStableHorizontalOrTilt"
     }
   }
 }

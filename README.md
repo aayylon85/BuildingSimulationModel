@@ -11,7 +11,8 @@ A Python-based single-zone building thermal simulation model that solves coupled
 - **Hybrid HVAC Coupling**: Automatic selection of implicit/explicit coupling for numerical stability
 - **Adaptive Timestepping**: Automatic timestep reduction for difficult convergence scenarios
 - **Real Weather Data**: Integration with Open-Meteo API for historical weather
-- **Occupant Behavior**: Modeling of window opening and thermostat adjustment preferences
+- **Occupant Behavior**: Rule-based modeling of window opening and thermostat preferences
+- **LLM Occupant Agents**: Optional AI-powered occupants with memory-driven decision making
 - **Air Exchange**: Physics-based infiltration (ASHRAE AIM-2) and ventilation modeling
 - **Solar Gains**: Window heat transfer with surface-specific irradiance and angular-dependent transmittance
 - **BESTEST Validation**: Full ASHRAE 140-2020 Section 5.2 test suite support
@@ -387,66 +388,94 @@ Specify correlations for different surface types and conditions:
 
 ## Project Structure
 
+The codebase is organized as a Python package (`bsm/`) with logical subpackages:
+
 ```
 BuildingSimulationModel/
-├── main.py                      # Main simulation entry point
-├── test_rig.py                  # BESTEST batch testing framework
+├── main.py                      # CLI entry point (thin wrapper)
+├── test_rig.py                  # BESTEST CLI entry point (thin wrapper)
 ├── simulation_config.json       # Example configuration
 ├── requirements.txt             # Python dependencies
+├── pyproject.toml               # Modern Python packaging
 │
-├── Core Simulation:
-│   ├── zone.py                 # Zone model manager
-│   ├── zone_solver.py          # Coupled heat balance solver
-│   └── fabric_heat_transfer.py # CondFD solver for constructions
+├── bsm/                         # Main simulation package
+│   ├── __init__.py              # Package exports
+│   │
+│   ├── core/                    # Core simulation engine
+│   │   ├── zone.py              # Zone model manager
+│   │   ├── zone_solver.py       # Coupled heat balance solver
+│   │   ├── fabric_heat_transfer.py  # CondFD solver
+│   │   └── constants.py         # Physical constants
+│   │
+│   ├── heat_transfer/           # Convection and radiation
+│   │   ├── convection.py        # Shared convection correlations
+│   │   ├── exterior_convection.py   # Exterior adaptive algorithm
+│   │   ├── interior_convection.py   # Interior adaptive algorithm
+│   │   ├── exterior_longwave.py     # Exterior longwave radiation
+│   │   └── interior_longwave.py     # Interior longwave radiation
+│   │
+│   ├── solar/                   # Solar calculations
+│   │   ├── position.py          # Sun position (zenith, azimuth)
+│   │   ├── irradiance.py        # Surface-specific irradiance
+│   │   ├── diffuse.py           # Perez anisotropic sky model
+│   │   ├── incident_angle.py    # Angle of incidence
+│   │   └── angular_transmittance.py  # Window angular SHGC
+│   │
+│   ├── weather/                 # Weather data handling
+│   │   ├── generators.py        # EPW and API weather loaders
+│   │   ├── api_client.py        # Open-Meteo API client
+│   │   ├── sky_temperature.py   # Sky temperature models
+│   │   └── ground_temperature.py    # Kusuda ground model
+│   │
+│   ├── components/              # Building components
+│   │   ├── windows.py           # Window models
+│   │   ├── air_exchange.py      # Infiltration & ventilation
+│   │   ├── materials.py         # Material definitions
+│   │   └── hvac.py              # HVAC system models
+│   │
+│   ├── boundary/                # Boundary conditions
+│   │   ├── conditions.py        # Schedule creator
+│   │   └── occupants.py         # Rule-based occupant behavior
+│   │
+│   ├── output/                  # Output and reporting
+│   │   ├── plotting.py          # Visualization
+│   │   └── report_generator.py  # Markdown report generation
+│   │
+│   ├── agents/                  # LLM occupant agents (optional)
+│   │   ├── manager.py           # Main orchestrator
+│   │   ├── generative_agent.py  # Memory-driven agent
+│   │   ├── skeleton.py          # Agent SDK types
+│   │   ├── simulation_adapter.py    # Zone state bridge
+│   │   ├── equipment_manager.py     # Equipment tracking
+│   │   ├── lighting_manager.py      # Lighting tracking
+│   │   ├── desk_manager.py          # Desk assignments
+│   │   ├── memory/              # Memory subsystem
+│   │   │   └── stream.py        # Semantic memory storage
+│   │   └── cognition/           # Cognitive modules
+│   │       ├── modules.py       # Perceive/Retrieve/Reflect
+│   │       └── conversation.py  # Multi-agent dialogue
+│   │
+│   ├── runner.py                # Main simulation logic
+│   └── test_rig.py              # BESTEST test framework
 │
-├── HVAC Systems:
-│   └── hvac_def.py            # HVAC models (IdealLoads, PID, Stateful, etc.)
+├── agent_base_types/            # Pre-configured agent personalities
+│   ├── alice_office_worker/
+│   ├── bob_office_worker/
+│   └── charlie_office_worker/
 │
-├── Heat Transfer:
-│   ├── exterior_heat_transfer.py    # Exterior convection
-│   ├── interior_heat_transfer.py    # Interior convection
-│   └── exterior_longwave_rad.py     # Exterior longwave radiation exchange
+├── bestest/                     # BESTEST validation suite
+│   ├── cases/                   # Test case definitions
+│   ├── utils/                   # Config generation utilities
+│   └── weather/                 # EPW weather files
 │
-├── Solar Calculations:
-│   ├── solar_position.py            # Sun position (zenith, azimuth)
-│   ├── solar_incident_angle.py      # Angle of incidence for tilted surfaces
-│   ├── solar_irradiance.py          # Surface-specific irradiance calculator
-│   ├── solar_diffuse.py             # Perez anisotropic diffuse sky model
-│   ├── sky_temperature.py           # Sky temperature calculations
-│   └── window_angular_transmittance.py  # Angular-dependent SHGC (Table 7-12)
+├── bestest_configs/             # Generated BESTEST configs
+├── test_configs/                # Test configurations
+├── Documentation/               # Reference materials
 │
-├── Building Components:
-│   ├── windows.py              # Window models (Simple & AngularDependent)
-│   ├── air_exchange.py         # Infiltration & ventilation
-│   └── materials.py            # Material definitions
-│
-├── Boundary Conditions:
-│   ├── weather.py              # Weather generators
-│   ├── weather_import.py       # Open-Meteo API client
-│   ├── boundary_conditions.py  # Schedule creator
-│   └── occupants.py            # Occupant behavior
-│
-├── Utilities:
-│   ├── constants.py            # Physical constants
-│   └── plotting.py             # Visualization
-│
-├── BESTEST Validation:
-│   ├── bestest/
-│   │   ├── cases/
-│   │   │   ├── case_library.py              # Case management & inheritance
-│   │   │   └── section_5_2_cases.json       # ASHRAE 140 test definitions
-│   │   ├── utils/
-│   │   │   └── config_builder.py            # Config generator for test cases
-│   │   ├── weather/                         # EPW weather files
-│   │   ├── reference_results/               # Reference result data
-│   │   ├── reporting/                       # Report generation
-│   │   ├── runner/                          # Test execution
-│   │   └── validation/                      # Validation logic
-│   └── bestest_configs/                     # Generated BESTEST configs
-│
-└── results/                                  # Output directory (auto-created)
-    ├── YYYY-MM-DD/                          # Individual simulation runs
-    └── bestest_suite/                       # BESTEST validation results
+└── results/                     # Output directory (auto-created)
+    ├── YYYY-MM-DD/              # Individual simulation runs
+    ├── bestest_suite/           # BESTEST validation results
+    └── agents/                  # Agent output (when enabled)
 ```
 
 ## Physics Models
@@ -625,6 +654,118 @@ The solver logs warnings every 10 iterations if convergence is slow. Watch for:
 pip install -r requirements.txt --upgrade
 ```
 
+## LLM Occupant Agents (Optional)
+
+The simulation includes an optional LLM-powered occupant agent system that simulates realistic human behavior in buildings using large language models.
+
+### Features
+
+- **Generative Agents**: Memory-driven agents with persistent personality and thermal preferences
+- **Cognitive Loop**: Perceive → Retrieve → Reflect → Act cycle based on Stanford Generative Agents
+- **Multi-Agent Consultation**: Agents consult each other for shared-space decisions (thermostat, windows)
+- **Calendar System**: Meeting scheduling with RSVP support
+- **Equipment & Lighting**: Agents control desk equipment and lighting based on presence
+- **Semantic Memory**: Three-factor retrieval scoring (recency, relevance, importance)
+
+### Quick Start
+
+1. **Set your OpenAI API key**:
+```bash
+export OPENAI_API_KEY="your-key-here"
+```
+
+2. **Enable LLM agents in your config**:
+```json
+"llm_agents": {
+  "enabled": true,
+  "agent_model": "gpt-4o",
+  "embed_model": "text-embedding-3-large",
+  "decision_interval_minutes": 60,
+  "agents": [
+    {"id": "alice_001", "base_type": "alice_office_worker"},
+    {"id": "bob_002", "base_type": "bob_office_worker"}
+  ]
+}
+```
+
+3. **Run the simulation**:
+```bash
+python main.py simulation_config.json
+```
+
+### Agent Base Types
+
+Pre-configured agent personalities are stored in `agent_base_types/`:
+
+```
+agent_base_types/alice_office_worker/
+├── scratch.json       # Working memory, thermal preferences
+├── persona.md         # Personality traits
+├── background.md      # Work experience
+├── work_style.md      # Schedule preferences
+└── relationships.md   # Colleague relationships
+```
+
+Each agent inherits from a base type but develops unique memories and behaviors during simulation.
+
+### Configuration Options
+
+```json
+"llm_agents": {
+  "enabled": true,                          // Enable/disable LLM agents
+  "agent_model": "gpt-4o",                  // Model for decision making
+  "embed_model": "text-embedding-3-large",  // Model for memory embeddings
+  "decision_interval_minutes": 60,          // How often agents make decisions
+  "reflection_threshold": 5,                // Events before triggering reflection
+  "agents": [
+    {
+      "id": "alice_001",                    // Unique agent ID
+      "base_type": "alice_office_worker",   // Personality template
+      "desk": "Desk_A"                      // Optional: assigned desk
+    }
+  ]
+}
+```
+
+### Agent Decision Process
+
+At each decision interval, agents:
+
+1. **Perceive**: Observe current zone temperature, time, and context
+2. **Retrieve**: Query semantic memory for relevant past experiences
+3. **Reflect**: Generate high-level insights if threshold reached
+4. **Consult**: Discuss with colleagues for shared decisions (optional)
+5. **Decide**: Choose actions (window, thermostat, equipment, lighting)
+6. **Record**: Store decision and reasoning in memory
+
+### Agent Output
+
+When LLM agents are enabled, additional output is generated:
+
+```
+results/agents/YYYY-MM-DD/HH-MM-SS/
+├── alice_001/
+│   ├── scratch.json       # Final agent state
+│   ├── nodes.json         # All memory events
+│   └── embeddings.json    # Memory embeddings
+└── bob_002/
+    └── ...
+```
+
+### Disabling LLM Agents
+
+To run simulations without LLM agents (default behavior):
+
+```json
+"llm_agents": {
+  "enabled": false
+}
+```
+
+Or simply omit the `llm_agents` section entirely.
+
+---
+
 ## BESTEST Validation
 
 ### About ASHRAE Standard 140 (BESTEST)
@@ -684,18 +825,18 @@ results/bestest_suite/bestest_validation_report.md
 ### Solar Radiation Status
 
 **Implemented Features:**
-- Surface-specific irradiance calculations based on window orientation ([solar_irradiance.py](solar_irradiance.py))
-- Sun position tracking with solar zenith/azimuth ([solar_position.py](solar_position.py))
-- Angle of incidence for tilted surfaces ([solar_incident_angle.py](solar_incident_angle.py))
-- Perez anisotropic diffuse sky model ([solar_diffuse.py](solar_diffuse.py))
-- Angular-dependent window transmittance per ASHRAE 140 Table 7-12 ([window_angular_transmittance.py](window_angular_transmittance.py))
-- Sky temperature calculations for longwave radiation ([sky_temperature.py](sky_temperature.py))
-- Exterior longwave radiation exchange ([exterior_longwave_rad.py](exterior_longwave_rad.py))
+- Surface-specific irradiance calculations based on window orientation ([bsm/solar/irradiance.py](bsm/solar/irradiance.py))
+- Sun position tracking with solar zenith/azimuth ([bsm/solar/position.py](bsm/solar/position.py))
+- Angle of incidence for tilted surfaces ([bsm/solar/incident_angle.py](bsm/solar/incident_angle.py))
+- Perez anisotropic diffuse sky model ([bsm/solar/diffuse.py](bsm/solar/diffuse.py))
+- Angular-dependent window transmittance per ASHRAE 140 Table 7-12 ([bsm/solar/angular_transmittance.py](bsm/solar/angular_transmittance.py))
+- Sky temperature calculations for longwave radiation ([bsm/weather/sky_temperature.py](bsm/weather/sky_temperature.py))
+- Exterior longwave radiation exchange ([bsm/heat_transfer/exterior_longwave.py](bsm/heat_transfer/exterior_longwave.py))
 
 **Current Integration:**
 - Window solar gains: Fully integrated with surface-specific irradiance and angular SHGC
 - Longwave radiation: Integrated with sky temperature calculations
-- Exterior surface solar absorption: Disabled (see [zone_solver.py:203-224](zone_solver.py#L203-L224) for rationale)
+- Exterior surface solar absorption: Disabled (see [bsm/core/zone_solver.py:203-224](bsm/core/zone_solver.py#L203-L224) for rationale)
 
 **Remaining Limitations:**
 1. No geometric shading (overhangs, fins, obstructions)
@@ -720,7 +861,14 @@ results/bestest_suite/bestest_validation_report.md
 
 ### Changelog
 
-**January 2026:**
+**January 2026 (v1.0.0) - Major Restructuring:**
+- **Codebase Restructure**: Reorganized 37+ root-level Python files into logical `bsm/` package hierarchy
+- **LLM Agent System**: Added comprehensive documentation for the LLM-powered occupant agent system
+- **Code Deduplication**: Consolidated shared Walton convection correlations into `bsm/heat_transfer/convection.py`
+- **Modern Packaging**: Added `pyproject.toml` for modern Python packaging
+- **Cleanup**: Removed empty `bestest_results/` directory
+
+**Earlier January 2026:**
 - Removed empty placeholder files: `devices.py`, `lighting.py`
 - Added comprehensive input validation for window areas, weather data, and construction layers
 - Made internal gains convective/radiative split configurable (default: 40/60 per ASHRAE)

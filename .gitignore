@@ -9,3 +9,13 @@ Documentation/Figures/Exterior Surfaces.png
 Documentation/Figures/Interior Surfaces.png
 Documentation/Figures/Table 7-10.png
 Documentation/Figures/Windows Spec.png
+Documentation/TableA3-1.csv
+Documentation/TableA3-2.csv
+Documentation/Table7-27.csv
+Documentation/Table7-12.csv
+Documentation/Table7-2.csv
+.gitignore
+Documentation/TableA3-3.csv
+Documentation/TableA3-4.csv
+results
+docs/LLM_AGENT_ARCHITECTURE.md

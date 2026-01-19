@@ -15,7 +15,10 @@
     "start_date": "2020-01-01",
     "stabilization_days": 3,
     "hvac_coupling_mode": "auto",
-    "hvac_max_power_rate_w_s": 50000.0
+    "hvac_max_power_rate_w_s": 50000.0,
+    "enable_opaque_solar_absorption": true,
+    "interior_radiation_method": "area_weighted",
+    "use_adaptive_timestepping": true
   },
   "location": {
     "latitude": 50.9105,
@@ -130,7 +133,8 @@
     "unoccupied_heating_setpoint_c": 15.0,
     "occupied_cooling_setpoint_c": 24.0,
     "unoccupied_cooling_setpoint_c": 30.0,
-    "occupied_internal_gains_w": 0.0
+    "occupied_internal_gains_w": 0.0,
+    "unoccupied_internal_gains_w": 0.0
   },
 
   "occupancy": {
@@ -168,6 +172,116 @@
     ]
   },
 
+  "llm_agents": {
+    "_comment": "LLM-based occupant agents using OpenAI API. Set enabled: true to use instead of rule-based occupants.",
+    "enabled": false,
+    "api_timeout_seconds": 30,
+    "agent_model": "gpt-5.2",
+    "embed_model": "text-embedding-3-large",
+    "memory_db": "occupant_memory.sqlite",
+    "calendar_db": "occupant_calendar.sqlite",
+    "sessions_db": "agent_sessions.sqlite",
+    "decision_interval_minutes": 60,
+    "daily_planning_hour": 0,
+    "memory_settings": {
+      "action_half_life_days": 14.0,
+      "top_k_retrieval": 6
+    },
+    "agents": [
+      {
+        "id": "alice_001",
+        "name": "Alice",
+        "core_memories": [
+          "I prefer thermal comfort around 21C; I dislike frequent temperature swings.",
+          "I usually arrive between 08:45 and 09:15.",
+          "I prefer Desk_A because it has good natural light.",
+          "I am environmentally conscious and try to save energy when possible."
+        ],
+        "default_desk": "Desk_A"
+      },
+      {
+        "id": "bob_002",
+        "name": "Bob",
+        "core_memories": [
+          "I run warm and prefer cooler temperatures around 19C.",
+          "I typically arrive at 09:00 and leave at 18:00.",
+          "I prefer Desk_B which is near the window.",
+          "I often use the photocopier for printing documents."
+        ],
+        "default_desk": "Desk_B"
+      },
+      {
+        "id": "charlie_003",
+        "name": "Charlie",
+        "core_memories": [
+          "I get cold easily and prefer temperatures around 22C.",
+          "I have flexible hours, arriving between 10:00-11:00.",
+          "I prefer Desk_C which is quieter.",
+          "I frequently attend meetings in the meeting room."
+        ],
+        "default_desk": "Desk_C"
+      }
+    ]
+  },
+
+  "desks": {
+    "Desk_A": {
+      "equipment": ["laptop_A", "monitor_A"],
+      "light": "desk_light_A"
+    },
+    "Desk_B": {
+      "equipment": ["laptop_B", "monitor_B"],
+      "light": "desk_light_B"
+    },
+    "Desk_C": {
+      "equipment": ["laptop_C", "monitor_C"],
+      "light": "desk_light_C"
+    }
+  },
+
+  "equipment": {
+    "default_power_w": {
+      "laptop": 50,
+      "monitor": 30,
+      "photocopier_standby": 20,
+      "photocopier_active": 400,
+      "desktop_computer": 150,
+      "projector": 200,
+      "conference_phone": 10
+    },
+    "shared_equipment": ["photocopier"],
+    "items": {
+      "laptop_A": {"type": "laptop", "location": "Desk_A"},
+      "laptop_B": {"type": "laptop", "location": "Desk_B"},
+      "laptop_C": {"type": "laptop", "location": "Desk_C"},
+      "monitor_A": {"type": "monitor", "location": "Desk_A"},
+      "monitor_B": {"type": "monitor", "location": "Desk_B"},
+      "monitor_C": {"type": "monitor", "location": "Desk_C"},
+      "photocopier": {"type": "photocopier", "location": "shared"},
+      "projector": {"type": "projector", "location": "meeting_room"},
+      "conference_phone": {"type": "conference_phone", "location": "meeting_room"}
+    }
+  },
+
+  "lighting": {
+    "desk_light_power_w": 15,
+    "zone_light_power_w": 200,
+    "meeting_room_light_power_w": 100,
+    "zones": {
+      "desk_light_A": {"power_w": 15, "location": "Desk_A"},
+      "desk_light_B": {"power_w": 15, "location": "Desk_B"},
+      "desk_light_C": {"power_w": 15, "location": "Desk_C"},
+      "zone_main": {"power_w": 200, "location": "shared"},
+      "meeting_room": {"power_w": 100, "location": "meeting_room"}
+    }
+  },
+
+  "meeting_room": {
+    "capacity": 6,
+    "equipment": ["projector", "conference_phone"],
+    "light": "meeting_room"
+  },
+
   "weather": {
     "type": "file",
     "temp_base_c": -10,
@@ -177,11 +291,12 @@
     "wind_Speed_ms": 20.0
   },
   "convection_models": {
+    "_comment": "ASHRAE 140 validated settings - DOE2 exterior, ASHRAE_Simple interior",
     "exterior_hf": {
-      "RoofStable": "SparrowWindward",
-      "RoofUnstable": "SparrowWindward",
-      "VerticalWallWindward": "SparrowWindward",
-      "VerticalWallLeeward": "SparrowLeeward"
+      "RoofStable": "DOE2Windward",
+      "RoofUnstable": "DOE2Windward",
+      "VerticalWallWindward": "DOE2Windward",
+      "VerticalWallLeeward": "DOE2Leeward"
     },
     "exterior_hn": {
       "RoofStable": "WaltonStableHorizontalOrTilt",
@@ -194,7 +309,11 @@
       "UnstableHorizontal": "WaltonUnstableHorizontalOrTilt",
       "StableHorizontal": "WaltonStableHorizontalOrTilt",
       "UnstableTilted": "WaltonUnstableHorizontalOrTilt",
-      "StableTilted": "WaltonStableHorizontalOrTilt"
+      "StableTilted": "WaltonStableHorizontalOrTilt",
+      "HeatedFloor": "WaltonUnstableHorizontalOrTilt",
+      "CooledFloor": "WaltonStableHorizontalOrTilt",
+      "HeatedCeiling": "WaltonUnstableHorizontalOrTilt",
+      "CooledCeiling": "WaltonStableHorizontalOrTilt"
     }
   }
 }

@@ -92,13 +92,19 @@ class BESTESTConfigBuilder:
         """Build simulation settings section."""
         settings = case_data.get('simulation_settings', {})
 
-        return {
+        sim_settings = {
             'dt_minutes': settings.get('dt_minutes', 10),
             'duration_days': settings.get('duration_days', 365),
             'stabilization_days': settings.get('warmup_days', 25),
             'start_date': settings.get('start_date', '2020-01-01'),
             'enable_opaque_solar_absorption': settings.get('enable_opaque_solar_absorption', True)
         }
+
+        # Interior radiation method: 'area_weighted' (default), 'carroll', or 'view_factor'
+        if 'interior_radiation_method' in settings:
+            sim_settings['interior_radiation_method'] = settings['interior_radiation_method']
+
+        return sim_settings
 
     def _build_zone_properties(self, case_data: dict) -> dict:
         """Build zone properties section."""
@@ -346,14 +352,18 @@ class BESTESTConfigBuilder:
         convection_data = case_data.get('convection', {})
 
         # Default BESTEST-appropriate convection models
+        # Using DOE-2 algorithm which combines MoWiTT forced with TARP natural convection
+        # This provides higher convection coefficients (~12 W/m²K) than Sparrow+Walton (~6 W/m²K)
+        # and is validated against field measurements (Yazdanian & Klems 1994)
         default_convection = {
             'exterior_hf': {
-                'RoofStable': 'SparrowWindward',
-                'RoofUnstable': 'SparrowWindward',
-                'VerticalWallWindward': 'SparrowWindward',
-                'VerticalWallLeeward': 'SparrowLeeward'
+                'RoofStable': 'DOE2Windward',
+                'RoofUnstable': 'DOE2Windward',
+                'VerticalWallWindward': 'DOE2Windward',
+                'VerticalWallLeeward': 'DOE2Leeward'
             },
             'exterior_hn': {
+                # Note: DOE2 models are combined (include natural), so these are fallbacks
                 'RoofStable': 'WaltonStableHorizontalOrTilt',
                 'RoofUnstable': 'WaltonUnstableHorizontalOrTilt',
                 'VerticalWallWindward': 'ASHRAEVerticalWall',
@@ -364,7 +374,14 @@ class BESTESTConfigBuilder:
                 'StableHorizontal': 'WaltonStableHorizontalOrTilt',
                 'UnstableHorizontal': 'WaltonUnstableHorizontalOrTilt',
                 'StableTilted': 'WaltonStableHorizontalOrTilt',
-                'UnstableTilted': 'WaltonUnstableHorizontalOrTilt'
+                'UnstableTilted': 'WaltonUnstableHorizontalOrTilt',
+                # Floor-specific classifications (NEW)
+                # Awbi-Hatton gives ~5× higher h_c for heated floors
+                'HeatedFloor': 'AwbiHattonHeatedFloor',
+                'CooledFloor': 'AlamdariHammondUnstableHorizontal',  # Unstable for cooled floor
+                # Ceiling-specific classifications (NEW)
+                'HeatedCeiling': 'WaltonUnstableHorizontalOrTilt',  # Unstable for heated ceiling
+                'CooledCeiling': 'WaltonStableHorizontalOrTilt'     # Stable for cooled ceiling
             }
         }
 

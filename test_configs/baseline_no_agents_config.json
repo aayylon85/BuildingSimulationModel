@@ -1,0 +1,361 @@
+{
+  "_comment": "Baseline Configuration WITHOUT LLM Agents - Time-governed equipment, lighting, and setpoints for 09:00-19:00 occupied office",
+  "_unit_conventions": {
+    "temperature": "degrees Celsius (C)",
+    "length": "meters (m)",
+    "area": "square meters (m2)",
+    "power": "Watts (W)",
+    "angles": "degrees",
+    "time": "see key suffix (_minutes, _days, _hours, etc.)"
+  },
+
+  "simulation_settings": {
+    "dt_minutes": 1,
+    "duration_days": 1,
+    "start_date": "2026-01-01",
+    "stabilization_days": 3,
+    "hvac_coupling_mode": "auto",
+    "hvac_max_power_rate_w_s": 50000.0,
+    "enable_opaque_solar_absorption": true,
+    "interior_radiation_method": "area_weighted",
+    "use_adaptive_timestepping": true
+  },
+
+  "location": {
+    "latitude": 50.9105,
+    "longitude": -1.4049,
+    "place_name": "Southampton",
+    "time_zone": "GMT"
+  },
+
+  "zone_properties": {
+    "name": "Office_Main",
+    "length": 10.0,
+    "width": 8.0,
+    "height": 2.8,
+    "zone_sensible_heat_capacity_multiplier": 4.0
+  },
+
+  "geometry": {
+    "exterior_surfaces": [
+      "north_wall",
+      "east_wall",
+      "south_wall",
+      "west_wall",
+      "roof"
+    ],
+    "surface_definitions": {
+      "north_wall": {"area": 22.4, "perimeter": 21.6, "tilt": 90, "azimuth": 0, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "east_wall": {"area": 28.0, "perimeter": 21.6, "tilt": 90, "azimuth": 90, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "south_wall": {"area": 22.4, "perimeter": 21.6, "tilt": 90, "azimuth": 180, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "west_wall": {"area": 28.0, "perimeter": 21.6, "tilt": 90, "azimuth": 270, "type": "wall", "roughness_index": 2, "construction_name": "ExteriorWall"},
+      "roof": {"area": 80.0, "perimeter": 36.0, "tilt": 0, "azimuth": 0, "type": "roof", "roughness_index": 3, "construction_name": "ExteriorWall"},
+      "floor": {"area": 80.0, "perimeter": 36.0, "tilt": 180, "azimuth": 0, "type": "floor", "roughness_index": 3, "construction_name": "SlabFloor"}
+    }
+  },
+
+  "materials": [
+    {
+      "name": "Concrete",
+      "thickness": 0.1,
+      "conductivity": 1.4,
+      "density": 2300,
+      "specific_heat": 880
+    },
+    {
+      "name": "Insulation",
+      "thickness": 0.05,
+      "conductivity": 0.04,
+      "density": 30,
+      "specific_heat": 1200
+    }
+  ],
+
+  "constructions": {
+    "ExteriorWall": {
+      "layers": [
+        "Concrete",
+        "Insulation",
+        "Concrete"
+      ]
+    },
+    "SlabFloor": {
+      "layers": [
+        "Concrete"
+      ]
+    }
+  },
+
+  "windows": [
+    {
+      "wall_name": "south_wall",
+      "area": 6.0,
+      "u_value": 1.5,
+      "shgc": 0.5,
+      "solar_distribution": {
+        "floor": 0.6,
+        "north_wall": 0.2,
+        "east_wall": 0.1,
+        "west_wall": 0.1
+      }
+    }
+  ],
+
+  "air_exchange": {
+    "infiltration": {
+      "flow_coefficient_m3_s_Pa_n": 0.00025,
+      "pressure_exponent_n": 0.65,
+      "stack_coeff_Pa_K": 0.078,
+      "wind_coeff_Pa_s2_m2": 0.15,
+      "shelter_factor_s": 0.5
+    },
+    "ventilation": {
+      "open_window_ach": 5.0
+    }
+  },
+
+  "hvac_system": {
+    "model_type": "PIDControlledHVAC",
+    "heating_capacity_w": 5000.0,
+    "cooling_capacity_w": 5000.0,
+    "heating_deadband_c": 1.0,
+    "cooling_deadband_c": 1.0,
+    "min_runtime_minutes": 60.0,
+    "min_offtime_minutes": 10.0,
+    "ramp_up_minutes": 30.0
+  },
+
+  "schedules": {
+    "_comment": "Office occupied 09:00-19:00 with 3 occupants, equipment and lights on during occupied hours",
+    "occupied_hours": [9, 19],
+    "occupied_heating_setpoint_c": 21.0,
+    "unoccupied_heating_setpoint_c": 15.0,
+    "occupied_cooling_setpoint_c": 24.0,
+    "unoccupied_cooling_setpoint_c": 30.0,
+    "occupied_internal_gains_w": 845.0,
+    "unoccupied_internal_gains_w": 20.0,
+    "_internal_gains_breakdown": {
+      "equipment_w": 240,
+      "lighting_w": 245,
+      "occupants_3x120w": 360,
+      "total_w": 845,
+      "standby_w": 20
+    }
+  },
+
+  "occupancy": {
+    "_comment": "Heat gains included in schedules above - no individual occupant definitions needed for baseline",
+    "heat_gain_per_occupant_w": 120.0,
+    "check_interval_minutes": 60,
+    "thermostat_adjustment_c": 1.0,
+    "occupants": []
+  },
+
+  "llm_agents": {
+    "_comment": "LLM agents DISABLED for baseline comparison",
+    "enabled": false,
+    "api_timeout_seconds": 30,
+    "agent_model": "gpt-5.2",
+    "embed_model": "text-embedding-3-large",
+    "decision_interval_minutes": 60,
+    "daily_planning_hour": 0,
+    "memory_settings": {
+      "action_half_life_days": 14.0,
+      "top_k_retrieval": 6
+    },
+    "agent_source": {
+      "_comment": "Agent initialization: 'fresh' copies from base_types_folder, 'continue' uses previous run",
+      "mode": "fresh",
+      "base_types_folder": "agent_base_types",
+      "continue_from_run": null
+    },
+    "agents": [
+      {
+        "id": "alice_001",
+        "base_type": "alice_office_worker",
+        "name": "Alice",
+        "personality_summary": "Methodical and punctual. Values routine but adapts when needed. Environmentally conscious.",
+        "typical_schedule": {
+          "arrival_range": "08:30-09:15",
+          "departure_range": "17:00-17:30",
+          "notes": "Morning person, prefers consistent hours"
+        },
+        "core_memories": [
+          "I'm definitely a morning person - I like being at my desk by 8:45 to review my day before others arrive.",
+          "21°C is my comfort zone. When it gets too warm I sometimes open a window if the weather's nice.",
+          "I chose Desk_A specifically for the natural light from the south window.",
+          "I try to remember to turn off my equipment when I leave - small things add up for the environment.",
+          "I usually head home around 17:00. My commute is easier if I leave on time."
+        ],
+        "default_desk": "Desk_A",
+        "works_weekends": false
+      },
+      {
+        "id": "bob_002",
+        "base_type": "bob_office_worker",
+        "name": "Bob",
+        "personality_summary": "Routine-oriented and precise. Runs warm, prefers cooler environments. Likes direct task lighting.",
+        "typical_schedule": {
+          "arrival_range": "08:55-09:05",
+          "departure_range": "17:55-18:05",
+          "notes": "Very punctual, like clockwork"
+        },
+        "core_memories": [
+          "I run warm - I'm most comfortable around 19°C, which others find cold.",
+          "I'm a creature of habit. 09:00 arrival, 18:00 departure, like clockwork.",
+          "Desk_B is perfect - corner position, morning light, and I can crack the window if needed.",
+          "I use the photocopier a lot in the morning. Easier to batch my printing then.",
+          "I keep my desk light on even during the day - I like having direct task lighting."
+        ],
+        "default_desk": "Desk_B",
+        "works_weekends": false
+      },
+      {
+        "id": "charlie_003",
+        "base_type": "charlie_office_worker",
+        "name": "Charlie",
+        "personality_summary": "Flexible and social. Gets cold easily. Often organizes team activities and meetings.",
+        "typical_schedule": {
+          "arrival_range": "10:00-11:00",
+          "departure_range": "18:30-19:00",
+          "notes": "Not a morning person, flexible hours"
+        },
+        "core_memories": [
+          "I get cold easily - 22°C is comfortable for me, though others complain it's warm.",
+          "My hours are flexible. I'm not a morning person, so I drift in between 10:00-11:00.",
+          "I picked Desk_C because it's quiet and away from window drafts.",
+          "I organize a lot of the team meetings. It's easier when you're near the meeting room.",
+          "I usually leave around 18:30 or 19:00 since I start late anyway."
+        ],
+        "default_desk": "Desk_C",
+        "works_weekends": false
+      }
+    ]
+  },
+
+  "desks": {
+    "Desk_A": {
+      "equipment": ["laptop_A", "monitor_A"],
+      "light": "desk_light_A"
+    },
+    "Desk_B": {
+      "equipment": ["laptop_B", "monitor_B"],
+      "light": "desk_light_B"
+    },
+    "Desk_C": {
+      "equipment": ["laptop_C", "monitor_C"],
+      "light": "desk_light_C"
+    }
+  },
+
+  "equipment": {
+    "default_power_w": {
+      "laptop": 50,
+      "monitor": 30,
+      "photocopier_standby": 20,
+      "photocopier_active": 400,
+      "desktop_computer": 150,
+      "projector": 200,
+      "conference_phone": 10
+    },
+    "shared_equipment": ["photocopier"],
+    "items": {
+      "laptop_A": {"type": "laptop", "location": "Desk_A"},
+      "laptop_B": {"type": "laptop", "location": "Desk_B"},
+      "laptop_C": {"type": "laptop", "location": "Desk_C"},
+      "monitor_A": {"type": "monitor", "location": "Desk_A"},
+      "monitor_B": {"type": "monitor", "location": "Desk_B"},
+      "monitor_C": {"type": "monitor", "location": "Desk_C"},
+      "photocopier": {"type": "photocopier", "location": "shared"},
+      "projector": {"type": "projector", "location": "meeting_room"},
+      "conference_phone": {"type": "conference_phone", "location": "meeting_room"}
+    }
+  },
+
+  "lighting": {
+    "desk_light_power_w": 15,
+    "zone_light_power_w": 200,
+    "meeting_room_light_power_w": 100,
+    "zones": {
+      "desk_light_A": {"power_w": 15, "location": "Desk_A"},
+      "desk_light_B": {"power_w": 15, "location": "Desk_B"},
+      "desk_light_C": {"power_w": 15, "location": "Desk_C"},
+      "zone_main": {"power_w": 200, "location": "shared"},
+      "meeting_room": {"power_w": 100, "location": "meeting_room"}
+    }
+  },
+
+  "meeting_room": {
+    "capacity": 6,
+    "equipment": ["projector", "conference_phone"],
+    "light": "meeting_room"
+  },
+
+  "room_layout": {
+    "description": "Open plan office with south-facing windows",
+    "desks": {
+      "Desk_A": {
+        "position": "South wall, near window",
+        "characteristics": ["Good natural light", "Can see outside", "Near entrance"],
+        "pros": "Best natural light in the morning and afternoon",
+        "cons": "Can be warm on sunny days, near foot traffic"
+      },
+      "Desk_B": {
+        "position": "East wall, corner",
+        "characteristics": ["Window view", "Corner position", "Near photocopier"],
+        "pros": "Morning light, some privacy from corner",
+        "cons": "Photocopier noise nearby"
+      },
+      "Desk_C": {
+        "position": "North wall, interior",
+        "characteristics": ["Away from windows", "Quiet area", "Near meeting room"],
+        "pros": "Quietest spot, no direct sun glare",
+        "cons": "Less natural light, needs desk lamp more often"
+      }
+    },
+    "meeting_room": {
+      "position": "North-east corner",
+      "characteristics": ["Enclosed", "Whiteboard", "Video conferencing"]
+    },
+    "shared_areas": {
+      "photocopier": "Near Desk_B",
+      "entrance": "South wall, near Desk_A"
+    }
+  },
+
+  "weather": {
+    "type": "file",
+    "temp_base_c": -10,
+    "temp_amplitude_c": 3,
+    "temp_phase_shift_hr": 14,
+    "solar_max_irradiance_w_m2": 400,
+    "wind_Speed_ms": 20.0
+  },
+
+  "convection_models": {
+    "_comment": "ASHRAE 140 validated settings - DOE2 exterior, ASHRAE_Simple interior",
+    "exterior_hf": {
+      "RoofStable": "DOE2Windward",
+      "RoofUnstable": "DOE2Windward",
+      "VerticalWallWindward": "DOE2Windward",
+      "VerticalWallLeeward": "DOE2Leeward"
+    },
+    "exterior_hn": {
+      "RoofStable": "WaltonStableHorizontalOrTilt",
+      "RoofUnstable": "WaltonUnstableHorizontalOrTilt",
+      "VerticalWallWindward": "ASHRAEVerticalWall",
+      "VerticalWallLeeward": "ASHRAEVerticalWall"
+    },
+    "interior": {
+      "VerticalWall": "ASHRAEVerticalWall",
+      "UnstableHorizontal": "WaltonUnstableHorizontalOrTilt",
+      "StableHorizontal": "WaltonStableHorizontalOrTilt",
+      "UnstableTilted": "WaltonUnstableHorizontalOrTilt",
+      "StableTilted": "WaltonStableHorizontalOrTilt",
+      "HeatedFloor": "WaltonUnstableHorizontalOrTilt",
+      "CooledFloor": "WaltonStableHorizontalOrTilt",
+      "HeatedCeiling": "WaltonUnstableHorizontalOrTilt",
+      "CooledCeiling": "WaltonStableHorizontalOrTilt"
+    }
+  }
+}

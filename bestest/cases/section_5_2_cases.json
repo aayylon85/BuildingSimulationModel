@@ -284,6 +284,7 @@
       "duration_days": 365,
       "warmup_days": 25,
       "start_date": "2020-01-01",
+      "interior_radiation_method": "area_weighted",
       "notes": "Full annual simulation per ASHRAE 140-2020 requirements"
     },
 
