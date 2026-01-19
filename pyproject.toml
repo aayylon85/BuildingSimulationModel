@@ -55,7 +55,6 @@ llm = [
     "openai>=1.0.0",
     "openai-agents>=0.1.0",
     "pydantic>=2.0.0",
-    "pytz>=2023.0",
 ]
 dev = [
     "pytest>=7.4.0",

@@ -27,6 +27,7 @@
     "time_zone": "GMT"
   },
   "zone_properties": {
+    "name": "Office_Main",
     "length": 10.0,
     "width": 8.0,
     "height": 2.8,
@@ -176,51 +177,21 @@
     "_comment": "LLM-based occupant agents using OpenAI API. Set enabled: true to use instead of rule-based occupants.",
     "enabled": false,
     "api_timeout_seconds": 30,
-    "agent_model": "gpt-5.2",
+    "agent_model": "gpt-4o",
     "embed_model": "text-embedding-3-large",
-    "memory_db": "occupant_memory.sqlite",
-    "calendar_db": "occupant_calendar.sqlite",
-    "sessions_db": "agent_sessions.sqlite",
     "decision_interval_minutes": 60,
     "daily_planning_hour": 0,
-    "memory_settings": {
-      "action_half_life_days": 14.0,
-      "top_k_retrieval": 6
+    "agent_source": {
+      "_comment": "Agent initialization: 'fresh' copies from base_types_folder, 'continue' uses previous run",
+      "mode": "fresh",
+      "base_types_folder": "agent_base_types",
+      "continue_from_run": null
     },
+    "_agents_note": "Agent properties (personality, schedule, preferences) come from agent_base_types/{base_type}/ folder. Only id and base_type are required here.",
     "agents": [
-      {
-        "id": "alice_001",
-        "name": "Alice",
-        "core_memories": [
-          "I prefer thermal comfort around 21C; I dislike frequent temperature swings.",
-          "I usually arrive between 08:45 and 09:15.",
-          "I prefer Desk_A because it has good natural light.",
-          "I am environmentally conscious and try to save energy when possible."
-        ],
-        "default_desk": "Desk_A"
-      },
-      {
-        "id": "bob_002",
-        "name": "Bob",
-        "core_memories": [
-          "I run warm and prefer cooler temperatures around 19C.",
-          "I typically arrive at 09:00 and leave at 18:00.",
-          "I prefer Desk_B which is near the window.",
-          "I often use the photocopier for printing documents."
-        ],
-        "default_desk": "Desk_B"
-      },
-      {
-        "id": "charlie_003",
-        "name": "Charlie",
-        "core_memories": [
-          "I get cold easily and prefer temperatures around 22C.",
-          "I have flexible hours, arriving between 10:00-11:00.",
-          "I prefer Desk_C which is quieter.",
-          "I frequently attend meetings in the meeting room."
-        ],
-        "default_desk": "Desk_C"
-      }
+      {"id": "alice_001", "base_type": "alice_office_worker"},
+      {"id": "bob_002", "base_type": "bob_office_worker"},
+      {"id": "charlie_003", "base_type": "charlie_office_worker"}
     ]
   },
 
@@ -280,6 +251,38 @@
     "capacity": 6,
     "equipment": ["projector", "conference_phone"],
     "light": "meeting_room"
+  },
+
+  "room_layout": {
+    "description": "Open plan office with south-facing windows",
+    "desks": {
+      "Desk_A": {
+        "position": "South wall, near window",
+        "characteristics": ["Good natural light", "Can see outside", "Near entrance"],
+        "pros": "Best natural light in the morning and afternoon",
+        "cons": "Can be warm on sunny days, near foot traffic"
+      },
+      "Desk_B": {
+        "position": "East wall, corner",
+        "characteristics": ["Window view", "Corner position", "Near photocopier"],
+        "pros": "Morning light, some privacy from corner",
+        "cons": "Photocopier noise nearby"
+      },
+      "Desk_C": {
+        "position": "North wall, interior",
+        "characteristics": ["Away from windows", "Quiet area", "Near meeting room"],
+        "pros": "Quietest spot, no direct sun glare",
+        "cons": "Less natural light, needs desk lamp more often"
+      }
+    },
+    "meeting_room": {
+      "position": "North-east corner",
+      "characteristics": ["Enclosed", "Whiteboard", "Video conferencing"]
+    },
+    "shared_areas": {
+      "photocopier": "Near Desk_B",
+      "entrance": "South wall, near Desk_A"
+    }
   },
 
   "weather": {
