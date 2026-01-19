@@ -24,13 +24,22 @@ python main.py                              # Uses simulation_config.json
 python main.py my_config.json               # Custom config
 ```
 
-Results saved to `results/YYYY-MM-DD/` with CSV data, config copy, and plots.
+Results saved to `results/YYYY-MM-DD/HH-MM-SS/` with CSV data, JSON summary, config copy, report, and plots.
 
 ### Run BESTEST Validation
 
 ```bash
-python test_rig.py --bestest                # All supported cases
-python test_rig.py --bestest --cases 600 900  # Specific cases
+python test_rig.py --bestest                           # All supported cases
+python test_rig.py --bestest --cases 600 900           # Specific cases
+python test_rig.py --bestest --output results/my_test  # Custom output dir
+python test_rig.py --bestest --reference ref_data.json # Compare to reference
+```
+
+### Package CLI (after pip install)
+
+```bash
+bsm simulation_config.json                  # Run single simulation
+bsm-test --bestest --cases 600 620          # Run BESTEST suite
 ```
 
 ## Key Features
@@ -70,12 +79,14 @@ Simulations are controlled via JSON configuration files. See [simulation_config.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `dt_minutes` | Timestep in minutes | 1 |
-| `duration_days` | Simulation duration | 5 |
-| `start_date` | Start date for weather data | - |
+| `dt_minutes` | Timestep in minutes | (required) |
+| `duration_days` | Simulation duration | (required) |
+| `start_date` | Start date for weather data (YYYY-MM-DD) | "2026-01-14" |
 | `stabilization_days` | Warm-up period before data collection | 3 |
 | `hvac_coupling_mode` | "auto", "implicit", or "explicit" | "auto" |
-| `enable_opaque_solar_absorption` | Enable solar absorption on exterior surfaces | true |
+| `hvac_max_power_rate_w_s` | HVAC power ramp rate limit (W/s) | 50000.0 |
+| `max_nodes_per_layer` | Max discretization nodes per material layer | 20 |
+| `enable_opaque_solar_absorption` | Enable solar absorption on exterior surfaces | false |
 | `interior_radiation_method` | "area_weighted", "carroll", or "view_factor" | "area_weighted" |
 | `use_adaptive_timestepping` | Auto-reduce timestep on convergence failure | true |
 
@@ -368,17 +379,27 @@ For LLM agents, define the office layout:
 
 ## Weather
 
-**File-based** (fetches from Open-Meteo API):
+Three weather data sources are supported:
+
+**Open-Meteo API** (requires internet, uses location config):
 ```json
 "weather": {
   "type": "file"
 }
 ```
 
-**Sinusoidal** (for testing):
+**EnergyPlus Weather File** (EPW):
 ```json
 "weather": {
-  "type": "sinusoidal",
+  "type": "epw",
+  "epw_path": "bestest/weather/epw/Denver_CO.epw"
+}
+```
+
+**Synthetic Sinusoidal** (for testing):
+```json
+"weather": {
+  "type": "simple_sinusoidal",
   "temp_base_c": -10,
   "temp_amplitude_c": 3,
   "temp_phase_shift_hr": 14,
@@ -494,9 +515,14 @@ BuildingSimulationModel/
 ├── Documentation/               # Reference materials
 │
 └── results/                     # Output directory (auto-created)
-    ├── YYYY-MM-DD/              # Individual simulation runs
+    ├── YYYY-MM-DD/HH-MM-SS/     # Individual simulation runs
+    │   ├── sim_Xdays_results.csv
+    │   ├── sim_Xdays_summary.json
+    │   ├── sim_Xdays_config.json
+    │   ├── sim_Xdays_report.md
+    │   └── figures/
     ├── bestest_suite/           # BESTEST results
-    └── agents/                  # LLM agent output
+    └── agents/                  # LLM agent state persistence
 ```
 
 ---
@@ -539,9 +565,19 @@ ASHRAE Standard 140-2020 Section 5.2 test suite.
 | Case | Description | Status |
 |------|-------------|--------|
 | 600 | Low mass, south windows | Supported |
+| 610 | South shading (overhang) | Approximated* |
 | 620 | East/west windows | Supported |
+| 630 | East/west with shading | Approximated* |
+| 640 | Night setback | Not supported |
+| 650 | Night ventilation | Not supported |
 | 900 | High mass, south windows | Supported |
+| 910 | High mass, south shading | Approximated* |
 | 920 | High mass, east/west windows | Supported |
+| 930 | High mass, east/west shading | Approximated* |
+| 940 | High mass, night setback | Not supported |
+| 950 | High mass, night ventilation | Not supported |
+
+*Approximated cases use reduced SHGC (0.55 vs 0.789) to approximate shading effects. Full geometric shading (overhangs, fins) not yet implemented.
 
 Results compared against EnergyPlus, ESP-r, BLAST, DOE-2, TRNSYS reference ranges.
 
@@ -549,25 +585,79 @@ Results compared against EnergyPlus, ESP-r, BLAST, DOE-2, TRNSYS reference range
 
 # Output Format
 
-## CSV Columns
+Each simulation run creates a timestamped directory with multiple output files.
 
-| Column | Units |
-|--------|-------|
-| Time (hrs) | hours |
-| Zone Temp (C) | °C |
-| Outside Temp (C) | °C |
-| HVAC Power (W) | Watts |
-| Fabric Loss (W) | Watts |
-| Air Exchange Loss (W) | Watts |
-| Solar Gains (W) | Watts |
-| Internal Gains (W) | Watts |
-| Window State (0-1) | - |
-
-## File Naming
+## Directory Structure
 
 ```
-results/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS_Xdays_results.csv
-results/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS_Xdays_config.json
+results/YYYY-MM-DD/HH-MM-SS/
+├── sim_Xdays_results.csv      # Time series data
+├── sim_Xdays_config.json      # Copy of input configuration
+├── sim_Xdays_summary.json     # Energy and temperature statistics
+├── sim_Xdays_report.md        # Markdown summary report
+└── figures/                   # Generated plots
+    ├── temperatures.png
+    ├── energy_flows.png
+    ├── summary_dashboard.png
+    └── agent_activity.png     # LLM mode only
+```
+
+## CSV Columns
+
+### Rule-Based Mode (9 columns)
+
+| Column | Units | Description |
+|--------|-------|-------------|
+| Time (hrs) | hours | Simulation time from start |
+| Zone Temp (C) | °C | Indoor air temperature |
+| Outside Temp (C) | °C | Exterior air temperature |
+| HVAC Power (W) | Watts | Positive=heating, negative=cooling |
+| Fabric Loss (W) | Watts | Heat loss through building fabric |
+| Air Exchange Loss (W) | Watts | Heat loss via infiltration/ventilation |
+| Solar Gains (W) | Watts | Solar radiation through windows |
+| Internal Gains (W) | Watts | Heat from occupants, equipment, lighting |
+| Window State (0-1) | - | 0=closed, 1=fully open |
+
+### LLM Agents Mode (15 columns)
+
+All columns above plus:
+
+| Column | Units | Description |
+|--------|-------|-------------|
+| Equipment Power (W) | Watts | Power from office equipment |
+| Lighting Power (W) | Watts | Power from lighting |
+| Occupant Count | count | Number of agents present |
+| Thermostat Offset (C) | °C | Agent-applied setpoint adjustment |
+| Heating Setpoint (C) | °C | Current heating setpoint |
+| Cooling Setpoint (C) | °C | Current cooling setpoint |
+
+## JSON Summary Format
+
+```json
+{
+  "simulation_info": {
+    "config_file": "path/to/config.json",
+    "duration_days": 5,
+    "timestep_minutes": 1,
+    "total_timesteps": 7200,
+    "llm_agents_enabled": false
+  },
+  "energy_summary_kwh": {
+    "heating": 150.5,
+    "cooling": 25.3,
+    "total_hvac": 175.8
+  },
+  "peak_power_w": {
+    "heating": 3500.0,
+    "cooling": 2100.0
+  },
+  "temperature_stats_c": {
+    "mean": 21.2,
+    "min": 18.5,
+    "max": 24.8,
+    "comfort_hours_pct": 95.2
+  }
+}
 ```
 
 ---
@@ -601,9 +691,10 @@ Adaptive timestepping handles most cases automatically. If persists:
 
 - Single zone only (no multi-zone)
 - No humidity/latent loads
-- No ground heat transfer modeling
-- Time-dependent schedules limited to occupied/unoccupied
-- Geometric shading (overhangs, fins) under development
+- No detailed ground heat transfer (uses Kusuda model for floor)
+- Time-dependent schedules limited to occupied/unoccupied periods
+- Geometric shading uses simplified SHGC reduction (no ray tracing)
+- Night setback and night ventilation schedules not yet supported
 
 ---
 

@@ -177,7 +177,7 @@
     "_comment": "LLM-based occupant agents using OpenAI API. Set enabled: true to use instead of rule-based occupants.",
     "enabled": false,
     "api_timeout_seconds": 30,
-    "agent_model": "gpt-4o",
+    "agent_model": "gpt-5.2",
     "embed_model": "text-embedding-3-large",
     "decision_interval_minutes": 60,
     "daily_planning_hour": 0,
