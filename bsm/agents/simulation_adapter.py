@@ -176,6 +176,9 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         self._agent_locations: Dict[str, str] = {}  # occupant_id -> location_name
         self._office_locations = DEFAULT_OFFICE_LOCATIONS.copy()
 
+        # Track whether agent has chosen desk for the day (prevents mid-day desk changes)
+        self._desk_chosen_today: Dict[str, bool] = {}  # occupant_id -> has_chosen_desk
+
         # Extend with config-provided locations if available
         config_locations = self._room_layout.get("locations", {})
         self._office_locations.update(config_locations)
@@ -380,6 +383,11 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 loc: self.get_agents_at_location(loc)
                 for loc in self._office_locations.keys()
             },
+
+            # Location-specific equipment (what's available where you are)
+            "location_equipment": self.get_equipment_at_location(
+                self.get_agent_location(occupant_id)
+            ),
         }
 
     def apply_decision(self, decision: OccupantStepDecision) -> None:
@@ -424,8 +432,15 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         elif action_type == "choose_desk":
             desk_name = params.get("desk_name")
             if desk_name:
-                # Just assign desk - agent decides when to turn on equipment
+                # Enforce desk choice only on arrival - cannot change desks mid-day
+                if self._desk_chosen_today.get(occupant_id, False):
+                    # Agent already chose a desk today - ignore the request
+                    current_desk = self.desks.get_desk_for_occupant(occupant_id)
+                    print(f"[DESK] {occupant_id} tried to change desk but already has {current_desk} for today")
+                    return
+                # Assign desk and mark as chosen for today
                 self.desks.assign_desk(occupant_id, desk_name)
+                self._desk_chosen_today[occupant_id] = True
 
         elif action_type == "equipment_set":
             self.equipment.apply_equipment_action(params, occupant_id)
@@ -471,21 +486,11 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         elif action_type == "move_to":
             # Move agent to a different location
+            # Note: Only updates location, not status. Status is memory-driven
+            # and should be set by explicit actions (go_to_lunch, take_break, etc.)
             location = params.get("location")
             if location:
-                success = self.set_agent_location(occupant_id, location)
-                if success:
-                    # Update status based on destination
-                    if location == "desk_area":
-                        self.set_agent_status(occupant_id, "at_desk", True)
-                        self.set_agent_status(occupant_id, "on_break", False)
-                    elif location == "break_area":
-                        self.set_agent_status(occupant_id, "at_desk", False)
-                    elif location == "meeting_room":
-                        self.set_agent_status(occupant_id, "at_desk", False)
-                    elif location == "shared_area":
-                        # Still working, just at shared area
-                        pass
+                self.set_agent_location(occupant_id, location)
 
         # Handle break/lunch actions with location tracking
         elif action_type == "go_to_lunch":
@@ -514,6 +519,64 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             self.set_agent_status(occupant_id, "on_break", False)
             self.set_agent_status(occupant_id, "at_desk", True)
             self.set_agent_location(occupant_id, "desk_area")
+
+        elif action_type == "use_appliance":
+            # Use an appliance at current location
+            appliance_name = params.get("appliance_name")
+            if appliance_name:
+                # Verify agent is at a location with this appliance
+                current_location = self.get_agent_location(occupant_id)
+                location_equipment = self.get_equipment_at_location(current_location)
+                equipment_names = [eq["name"] for eq in location_equipment]
+
+                if appliance_name in equipment_names:
+                    # Turn on the appliance (will auto-off after duration or next timestep)
+                    self.equipment.turn_on_equipment(appliance_name, occupant_id)
+
+        elif action_type == "initiate_conversation":
+            # Record conversation intent - actual conversation handled by manager
+            # This allows tracking of who wants to talk to whom about what
+            target_agent = params.get("agent_id")
+            topic = params.get("topic", "general")
+            if target_agent:
+                # Store the conversation request for manager to process
+                if not hasattr(self, '_pending_conversations'):
+                    self._pending_conversations = []
+                self._pending_conversations.append({
+                    "initiator": occupant_id,
+                    "target": target_agent,
+                    "topic": topic,
+                })
+
+        elif action_type == "update_daily_plan":
+            # Record plan update intent - actual update handled by manager
+            # Manager has access to GenerativeAgent.update_daily_plan()
+            updates = params.get("updates", {})
+            reason = params.get("reason", "Agent requested plan update")
+            if updates:
+                if not hasattr(self, '_pending_plan_updates'):
+                    self._pending_plan_updates = []
+                self._pending_plan_updates.append({
+                    "occupant_id": occupant_id,
+                    "updates": updates,
+                    "reason": reason,
+                })
+
+    def get_pending_conversations(self) -> list:
+        """Get and clear pending conversation requests."""
+        if not hasattr(self, '_pending_conversations'):
+            return []
+        conversations = self._pending_conversations
+        self._pending_conversations = []
+        return conversations
+
+    def get_pending_plan_updates(self) -> list:
+        """Get and clear pending plan update requests."""
+        if not hasattr(self, '_pending_plan_updates'):
+            return []
+        updates = self._pending_plan_updates
+        self._pending_plan_updates = []
+        return updates
 
     def _handle_occupant_departure(self, occupant_id: str) -> None:
         """Handle an occupant leaving the building."""
@@ -627,6 +690,10 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         """
         Set agent's current location.
 
+        Note: This only updates location, NOT status flags. Status should be
+        updated by explicit action handlers to keep behavior memory-driven
+        rather than automatically prescribed.
+
         Args:
             occupant_id: Agent ID
             location: Location name (must be in office_locations)
@@ -638,18 +705,6 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             return False
 
         self._agent_locations[occupant_id] = location
-
-        # Update agent status based on location
-        if location == "desk_area":
-            self.set_agent_status(occupant_id, "at_desk", True)
-        else:
-            self.set_agent_status(occupant_id, "at_desk", False)
-
-        if location == "break_area":
-            # If moving to break area, they may be taking break or going to lunch
-            # The specific action (take_break, go_to_lunch) should set the right flag
-            pass
-
         return True
 
     def get_available_locations(self) -> List[str]:
@@ -670,6 +725,48 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             agent_id for agent_id, loc in self._agent_locations.items()
             if loc == location and self._present_occupants.get(agent_id, False)
         ]
+
+    def get_equipment_at_location(self, location: str) -> List[Dict[str, Any]]:
+        """
+        Get equipment available at a specific location.
+
+        Args:
+            location: Location name (desk_area, break_area, meeting_room, etc.)
+
+        Returns:
+            List of equipment dicts with name, type, is_on, in_use_by
+        """
+        location_info = self._office_locations.get(location, {})
+        result = []
+
+        # Get appliances defined in location config
+        appliances = location_info.get("appliances", [])
+        for appliance_name in appliances:
+            eq_info = self.equipment.get_equipment_state_by_name(appliance_name)
+            if eq_info:
+                result.append({
+                    "name": appliance_name,
+                    "type": eq_info.get("type", appliance_name),
+                    "is_on": eq_info.get("is_on", False),
+                    "in_use_by": eq_info.get("assigned_to"),
+                })
+
+        # Get equipment_access defined in location config
+        equipment_access = location_info.get("equipment_access", [])
+        for eq_ref in equipment_access:
+            if eq_ref == "desk_equipment":
+                # Skip desk equipment, handled separately
+                continue
+            eq_info = self.equipment.get_equipment_state_by_name(eq_ref)
+            if eq_info:
+                result.append({
+                    "name": eq_ref,
+                    "type": eq_info.get("type", eq_ref),
+                    "is_on": eq_info.get("is_on", False),
+                    "in_use_by": eq_info.get("assigned_to"),
+                })
+
+        return result
 
     def get_present_occupant_ids(self) -> List[str]:
         """Get list of present occupant IDs."""
@@ -720,6 +817,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         self._present_occupants.clear()
         self._agent_status.clear()  # Reset all agent status
         self._agent_locations.clear()  # Reset all agent locations
+        self._desk_chosen_today.clear()  # Allow desk choice on new day
         self.desks.reset_all()
         self.equipment.reset_all()
         self.lighting.reset_all()

@@ -18,6 +18,28 @@
 - Best for meetings: Late morning (10-12) or early afternoon (2-3pm)
 - Second wind: Often gets focused again around 4pm for final push
 
+## Break Habits
+
+### Morning Break
+- Preferred time: 10:15-10:30
+- Location preference: break_room
+- Beverage: tea
+- Tea preferences: Earl Grey with a splash of milk, no sugar
+- Social style: Enjoys a quick chat with colleagues while kettle boils, but keeps it brief to get back to focused work
+
+### Afternoon Break
+- Preferred time: 15:00-15:15
+- Location preference: break_room
+- Beverage: tea
+- Activity: Makes another tea, often does a lap around the office to stretch legs
+
+### Lunch Habits
+- Typical lunch time: 12:30-13:00
+- Preferred location: at_desk (usually) or break_room (occasionally)
+- Food source: Brings lunch from home - usually leftovers or a prepared salad
+- Social style: Often eats at desk reading news or a book, but will join colleagues in break room if invited
+- Weather influence: On nice sunny days, more likely to eat quickly and go for a short walk outside
+
 ## Equipment Habits
 - Computer: Turns on first thing upon arrival, always fully shuts down before leaving
 - Sustainability: Energy-conscious - turns off monitor during meetings, uses power strip for easy shut-off

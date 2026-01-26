@@ -408,26 +408,84 @@ Works weekends: {self.scratch.get('works_weekends', False)}
         """Set daily plan in scratch."""
         self.scratch["daily_plan"] = plan
 
-    def update_daily_plan(self, updates: Dict[str, Any], reason: str, now: datetime) -> None:
+    def update_daily_plan(self, updates: Dict[str, Any], reason: str, now: datetime) -> Dict[str, Any]:
         """
         Update daily plan based on significant events.
+
+        Time-aware: Only allows updates to future events. Past events (meetings that
+        have already started or times that have passed) cannot be modified.
 
         Args:
             updates: Dictionary of updates to merge into the plan
             reason: Human-readable reason for the update
             now: Current simulation datetime
+
+        Returns:
+            Dict with update results: {"updated": bool, "skipped_past_events": list}
         """
         plan = self.get_daily_plan() or {}
-        plan.update(updates)
-        plan["last_updated"] = now.isoformat()
-        # Track update reasons
-        update_reasons = plan.get("update_reasons", [])
-        update_reasons.append({
-            "reason": reason,
-            "timestamp": now.isoformat(),
-        })
-        plan["update_reasons"] = update_reasons
-        self.set_daily_plan(plan)
+        current_time_str = now.strftime("%H:%M")
+        skipped_past_events = []
+
+        # Filter meeting updates - can't modify past meetings
+        if "meetings" in updates:
+            filtered_meetings = []
+            for meeting in updates.get("meetings", []):
+                meeting_start = meeting.get("start_datetime_iso", "")
+                try:
+                    # Parse meeting start time
+                    start_dt = datetime.fromisoformat(meeting_start)
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=timezone.utc)
+                    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+
+                    # Only allow updates to future meetings
+                    if start_dt > now_utc:
+                        filtered_meetings.append(meeting)
+                    else:
+                        skipped_past_events.append(f"Meeting '{meeting.get('title', 'unknown')}' (already started/passed)")
+                except (ValueError, TypeError):
+                    # If can't parse, include it
+                    filtered_meetings.append(meeting)
+
+            updates["meetings"] = filtered_meetings
+
+        # Filter lunch_plan updates - can't change past lunch time
+        if "lunch_plan" in updates:
+            lunch_plan = updates.get("lunch_plan", {})
+            lunch_time_str = lunch_plan.get("time", "") if isinstance(lunch_plan, dict) else ""
+            if lunch_time_str and lunch_time_str < current_time_str:
+                skipped_past_events.append(f"Lunch time '{lunch_time_str}' (already passed)")
+                del updates["lunch_plan"]
+
+        # Filter break updates - can't change past break times
+        for break_key in ["morning_break", "afternoon_break"]:
+            if break_key in updates:
+                break_plan = updates.get(break_key, {})
+                break_time_str = break_plan.get("preferred_time", "") if isinstance(break_plan, dict) else ""
+                if break_time_str and break_time_str < current_time_str:
+                    skipped_past_events.append(f"{break_key.replace('_', ' ').title()} at '{break_time_str}' (already passed)")
+                    del updates[break_key]
+
+        # Apply remaining updates
+        if updates:
+            plan.update(updates)
+            plan["last_updated"] = now.isoformat()
+
+            # Track update reasons
+            update_reasons = plan.get("update_reasons", [])
+            update_reasons.append({
+                "reason": reason,
+                "timestamp": now.isoformat(),
+                "skipped_past_events": skipped_past_events,
+            })
+            plan["update_reasons"] = update_reasons
+            self.set_daily_plan(plan)
+
+        return {
+            "updated": bool(updates),
+            "skipped_past_events": skipped_past_events,
+        }
 
     # -------------------------
     # Daily Clothing

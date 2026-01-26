@@ -8,6 +8,7 @@ equipment in the building simulation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -20,6 +21,11 @@ DEFAULT_POWER_W = {
     "photocopier_active": 400,
     "projector": 200,
     "conference_phone": 10,
+    # Break area appliances
+    "coffee_machine": 1200,
+    "kettle": 2000,
+    "microwave": 1000,
+    "fridge": 100,  # Always on, low power
 }
 
 # Default heat gain fractions by equipment type
@@ -33,6 +39,19 @@ DEFAULT_HEAT_GAIN_FRACTIONS = {
     "photocopier": 0.92,        # ~8% exhausted
     "projector": 0.95,          # ~5% fan exhaust
     "conference_phone": 1.0,    # All heat stays in zone
+    # Break area appliances
+    "coffee_machine": 0.8,      # ~20% heats water/steam
+    "kettle": 0.3,              # ~70% heats water
+    "microwave": 0.4,           # ~60% heats food
+    "fridge": 1.0,              # All heat stays in zone (back coils)
+}
+
+
+# Auto-off durations for kitchen appliances (in minutes)
+KITCHEN_AUTO_OFF_MINUTES = {
+    "kettle": 5,        # Kettle boils then auto-off
+    "coffee_machine": 10,  # Coffee brews then auto-off
+    "microwave": 3,     # Microwave cycle then auto-off
 }
 
 
@@ -47,6 +66,8 @@ class Equipment:
     is_on: bool = False
     assigned_to: Optional[str] = None  # occupant_id or None
     heat_gain_fraction: float = 1.0  # Fraction of power that becomes zone heat
+    auto_off_minutes: Optional[int] = None  # Auto-off duration for kitchen appliances
+    turned_on_at: Optional[datetime] = None  # When equipment was turned on
 
     def get_current_power(self) -> float:
         """Return current power consumption based on state."""
@@ -61,20 +82,39 @@ class Equipment:
         """Return current heat gain to zone (power * heat_gain_fraction)."""
         return self.get_current_power() * self.heat_gain_fraction
 
-    def turn_on(self, occupant_id: Optional[str] = None) -> None:
+    def turn_on(self, occupant_id: Optional[str] = None, current_time: Optional[datetime] = None) -> None:
         """Turn equipment on."""
         self.is_on = True
         if occupant_id:
             self.assigned_to = occupant_id
+        # Track when turned on for auto-off functionality
+        if current_time and self.auto_off_minutes:
+            self.turned_on_at = current_time
 
     def turn_off(self) -> None:
         """Turn equipment off."""
         self.is_on = False
         self.assigned_to = None
+        self.turned_on_at = None
+
+    def check_auto_off(self, current_time: datetime) -> bool:
+        """
+        Check if equipment should auto-off based on elapsed time.
+
+        Returns True if equipment was turned off, False otherwise.
+        """
+        if not self.is_on or self.auto_off_minutes is None or self.turned_on_at is None:
+            return False
+
+        elapsed_seconds = (current_time - self.turned_on_at).total_seconds()
+        if elapsed_seconds >= self.auto_off_minutes * 60:
+            self.turn_off()
+            return True
+        return False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        result = {
             "name": self.name,
             "type": self.equipment_type,
             "power_w": self.power_w,
@@ -85,6 +125,11 @@ class Equipment:
             "current_power_w": self.get_current_power(),
             "current_heat_gain_w": self.get_current_heat_gain(),
         }
+        if self.auto_off_minutes:
+            result["auto_off_minutes"] = self.auto_off_minutes
+        if self.turned_on_at:
+            result["turned_on_at"] = self.turned_on_at.isoformat()
+        return result
 
 
 class EquipmentManager:
@@ -151,6 +196,12 @@ class EquipmentManager:
             else:
                 heat_gain_frac = heat_gain_defaults.get(eq_type, 1.0)
 
+            # Determine auto-off duration: use item-specific, then type default for kitchen equipment
+            if "auto_off_minutes" in item_config:
+                auto_off = item_config["auto_off_minutes"]
+            else:
+                auto_off = KITCHEN_AUTO_OFF_MINUTES.get(eq_type)
+
             self._equipment[name] = Equipment(
                 name=name,
                 equipment_type=eq_type,
@@ -158,6 +209,7 @@ class EquipmentManager:
                 location=location,
                 is_on=False,
                 heat_gain_fraction=heat_gain_frac,
+                auto_off_minutes=auto_off,
             )
 
         # If no items configured, create default equipment for 3 desks
@@ -221,6 +273,40 @@ class EquipmentManager:
             heat_gain_fraction=heat_gain_defaults.get("conference_phone", 1.0),
         )
 
+        # Break area appliances with auto-off for kitchen equipment
+        self._equipment["coffee_machine"] = Equipment(
+            name="coffee_machine",
+            equipment_type="coffee_machine",
+            power_w=power_defaults.get("coffee_machine", 1200),
+            location="break_area",
+            heat_gain_fraction=heat_gain_defaults.get("coffee_machine", 0.8),
+            auto_off_minutes=KITCHEN_AUTO_OFF_MINUTES.get("coffee_machine"),
+        )
+        self._equipment["kettle"] = Equipment(
+            name="kettle",
+            equipment_type="kettle",
+            power_w=power_defaults.get("kettle", 2000),
+            location="break_area",
+            heat_gain_fraction=heat_gain_defaults.get("kettle", 0.3),
+            auto_off_minutes=KITCHEN_AUTO_OFF_MINUTES.get("kettle"),
+        )
+        self._equipment["microwave"] = Equipment(
+            name="microwave",
+            equipment_type="microwave",
+            power_w=power_defaults.get("microwave", 1000),
+            location="break_area",
+            heat_gain_fraction=heat_gain_defaults.get("microwave", 0.4),
+            auto_off_minutes=KITCHEN_AUTO_OFF_MINUTES.get("microwave"),
+        )
+        self._equipment["fridge"] = Equipment(
+            name="fridge",
+            equipment_type="fridge",
+            power_w=power_defaults.get("fridge", 100),
+            location="break_area",
+            is_on=True,  # Fridge is always on
+            heat_gain_fraction=heat_gain_defaults.get("fridge", 1.0),
+        )
+
     def get_equipment(self, name: str) -> Optional[Equipment]:
         """Get equipment by name."""
         return self._equipment.get(name)
@@ -228,6 +314,13 @@ class EquipmentManager:
     def get_equipment_at_location(self, location: str) -> List[Equipment]:
         """Get all equipment at a specific location."""
         return [eq for eq in self._equipment.values() if eq.location == location]
+
+    def get_equipment_state_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get equipment state dict for a single piece of equipment by name."""
+        eq = self._equipment.get(name)
+        if eq:
+            return eq.to_dict()
+        return None
 
     def get_equipment_state(self) -> Dict[str, Any]:
         """Return current equipment states for agent context."""
@@ -385,3 +478,41 @@ class EquipmentManager:
         """Turn off all equipment (e.g., at end of day)."""
         for eq in self._equipment.values():
             eq.turn_off()
+
+    def check_all_auto_off(self, current_time: datetime) -> List[str]:
+        """
+        Check all equipment for auto-off and turn off any that have exceeded their duration.
+
+        Args:
+            current_time: Current simulation datetime
+
+        Returns:
+            List of equipment names that were auto-turned off
+        """
+        auto_off_list = []
+        for eq in self._equipment.values():
+            if eq.check_auto_off(current_time):
+                auto_off_list.append(eq.name)
+        return auto_off_list
+
+    def turn_on_equipment_with_time(
+        self,
+        name: str,
+        occupant_id: Optional[str] = None,
+        current_time: Optional[datetime] = None,
+    ) -> bool:
+        """
+        Turn on equipment by name, tracking the time for auto-off.
+
+        Args:
+            name: Equipment name
+            occupant_id: ID of occupant using the equipment
+            current_time: Current simulation time (for auto-off tracking)
+
+        Returns True if successful, False if equipment doesn't exist.
+        """
+        eq = self._equipment.get(name)
+        if eq:
+            eq.turn_on(occupant_id, current_time)
+            return True
+        return False

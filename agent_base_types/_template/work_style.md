@@ -21,6 +21,29 @@
 - Best for meetings: [e.g., Late morning or early afternoon]
 - Creative peak: [e.g., Fresh in the morning after coffee]
 
+## Break Habits
+<!-- How they take breaks during the day -->
+
+### Morning Break
+- Preferred time: [e.g., 10:00-10:30]
+- Location preference: [at_desk / break_room]
+- Beverage: [tea / coffee / water / none]
+- Tea/coffee preferences: [e.g., "black coffee, no sugar" or "Earl Grey with milk"]
+- Social style: [e.g., "likes to chat with colleagues" or "prefers quiet time"]
+
+### Afternoon Break
+- Preferred time: [e.g., 15:00-15:30]
+- Location preference: [at_desk / break_room]
+- Beverage: [tea / coffee / water / none]
+- Activity: [e.g., "stretches legs with a walk" or "checks personal phone"]
+
+### Lunch Habits
+- Typical lunch time: [e.g., 12:30-13:30]
+- Preferred location: [at_desk / break_room / go_out]
+- Food source: [brought from home / purchased / varies]
+- Social style: [e.g., "eats with colleagues" or "enjoys solo lunch with podcast"]
+- Weather influence: [e.g., "goes out on nice days, stays in when raining"]
+
 ## Equipment Habits
 <!-- How they use office equipment -->
 - Computer: [e.g., Turns on first thing, always shuts down before leaving]

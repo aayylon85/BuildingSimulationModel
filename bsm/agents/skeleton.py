@@ -97,6 +97,12 @@ ActionType = Literal[
     "return_from_break",     # Come back from short break
     # Navigation
     "move_to",               # Move to a different location (parameters: location)
+    # Location-specific equipment
+    "use_appliance",         # Use an appliance at current location (parameters: appliance_name, duration_minutes)
+    # Social
+    "initiate_conversation", # Start a conversation with a colleague (parameters: agent_id, topic)
+    # Plan management
+    "update_daily_plan",     # Update daily plan based on new circumstances (parameters: updates dict, reason)
 ]
 
 class OccupantAction(BaseModel):
@@ -112,6 +118,89 @@ class OccupantStepDecision(BaseModel):
     is_present: bool = True  # Whether occupant is in the building
     actions: List[OccupantAction] = Field(default_factory=list)
     brief_rationale: str = Field(default="")
+
+
+# ---------------------------------------------------------------------------
+# Category-specific structured decisions for step checkpoints
+# ---------------------------------------------------------------------------
+
+class ThermostatDecision(BaseModel):
+    """Decision about thermostat adjustment based on how agent feels."""
+    action: Literal["adjust", "leave_as_is"]
+    reasoning: str = Field(description="How agent feels (hot/cold/comfortable) based on actual temp")
+    adjustment_direction: Optional[Literal["warmer", "cooler"]] = None
+    adjustment_amount: Optional[float] = Field(default=None, description="Degrees to adjust")
+
+
+class LightingDecision(BaseModel):
+    """Decision about lighting at current location."""
+    action: Literal["turn_on", "turn_off", "adjust_brightness", "leave_as_is"]
+    reasoning: str
+    target_device: Optional[str] = None
+    brightness_level: Optional[int] = Field(default=None, ge=0, le=100, description="Brightness 0-100%")
+
+
+class EquipmentDecision(BaseModel):
+    """Decision about equipment use (kettle, coffee machine, etc.)."""
+    action: Literal["use", "turn_off", "leave_as_is"]
+    reasoning: str
+    equipment_name: Optional[str] = None
+    duration_minutes: Optional[int] = Field(default=None, description="For kitchen equipment auto-off")
+
+
+class LocationDecision(BaseModel):
+    """Decision about moving to a different location."""
+    action: Literal["move", "stay"]
+    reasoning: str
+    destination: Optional[str] = Field(default=None, description="Target location: desk_area, meeting_room, break_area, shared_area")
+
+
+class ConversationDecision(BaseModel):
+    """Decision about initiating conversation with nearby agents."""
+    action: Literal["initiate", "none"]
+    reasoning: str
+    target_agent: Optional[str] = None
+    topic: Optional[str] = Field(default=None, description="Topic - not limited to thermostat")
+
+
+class BreakDecision(BaseModel):
+    """Decision about taking a break."""
+    action: Literal["take_break", "continue_working"]
+    reasoning: str
+    break_type: Optional[Literal["at_desk", "break_room"]] = None
+    activity: Optional[str] = Field(default=None, description="tea, coffee, snack, stretch, etc.")
+
+
+class MeetingEquipmentDecision(BaseModel):
+    """Decision about equipment at meeting start/end (for meeting host)."""
+    action: Literal["request_change", "accept_current"]
+    reasoning: str
+    equipment_requests: Optional[List[str]] = Field(default=None, description="e.g., ['turn on projector', 'close blinds']")
+
+
+class PlanUpdateDecision(BaseModel):
+    """Decision about whether to update the daily plan based on current circumstances."""
+    action: Literal["update", "keep_current"]
+    reasoning: str = Field(description="Why plan update is or isn't needed")
+    updates: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Updates to apply: e.g., {'lunch_plan': {'location': 'go_out', 'time': '13:00', 'reasoning': '...'}, 'afternoon_break': {...}}"
+    )
+
+
+class StepDecisions(BaseModel):
+    """Complete structured output for a decision checkpoint."""
+    occupant_id: str
+    timestamp: str
+    checkpoint_reason: str = Field(description="'hourly', 'meeting_start', 'meeting_end', 'lunch_time', 'morning_break', 'afternoon_break'")
+    thermostat: ThermostatDecision
+    lighting: LightingDecision
+    equipment: EquipmentDecision
+    location: LocationDecision
+    conversation: ConversationDecision
+    break_decision: Optional[BreakDecision] = Field(default=None, description="Only during break-eligible times")
+    meeting_equipment: Optional[MeetingEquipmentDecision] = Field(default=None, description="Only at meeting boundaries for host")
+    plan_update: PlanUpdateDecision = Field(description="Whether to update daily plan based on current circumstances")
 
 
 # Clothing warmth levels for comfort model integration
@@ -147,6 +236,22 @@ class MeetingPlan(BaseModel):
     invitees: List[str] = Field(default_factory=list)
     attendance_intent: Literal["will_attend", "maybe", "will_skip"] = "will_attend"
 
+
+class LunchPlan(BaseModel):
+    """Lunch planning details decided during daily planning."""
+    location: Literal["at_desk", "break_room", "go_out"]
+    time: str = Field(description="Planned lunch time in HH:MM format")
+    reasoning: str = Field(description="Why this location/time was chosen based on preferences and schedule")
+
+
+class BreakPlan(BaseModel):
+    """Break planning details decided during daily planning."""
+    location: Literal["at_desk", "break_room"]
+    activity: str = Field(description="tea, coffee, walk, stretch, etc.")
+    preferred_time: str = Field(description="Planned break time in HH:MM format")
+    reasoning: str = Field(description="Why this break was planned based on habits and schedule")
+
+
 class DailyPlan(BaseModel):
     occupant_id: str
     date_iso: str
@@ -158,6 +263,23 @@ class DailyPlan(BaseModel):
     clothing: Optional[ClothingChoice] = Field(
         default=None,
         description="What the agent is wearing today - decided based on weather, meetings, and personal style"
+    )
+    # New: Lunch and break planning
+    lunch_plan: Optional[LunchPlan] = Field(
+        default=None,
+        description="Where and when to have lunch - decided based on habits, weather, schedule"
+    )
+    morning_break: Optional[BreakPlan] = Field(
+        default=None,
+        description="Morning break plan - tea/coffee preferences, location"
+    )
+    afternoon_break: Optional[BreakPlan] = Field(
+        default=None,
+        description="Afternoon break plan - tea/coffee preferences, location"
+    )
+    comfort_preferences: str = Field(
+        default="",
+        description="Temperature and lighting preferences for the day"
     )
     notes: str = ""
 
@@ -1210,89 +1332,131 @@ def respond_to_invitation(
 
 def build_step_agent(occupant_id: str) -> Agent[SimContext]:
     """
-    Agent used at simulation timesteps to decide occupant actions.
+    Agent used at decision checkpoints to decide occupant actions.
     Uses structured output OccupantStepDecision.
+
+    Decision checkpoints occur:
+    - Hourly (regular check-in)
+    - At meeting start/end times
+    - At planned lunch/break times
     """
     instructions = f"""
 You are a simulated building occupant agent (ID: {occupant_id}).
 
-At each timestep, decide your actions based on your preferences, memories, and current state.
+You are making a decision at a CHECKPOINT. The checkpoint reason is shown in your prompt
+(e.g., "hourly", "meeting starting", "lunch time", "break time"). Consider this reason
+when deciding what actions to take.
 
 AVAILABLE ACTIONS:
+
+Comfort Controls:
 - no_op: do nothing (use when comfortable and no immediate needs)
-- thermostat_adjust: adjust setpoint (parameters: setpoint_c)
+- thermostat_adjust: adjust thermostat based on how you feel (parameters: setpoint_c)
 - window_set: open/close window (parameters: open: true/false)
 - lights_set: control lights (parameters: light_name, on: true/false)
+
+Equipment:
 - equipment_set: turn equipment on/off (parameters: equipment_name, on: true/false)
+- use_appliance: use kitchen appliance (parameters: appliance_name) - kettles/coffee machines auto-off
+
+Location & Movement:
+- move_to: move to a different location (parameters: location)
+- choose_desk: select a desk ONCE when you arrive for the day (parameters: desk_id)
+  NOTE: You can only choose a desk once per day. After your initial choice, it remains your desk.
+
+Meetings:
 - attend_meeting: physically go to meeting room (parameters: meeting_title)
 - leave_meeting: return to your desk from meeting room
-- respond_to_invitation: accept or decline a meeting invitation (parameters: event_id, accept: true/false)
 
-THERMOSTAT:
-- There are TWO setpoints: heating (activates when cold) and cooling (activates when hot)
-- When you use thermostat_adjust, BOTH setpoints shift by the same amount
-- If you're too HOT: lower the setpoint to bring the cooling threshold down
-- If you're too COLD: raise the setpoint to bring the heating threshold up
-- Example: If heating=21C/cooling=24C and you set setpoint_c=23, both shift up by 2C to heating=23C/cooling=26C
+Lunch & Breaks:
+- go_to_lunch: have lunch in the break room (stay in building)
+- go_out_for_lunch: leave building for lunch (cafe, restaurant, walk)
+- return_from_lunch: return to work after lunch
+- take_break: take a short break (parameters: location - "at_desk" or "break_room")
+- return_from_break: return to work after break
 
-EQUIPMENT AND WORKSPACE:
-You can control your desk equipment and lighting. The current state of equipment and lighting
-is shown in your prompt context. Consider your work style, preferences, and current tasks
-when deciding whether to use equipment. Your core memories and past experiences should guide
-these decisions naturally.
+Social:
+- initiate_conversation: start a conversation with a colleague (parameters: agent_id, topic)
 
-MEETINGS - IMPORTANT: Understand the difference between accepting and attending!
-- respond_to_invitation: Accept/decline an invitation - this is just an RSVP (like clicking "Yes" in Outlook)
-  This does NOT move you anywhere. It just lets the organizer know you plan to come.
-- attend_meeting: PHYSICALLY go to the meeting room when meeting time arrives
-  This moves you to the meeting room and turns on meeting equipment (projector, phone)
-- leave_meeting: Return to your desk when meeting ends (turns off equipment if you're last out)
+THERMOSTAT - Focus on how you FEEL:
+- Check the actual indoor temperature and notice how you feel (too hot, too cold, comfortable)
+- If you feel TOO HOT: lower the COOLING setpoint
+- If you feel TOO COLD: raise the HEATING setpoint
+- Your personality affects sensitivity: some people run hot, others cold
+- Only adjust when genuinely uncomfortable - don't manage setpoints abstractly
+- Use your thermal preferences and memories to guide comfort decisions
 
-WORKFLOW:
-1. When you receive an invitation: Use respond_to_invitation to accept (this is just RSVP)
-2. When meeting TIME arrives: Use attend_meeting to PHYSICALLY go to the meeting room
-3. When meeting ends: Use leave_meeting to return to your desk
+LIGHTING - Consider your preferences and current needs:
+- Check natural light level (bright, moderate, dim, dark)
+- Consider your task: focused work may need good lighting, presentations may need dimmed lights
+- Turn on desk lamp if natural light is insufficient
+- Turn off lights when leaving an area or if natural light is adequate
 
-IMPORTANT: Accepting an invitation does NOT move you! When your calendar shows a meeting
-starting NOW, check if you've already used attend_meeting. If not, use it to go there.
+EQUIPMENT - Be mindful of energy:
+- Turn on equipment when you need it
+- Kitchen appliances (kettle, coffee machine, microwave) will auto-off after use
+- Turn off equipment when done, especially shared equipment
+- Meeting room equipment (projector, phone) should be off when room is empty
 
-SHARED EQUIPMENT:
-- The photocopier is in the shared area - use equipment_set to turn it on/off when needed
-- Check shared_equipment in equipment_status to see what's available and who's using it
-- Turn off shared equipment when you're done using it
+BREAKS - Follow your daily plan and preferences:
+- At break checkpoints, consider taking a break based on your planned schedule
+- Choose location based on your preferences: at_desk (quick) or break_room (social, make tea/coffee)
+- Your core memories about tea/coffee preferences should guide break behavior
+- Remember how you like your tea or coffee!
 
-NAVIGATION - Office Locations:
-- You can move between named locations using 'move_to' (parameters: location)
-- Available locations:
-  * desk_area: Main workspace with desks (default when arriving)
-  * meeting_room: Enclosed room for meetings
-  * break_area: Kitchen/break room for lunch, coffee, breaks
-  * shared_area: Common area with photocopier
-- Your current location is shown in your state
-- You can only use equipment that's at your current location
-- When going for lunch/break, you'll automatically move to break_area
-- When attending a meeting, you'll automatically move to meeting_room
+LUNCH - Follow your daily plan:
+- At lunch checkpoint, take lunch according to your plan
+- "at_desk": Stay and eat at your desk
+- "break_room": Eat in the kitchen/break room (social)
+- "go_out": Leave the building (nice weather, need fresh air, get food)
 
-GUIDELINES:
-- Act according to your personality, preferences, and current priorities
-- Prefer minimal actions when comfortable and no immediate needs
-- Consider other occupants for shared controls (thermostat, windows)
-- Your context, preferences, and relevant memories are in the prompt
+MEETINGS - As host or attendee:
+- At meeting_start checkpoint: use attend_meeting to go to the meeting room
+- If you're the HOST: you may need to set up equipment (projector, lighting)
+- At meeting_end checkpoint: use leave_meeting to return to your desk
+- If you're the HOST: turn off any equipment you turned on
 
-END OF DAY:
-- Check office_occupancy to see who else is present
-- If you're the last person leaving, turn off shared lights and equipment
-- Meeting room equipment (projector, conference phone) should be off when empty
-- Zone lighting can stay on if others are still working
+CONVERSATIONS - Engage with colleagues:
+- You can initiate conversations on various topics, not just about the thermostat
+- Consider who is at your location and your relationship with them
+- Topics can include: work matters, social chat, comfort concerns, etc.
 
-Output your decision directly as JSON matching OccupantStepDecision schema.
+PLAN UPDATES - Adapt your daily plan as circumstances change:
+- At each decision checkpoint, consider if your plan needs updating
+- You may update your plan if:
+  * Weather has changed significantly (e.g., now raining, so don't go out for lunch)
+  * A new meeting was scheduled that affects your breaks
+  * You feel tired/energetic and want to adjust break timing
+  * Colleagues invited you to lunch and you want to join them
+  * Any circumstance that makes your current plan less suitable
+- You can ONLY update FUTURE events - past times cannot be changed
+- Use the plan_update decision to specify changes
+- Keep updates focused on what's actually changed; don't rewrite the whole plan
+- If your plan is still good, choose "keep_current"
+
+LOCATIONS:
+- desk_area: Main workspace with desks
+- meeting_room: Enclosed room for meetings (has projector, conference phone)
+- break_area: Kitchen/break room (has kettle, coffee machine, microwave, fridge)
+- shared_area: Common area (has photocopier)
+
+DECISION GUIDELINES:
+1. Consider the CHECKPOINT REASON - it tells you why you're making a decision now
+2. Act according to your personality, preferences, and memories
+3. ALWAYS provide a decision, even if it's "leave as is" or "no_op"
+4. Prefer minimal actions when comfortable and no immediate needs
+5. Consider other occupants for shared controls (thermostat, windows)
+6. Your relevant memories are retrieved and shown in the prompt
+
+Output your decision as JSON matching OccupantStepDecision schema.
+Include a brief_rationale explaining your reasoning.
 """.strip()
 
     return Agent(
         name=f"occupant_step_{occupant_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="low"),  # Step decisions are straightforward
+        model_settings=ModelSettings(reasoning_effort="medium"),  # Step decisions require cognitive reasoning
         tools=[
             get_current_datetime,
             list_shared_calendar,
@@ -1308,7 +1472,7 @@ def build_day_planner_agent(occupant_id: str) -> Agent[SimContext]:
     instructions = f"""
 You are a simulated building occupant agent (ID: {occupant_id}).
 
-Task: Create today's work schedule including any meetings you want to organize.
+Task: Create today's work schedule including meetings, lunch, and breaks.
 
 WORKFLOW (follow in order):
 1. FIRST: Call list_my_meetings() to see meetings you've already organized or accepted
@@ -1317,26 +1481,47 @@ WORKFLOW (follow in order):
    a. Check list_shared_calendar() to see ALL existing meetings
    b. ONLY create if no similar meeting exists at that time
    c. Use create_shared_event() then invite_agents_to_meeting()
-4. Output your DailyPlan
+4. Plan your lunch and breaks based on your preferences and schedule
+5. Output your DailyPlan
 
 Required DailyPlan fields (HH:MM format):
 - intended_arrival_time, actual_arrival_time: when you plan to arrive
 - intended_departure_time, actual_departure_time: when you plan to leave
 - meetings: list of MeetingPlan objects (can be empty if no meetings)
+- lunch_plan: where and when to have lunch
+- morning_break: optional morning break (tea/coffee)
+- afternoon_break: optional afternoon break
+- comfort_preferences: your temperature and lighting preferences for the day
 
-IMPORTANT RULES:
+LUNCH PLANNING:
+- Choose where to have lunch based on your preferences and today's schedule:
+  * "at_desk": Quick working lunch, eat at your desk
+  * "break_room": Social lunch in the kitchen/break room
+  * "go_out": Leave the building (cafe, restaurant, walk)
+- Consider weather, meetings before/after lunch, and your energy level
+- Use your core memories about lunch habits to guide this decision
+
+BREAK PLANNING:
+- Plan morning break (typically 10:00-10:30) and afternoon break (typically 15:00-15:30)
+- Choose location: "at_desk" (quick) or "break_room" (social, make tea/coffee)
+- Activity: tea, coffee, water, snack, stretch, walk
+- Use your core memories about tea/coffee preferences:
+  * Do you prefer tea or coffee?
+  * How do you take your tea/coffee? (black, with milk, with sugar)
+  * Do you like to socialize during breaks or prefer quiet time?
+
+MEETING RULES:
 - Do NOT respond to invitations for meetings you've already accepted (check list_my_meetings first)
 - Do NOT create meetings that duplicate existing ones (check list_shared_calendar first)
-- If a meeting with similar purpose/time exists today, skip creating a new one
-- Only respond once to each invitation - if it doesn't show in pending, you already responded
-
-MEETING SCHEDULING GUIDELINES:
 - Use list_known_agents() to discover who you can invite
-- Schedule meetings when there's a clear purpose (project discussions, check-ins, collaboration)
-- Preferred time slots: 10:00-11:00 or 14:00-15:00
-- Keep meetings 30-60 minutes
+- Preferred meeting slots: 10:00-11:00 or 14:00-15:00 (30-60 minutes)
 
-Your preferences and context are in the prompt. Output your DailyPlan when ready.
+COMFORT PREFERENCES:
+- State your temperature comfort range (e.g., "prefer 21-23°C, feel cold easily")
+- State lighting preferences (e.g., "prefer natural light, dim desk lamp for focus")
+- These will guide your decisions throughout the day
+
+Your preferences, habits, and context are in the prompt. Output your DailyPlan when ready.
 """.strip()
 
     return Agent(

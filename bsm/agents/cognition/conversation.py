@@ -23,7 +23,7 @@ from agents import Agent, Runner, ModelSettings
 from agents.agent_output import AgentOutputSchema
 
 from bsm.agents.skeleton import DEFAULT_AGENT_MODEL, SimContext, CalendarStore
-from bsm.agents.cognition.modules import generate_relationship_summary, retrieve
+from bsm.agents.cognition.modules import generate_relationship_summary, retrieve, get_importance
 from bsm.agents.memory.stream import MemoryNode
 
 if TYPE_CHECKING:
@@ -105,7 +105,7 @@ Output your utterance directly.
         name=f"convo_{speaker_id}_{listener_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="low"),  # Dialogue is intuitive
+        model_settings=ModelSettings(reasoning_effort="medium"),  # Dialogue requires cognitive reasoning
         tools=[],
         output_type=AgentOutputSchema(UtteranceOutput, strict_json_schema=False),
     )
@@ -363,7 +363,7 @@ def _extract_conversation_topics(utterances: List[ConversationUtterance]) -> Lis
     return topics if topics else ["general chat"]
 
 
-def record_conversation_to_memory(
+async def record_conversation_to_memory(
     agent: "GenerativeAgent",
     conversation: ConversationResult,
     other_agent_id: str,
@@ -393,12 +393,15 @@ def record_conversation_to_memory(
         f"{conversation.summary}"
     )
 
+    # Use LLM to assess importance of this conversation
+    importance = await get_importance(agent, description, 5.0, use_llm=True)
+
     # Add as chat memory
     agent.memory_stream.add_chat(
         description=description,
         other_agent=other_agent_id,
         now=now,
-        importance=5.0,  # Conversations are moderately important
+        importance=importance,
     )
 
     # Mark for post-conversation reflection (Stanford-style)
@@ -513,7 +516,7 @@ If the outcome is ambiguous or unclear, set consensus_reached to false."""
         name="consensus_assessor",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="low"),
+        model_settings=ModelSettings(reasoning_effort="medium"),  # Consensus assessment requires cognitive reasoning
         output_type=AgentOutputSchema(ConsensusAssessment),
     )
 
@@ -615,7 +618,7 @@ Output your response.
         name=f"consultation_{speaker_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="low"),  # Dialogue is intuitive
+        model_settings=ModelSettings(reasoning_effort="medium"),  # Consultation requires cognitive reasoning
         tools=[],
         output_type=AgentOutputSchema(ConsultationUtteranceOutput, strict_json_schema=False),
     )
@@ -935,7 +938,7 @@ async def consultation_conversation(
     )
 
 
-def record_agreement_to_memory(
+async def record_agreement_to_memory(
     agents: List["GenerativeAgent"],
     outcome: ConsultationOutcome,
     now: datetime,
@@ -968,6 +971,9 @@ def record_agreement_to_memory(
 
         description = f"Agreed with {others_str}: {outcome.summary}"
 
+        # Use LLM to assess importance of this agreement
+        importance = await get_importance(agent, description, 7.0, use_llm=True)
+
         # Record as high-importance event (should influence future decisions)
         agent.memory_stream.add_event(
             description=description,
@@ -975,7 +981,7 @@ def record_agreement_to_memory(
             predicate="agreed",
             obj=outcome.agreed_action,
             now=now,
-            importance=7.0,  # High importance
+            importance=importance,
         )
 
         # Update relationships: agreement improves familiarity and sentiment

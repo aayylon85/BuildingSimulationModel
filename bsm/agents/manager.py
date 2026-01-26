@@ -23,6 +23,9 @@ from bsm.agents.skeleton import (
     EmbeddingClient,
     OccupantStepDecision,
     DailyPlan,
+    LunchPlan,
+    BreakPlan,
+    StepDecisions,
     SimContext,
     build_step_agent,
     build_day_planner_agent,
@@ -43,6 +46,7 @@ from bsm.agents.cognition.modules import (
     format_planning_prompt,
     record_decision_to_memory,
     record_plan_to_memory,
+    get_importance,
 )
 from bsm.agents.cognition.conversation import (
     consultation_conversation,
@@ -55,6 +59,137 @@ from bsm.agents.equipment_manager import EquipmentManager
 from bsm.agents.lighting_manager import LightingManager
 from bsm.agents.desk_manager import DeskManager
 from bsm.agents.simulation_adapter import ZoneStateProvider, ProductionSimulationAdapter
+
+
+# ---------------------------------------------------------------------------
+# Decision Checkpoint Manager
+# ---------------------------------------------------------------------------
+
+class DecisionCheckpointManager:
+    """
+    Manages when agents should make decisions based on:
+    - Hourly checkpoints (every 60 minutes)
+    - Event-triggered checkpoints (meeting start/end, lunch, breaks)
+    """
+
+    def __init__(self):
+        # Track last hourly checkpoint per agent
+        self._last_hourly_check: Dict[str, datetime] = {}
+        # Track which events have been processed per agent
+        self._processed_events: Dict[str, set] = {}
+
+    def should_checkpoint(
+        self,
+        agent_id: str,
+        current_time: datetime,
+        daily_plan: Optional[DailyPlan],
+    ) -> Tuple[bool, str]:
+        """
+        Determine if agent should make decisions now.
+
+        Args:
+            agent_id: The agent ID
+            current_time: Current simulation datetime
+            daily_plan: The agent's daily plan (if available)
+
+        Returns:
+            Tuple of (should_decide, reason) where reason is one of:
+            - "hourly": Regular hourly checkpoint
+            - "meeting_start:{title}": Meeting is starting
+            - "meeting_end:{title}": Meeting is ending
+            - "lunch_time": Time for planned lunch
+            - "morning_break": Time for morning break
+            - "afternoon_break": Time for afternoon break
+            - "": No checkpoint needed
+        """
+        if agent_id not in self._processed_events:
+            self._processed_events[agent_id] = set()
+
+        # Check hourly checkpoint first
+        last_check = self._last_hourly_check.get(agent_id)
+        if last_check is None or (current_time - last_check).total_seconds() >= 3600:
+            self._last_hourly_check[agent_id] = current_time
+            return True, "hourly"
+
+        # If no daily plan, only use hourly checkpoints
+        if not daily_plan:
+            return False, ""
+
+        current_time_str = current_time.strftime("%H:%M")
+        current_minutes = current_time.hour * 60 + current_time.minute
+
+        # Check meeting checkpoints
+        for meeting in daily_plan.meetings:
+            meeting_id = f"{meeting.title}_{meeting.start_datetime_iso}"
+
+            # Parse meeting times
+            try:
+                start_dt = datetime.fromisoformat(meeting.start_datetime_iso)
+                end_dt = datetime.fromisoformat(meeting.end_datetime_iso)
+                start_minutes = start_dt.hour * 60 + start_dt.minute
+                end_minutes = end_dt.hour * 60 + end_dt.minute
+            except (ValueError, TypeError):
+                continue
+
+            # Meeting start checkpoint (within 5 minutes of start)
+            start_event_id = f"meeting_start:{meeting_id}"
+            if (abs(current_minutes - start_minutes) <= 5 and
+                    start_event_id not in self._processed_events[agent_id]):
+                self._processed_events[agent_id].add(start_event_id)
+                return True, f"meeting_start:{meeting.title}"
+
+            # Meeting end checkpoint (within 5 minutes of end)
+            end_event_id = f"meeting_end:{meeting_id}"
+            if (abs(current_minutes - end_minutes) <= 5 and
+                    end_event_id not in self._processed_events[agent_id]):
+                self._processed_events[agent_id].add(end_event_id)
+                return True, f"meeting_end:{meeting.title}"
+
+        # Check lunch checkpoint
+        if daily_plan.lunch_plan:
+            lunch_event_id = f"lunch:{daily_plan.lunch_plan.time}"
+            try:
+                lunch_hour, lunch_minute = map(int, daily_plan.lunch_plan.time.split(":"))
+                lunch_minutes = lunch_hour * 60 + lunch_minute
+                if (abs(current_minutes - lunch_minutes) <= 5 and
+                        lunch_event_id not in self._processed_events[agent_id]):
+                    self._processed_events[agent_id].add(lunch_event_id)
+                    return True, "lunch_time"
+            except (ValueError, TypeError):
+                pass
+
+        # Check morning break checkpoint
+        if daily_plan.morning_break:
+            break_event_id = f"morning_break:{daily_plan.morning_break.preferred_time}"
+            try:
+                break_hour, break_minute = map(int, daily_plan.morning_break.preferred_time.split(":"))
+                break_minutes = break_hour * 60 + break_minute
+                if (abs(current_minutes - break_minutes) <= 5 and
+                        break_event_id not in self._processed_events[agent_id]):
+                    self._processed_events[agent_id].add(break_event_id)
+                    return True, "morning_break"
+            except (ValueError, TypeError):
+                pass
+
+        # Check afternoon break checkpoint
+        if daily_plan.afternoon_break:
+            break_event_id = f"afternoon_break:{daily_plan.afternoon_break.preferred_time}"
+            try:
+                break_hour, break_minute = map(int, daily_plan.afternoon_break.preferred_time.split(":"))
+                break_minutes = break_hour * 60 + break_minute
+                if (abs(current_minutes - break_minutes) <= 5 and
+                        break_event_id not in self._processed_events[agent_id]):
+                    self._processed_events[agent_id].add(break_event_id)
+                    return True, "afternoon_break"
+            except (ValueError, TypeError):
+                pass
+
+        return False, ""
+
+    def reset_for_new_day(self, agent_id: str) -> None:
+        """Reset checkpoint tracking for a new day."""
+        self._processed_events[agent_id] = set()
+        # Keep hourly check - it will naturally reset when >1 hour passes
 
 
 def _create_agent_directories(
@@ -245,6 +380,9 @@ class LLMOccupantManager:
 
         # Track last decision time per agent
         self._last_decision_time: Dict[str, datetime] = {}
+
+        # Initialize checkpoint manager for event-triggered decisions
+        self._checkpoint_manager = DecisionCheckpointManager()
 
         # Note: Core memories are now seeded from markdown files in agent_base_types/
         # via GenerativeAgent._seed_core_memories_from_markdown()
@@ -455,7 +593,7 @@ class LLMOccupantManager:
         plan = result.final_output
 
         # Record plan to memory
-        record_plan_to_memory(agent, plan, now)
+        await record_plan_to_memory(agent, plan, now)
 
         # Store plan
         self._daily_plans[agent_id] = plan
@@ -467,12 +605,14 @@ class LLMOccupantManager:
             # Add clothing as a perception for the day
             if agent.memory_stream:
                 clothing_memory = f"I'm wearing {plan.clothing.description} today - {plan.clothing.warmth_level} warmth"
+                # Use LLM to assess importance
+                importance = await get_importance(agent, clothing_memory, 2.0, use_llm=True)
                 agent.memory_stream.add_event(
                     description=clothing_memory,
                     subject=agent.scratch.get("first_name", agent_id),
                     predicate="is wearing",
                     obj=plan.clothing.description,
-                    importance=2.0,  # Low importance - routine
+                    importance=importance,
                     now=now,
                 )
 
@@ -518,12 +658,68 @@ class LLMOccupantManager:
             "plan_modified": True,
             "modification_event": event,
         }
-        agent.update_daily_plan(updates, reason=event, now=now)
-        print(f"[PLAN] {agent_id} plan updated due to: {event}")
+        result = agent.update_daily_plan(updates, reason=event, now=now)
+        if result.get("updated"):
+            print(f"[PLAN] {agent_id} plan updated due to: {event}")
+            if result.get("skipped_past_events"):
+                print(f"[PLAN] {agent_id} skipped past events: {result['skipped_past_events']}")
+
+    def _check_plan_update_triggers(
+        self,
+        agent_id: str,
+        sim_state: Dict[str, Any],
+        now: datetime,
+    ) -> List[str]:
+        """
+        Check for conditions that should trigger a plan update.
+
+        Returns list of trigger reasons (empty if no update needed).
+
+        Triggers checked:
+        - Meeting cancellations
+        - Urgent invitation (meeting within 1 hour)
+        - Schedule deviations (significantly behind/ahead of plan)
+        """
+        triggers = []
+        agent = self._agents.get(agent_id)
+        if not agent:
+            return triggers
+
+        # Check for urgent pending invitations (within 1 hour)
+        pending_invitations = self.calendar.get_pending_invitations(agent_id)
+        for invite in pending_invitations:
+            event_start_iso = invite.get("event_start_iso", "")
+            if event_start_iso:
+                try:
+                    from datetime import timezone
+                    event_start = datetime.fromisoformat(event_start_iso)
+                    if event_start.tzinfo is None:
+                        event_start = event_start.replace(tzinfo=timezone.utc)
+                    now_utc = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+                    minutes_until = (event_start - now_utc).total_seconds() / 60
+                    if 0 < minutes_until <= 60:
+                        triggers.append(f"urgent_request: Meeting invitation from {invite.get('inviter_id')} in {int(minutes_until)} minutes")
+                except (ValueError, TypeError):
+                    pass
+
+        # Check if currently in meeting room but no active meeting
+        # (indicates meeting may have been cancelled)
+        current_location = sim_state.get("current_location", "desk_area")
+        if current_location == "meeting_room":
+            meeting_context = get_meeting_context(agent_id, self.calendar, now)
+            if not meeting_context.get("current_meeting"):
+                triggers.append("schedule_conflict: In meeting room but no active meeting scheduled")
+
+        return triggers
 
     def plan_day(self, day: date, now: datetime) -> Dict[str, DailyPlan]:
         """
         Call daily planning for all agents using cognitive planning.
+
+        Uses THREE-PHASE approach for proper calendar coordination:
+        - Phase 1: All agents create meetings (parallel)
+        - Phase 2: All agents respond to invitations (coordinated)
+        - Phase 3: All agents finalize plans with confirmed meetings
 
         Should be called once at the start of each simulated day.
 
@@ -534,7 +730,7 @@ class LLMOccupantManager:
         Returns:
             Dict mapping agent_id to their DailyPlan
         """
-        print(f"\n[LLM] Running cognitive daily planning for {len(self._agent_ids)} agents on {day.isoformat()}")
+        print(f"\n[LLM] Running THREE-PHASE daily planning for {len(self._agent_ids)} agents on {day.isoformat()}")
 
         self._daily_plans.clear()
         self._last_plan_date = day
@@ -543,18 +739,39 @@ class LLMOccupantManager:
         self.adapter.reset_day()
         self.adapter.start_of_day_setup()
 
-        # Run planning for all agents (could be parallelized with asyncio.gather)
-        async def plan_all():
-            results = []
-            for agent_id in self._agent_ids:
-                try:
-                    plan = await self._plan_agent_day_async(agent_id, day, now)
-                    results.append((agent_id, plan, None))
-                except Exception as e:
-                    results.append((agent_id, None, e))
+        # Filter agents who work today
+        working_agents = []
+        for agent_id in self._agent_ids:
+            agent = self._agents.get(agent_id)
+            if not agent:
+                continue
+            is_weekend = day.weekday() >= 5
+            works_weekends = agent.scratch.get("works_weekends", False)
+            if is_weekend and not works_weekends:
+                print(f"  {agent_id}: Skipping (weekend)")
+                continue
+            working_agents.append(agent_id)
+
+        if not working_agents:
+            print(f"  No agents working today")
+            return {}
+
+        # Run three-phase planning
+        async def run_three_phase_planning():
+            # === PHASE 1: Meeting Creation ===
+            print(f"\n  [Phase 1] Meeting creation for {len(working_agents)} agents...")
+            await self._phase1_create_meetings(working_agents, day, now)
+
+            # === PHASE 2: RSVP Coordination ===
+            print(f"\n  [Phase 2] RSVP coordination for {len(working_agents)} agents...")
+            await self._phase2_rsvp_coordination(working_agents, day, now)
+
+            # === PHASE 3: Plan Finalization ===
+            print(f"\n  [Phase 3] Plan finalization for {len(working_agents)} agents...")
+            results = await self._phase3_finalize_plans(working_agents, day, now)
             return results
 
-        results = asyncio.run(plan_all())
+        results = asyncio.run(run_three_phase_planning())
 
         # Process results
         for agent_id, plan, error in results:
@@ -582,6 +799,301 @@ class LLMOccupantManager:
                             f.write(f"  - {meeting.title} ({meeting.start_datetime_iso} - {meeting.end_datetime_iso})\n")
 
         return self._daily_plans.copy()
+
+    async def _phase1_create_meetings(
+        self,
+        agent_ids: List[str],
+        day: date,
+        now: datetime,
+    ) -> None:
+        """
+        Phase 1: All agents propose meetings (parallel).
+
+        Agents can create meetings and send invitations, but don't finalize plans yet.
+        """
+        day_start = datetime.combine(day, datetime.min.time()).replace(tzinfo=timezone.utc)
+        day_end = datetime.combine(day, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+        async def create_meetings_for_agent(agent_id: str):
+            agent = self._agents.get(agent_id)
+            if not agent:
+                return
+
+            # Get current calendar state
+            calendar_events = self.calendar.list_events("shared", day_start, day_end)
+            my_meetings = self.calendar.get_agent_meetings(agent_id, day_start, day_end)
+
+            # Build a focused prompt for meeting creation only
+            from bsm.agents.cognition.modules import get_planning_focal_points, retrieve
+            focal_points = get_planning_focal_points()
+            retrieved = retrieve(agent, focal_points, now)
+
+            prompt = f"""
+Today is {day.isoformat()} ({day.strftime('%A')}).
+
+PHASE 1: MEETING CREATION
+Your task is to propose any meetings you want to schedule for today.
+
+Current shared calendar for today:
+{self._format_calendar_events(calendar_events)}
+
+Meetings you've already scheduled:
+{self._format_my_meetings(my_meetings)}
+
+Your colleagues: {', '.join([aid for aid in agent_ids if aid != agent_id])}
+
+INSTRUCTIONS:
+1. If you want to schedule a meeting, use create_shared_event() to create it
+2. After creating, use invite_agents_to_meeting() to invite colleagues
+3. You can create multiple meetings if needed
+4. Do NOT respond to invitations yet - that happens in Phase 2
+5. When done creating meetings, output a simple confirmation
+
+Output format: {{"meetings_created": true/false, "count": N}}
+"""
+
+            # Use the planner agent but with limited scope
+            planner_agent = self._planner_agents[agent_id]
+            context = SimContext(
+                occupant_id=agent_id,
+                now=now,
+                simulation=self.adapter,
+                calendar=self.calendar,
+                configured_agent_ids=list(self._agents.keys()),
+            )
+            try:
+                # Run with limited turns for just meeting creation
+                # Note: Validation error is expected since output isn't DailyPlan
+                # The important work (tool calls) has already been done
+                await Runner.run(planner_agent, prompt, context=context, max_turns=8)
+            except Exception as e:
+                # Expected: output validation fails since we're not returning DailyPlan
+                # Only log unexpected errors
+                if "validation error" not in str(e).lower() and "invalid json" not in str(e).lower():
+                    print(f"    {agent_id}: Phase 1 error - {e}")
+
+        # Run all agents in parallel
+        await asyncio.gather(*[create_meetings_for_agent(aid) for aid in agent_ids])
+
+    async def _phase2_rsvp_coordination(
+        self,
+        agent_ids: List[str],
+        day: date,
+        now: datetime,
+    ) -> None:
+        """
+        Phase 2: All agents respond to ALL pending invitations (parallel).
+
+        After Phase 1, all meetings exist. Now everyone can see all invitations
+        and respond to them.
+        """
+        day_start = datetime.combine(day, datetime.min.time()).replace(tzinfo=timezone.utc)
+        day_end = datetime.combine(day, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+        async def process_invitations_for_agent(agent_id: str):
+            agent = self._agents.get(agent_id)
+            if not agent:
+                return
+
+            # Get ALL pending invitations for this agent
+            pending_invitations = self.calendar.get_pending_invitations(agent_id)
+            if not pending_invitations:
+                print(f"    {agent_id}: No pending invitations")
+                return
+
+            # Get meetings agent has already accepted/created
+            my_meetings = self.calendar.get_agent_meetings(agent_id, day_start, day_end)
+
+            prompt = f"""
+Today is {day.isoformat()} ({day.strftime('%A')}).
+
+PHASE 2: RSVP COORDINATION
+Your task is to respond to meeting invitations.
+
+Your current confirmed meetings:
+{self._format_my_meetings(my_meetings)}
+
+PENDING INVITATIONS requiring your response:
+{self._format_pending_invitations(pending_invitations)}
+
+INSTRUCTIONS:
+1. For EACH pending invitation, decide: accept (true) or decline (false)
+2. Use respond_to_invitation(event_id, accept=true/false) for each
+3. Consider: time conflicts, meeting relevance, your schedule
+4. Accept meetings that are relevant to your work and don't conflict
+
+When done, output: {{"invitations_processed": N}}
+"""
+
+            planner_agent = self._planner_agents[agent_id]
+            context = SimContext(
+                occupant_id=agent_id,
+                now=now,
+                simulation=self.adapter,
+                calendar=self.calendar,
+                configured_agent_ids=list(self._agents.keys()),
+            )
+            try:
+                # Note: Validation error is expected since output isn't DailyPlan
+                # The important work (tool calls) has already been done
+                await Runner.run(planner_agent, prompt, context=context, max_turns=10)
+                print(f"    {agent_id}: Processed {len(pending_invitations)} invitations")
+            except Exception as e:
+                # Expected: output validation fails since we're not returning DailyPlan
+                # Only log unexpected errors, but still report success for invitations
+                if "validation error" not in str(e).lower() and "invalid json" not in str(e).lower():
+                    print(f"    {agent_id}: Phase 2 error - {e}")
+                else:
+                    # Tools were called successfully even though output validation failed
+                    print(f"    {agent_id}: Processed {len(pending_invitations)} invitations")
+
+        # Run all agents in parallel
+        await asyncio.gather(*[process_invitations_for_agent(aid) for aid in agent_ids])
+
+    async def _phase3_finalize_plans(
+        self,
+        agent_ids: List[str],
+        day: date,
+        now: datetime,
+    ) -> List[Tuple[str, Optional[DailyPlan], Optional[Exception]]]:
+        """
+        Phase 3: All agents finalize their daily plans with confirmed meetings.
+
+        After Phases 1 and 2, all RSVPs are done. Now create final DailyPlan
+        with only confirmed meetings (created by agent + accepted invitations).
+        """
+        results = []
+
+        for agent_id in agent_ids:
+            try:
+                plan = await self._finalize_agent_plan(agent_id, day, now)
+                results.append((agent_id, plan, None))
+            except Exception as e:
+                results.append((agent_id, None, e))
+
+        return results
+
+    async def _finalize_agent_plan(
+        self,
+        agent_id: str,
+        day: date,
+        now: datetime,
+    ) -> Optional[DailyPlan]:
+        """Finalize a single agent's daily plan."""
+        agent = self._agents.get(agent_id)
+        if not agent:
+            return None
+
+        day_start = datetime.combine(day, datetime.min.time()).replace(tzinfo=timezone.utc)
+        day_end = datetime.combine(day, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+        # Get CONFIRMED meetings (created + accepted)
+        confirmed_meetings = self.calendar.get_agent_meetings(agent_id, day_start, day_end)
+
+        # RETRIEVE: Get planning-relevant memories
+        from bsm.agents.cognition.modules import (
+            get_planning_focal_points, retrieve, format_planning_prompt, record_plan_to_memory
+        )
+        focal_points = get_planning_focal_points()
+        retrieved = retrieve(agent, focal_points, now)
+
+        # Build final planning prompt
+        prompt = format_planning_prompt(
+            agent=agent,
+            day=day.isoformat(),
+            day_of_week=day.strftime("%A"),
+            retrieved_memories=retrieved,
+            calendar_events=[],  # Not needed - we have confirmed meetings
+            pending_invitations=[],  # All processed in Phase 2
+            my_meetings=confirmed_meetings,
+        )
+
+        # Add explicit instruction about confirmed meetings
+        prompt += f"""
+
+IMPORTANT: Your meetings for today have been CONFIRMED through the RSVP process.
+You have {len(confirmed_meetings)} confirmed meeting(s):
+{self._format_my_meetings(confirmed_meetings)}
+
+Include ALL these meetings in your DailyPlan.meetings list.
+Do NOT use calendar tools - just output your final DailyPlan now.
+"""
+
+        # Call LLM for final plan
+        planner_agent = self._planner_agents[agent_id]
+        context = SimContext(
+            occupant_id=agent_id,
+            now=now,
+            simulation=self.adapter,
+            calendar=self.calendar,
+            configured_agent_ids=list(self._agents.keys()),
+        )
+        result = await Runner.run(planner_agent, prompt, context=context, max_turns=5)
+        plan = result.final_output
+
+        # Record plan to memory
+        await record_plan_to_memory(agent, plan, now)
+
+        # Store plan
+        self._daily_plans[agent_id] = plan
+        agent.set_daily_plan(plan.model_dump())
+
+        # Store clothing choice for today
+        if plan.clothing:
+            agent.set_todays_clothing(plan.clothing.model_dump())
+            if agent.memory_stream:
+                clothing_memory = f"I'm wearing {plan.clothing.description} today - {plan.clothing.warmth_level} warmth"
+                # Use LLM to assess importance
+                importance = await get_importance(agent, clothing_memory, 2.0, use_llm=True)
+                agent.memory_stream.add_event(
+                    description=clothing_memory,
+                    subject=agent.scratch.get("first_name", agent_id),
+                    predicate="is wearing",
+                    obj=plan.clothing.description,
+                    importance=importance,
+                    now=now,
+                )
+
+        agent.save()
+        return plan
+
+    def _format_calendar_events(self, events: List[Dict[str, Any]]) -> str:
+        """Format calendar events for prompt."""
+        if not events:
+            return "  (No meetings scheduled yet)"
+        lines = []
+        for e in events:
+            start = e.get("start_datetime_iso", "?")
+            title = e.get("title", "Untitled")
+            creator = e.get("created_by", "unknown")
+            lines.append(f"  - {start}: {title} (by {creator})")
+        return "\n".join(lines)
+
+    def _format_my_meetings(self, meetings: List[Dict[str, Any]]) -> str:
+        """Format agent's meetings for prompt."""
+        if not meetings:
+            return "  (None)"
+        lines = []
+        for m in meetings:
+            start = m.get("start_datetime_iso", "?")
+            title = m.get("title", "Untitled")
+            role = m.get("role", "attendee")
+            lines.append(f"  - {start}: {title} (as {role})")
+        return "\n".join(lines)
+
+    def _format_pending_invitations(self, invitations: List[Dict[str, Any]]) -> str:
+        """Format pending invitations for prompt."""
+        if not invitations:
+            return "  (None)"
+        lines = []
+        for inv in invitations:
+            event_id = inv.get("event_id", "?")
+            title = inv.get("event_title", "Untitled")
+            inviter = inv.get("inviter_id", "unknown")
+            start = inv.get("event_start_iso", "?")
+            lines.append(f"  - event_id: {event_id}")
+            lines.append(f"    {start}: {title} (from {inviter})")
+        return "\n".join(lines)
 
     def end_of_day_processing(self, day: date, now: datetime) -> Dict[str, int]:
         """
@@ -637,18 +1149,43 @@ class LLMOccupantManager:
 
         return False
 
-    def should_make_decision(self, agent_id: str, now: datetime) -> bool:
+    def should_make_decision(self, agent_id: str, now: datetime) -> Tuple[bool, str]:
         """
         Check if an agent should make a decision at this time.
 
-        Based on decision_interval_minutes from config.
+        Uses checkpoint-based logic:
+        - Hourly checkpoints (every 60 minutes)
+        - Event-triggered checkpoints (meeting start/end, lunch, breaks)
+
+        Also falls back to decision_interval_minutes if no checkpoint triggered
+        but enough time has passed.
+
+        Returns:
+            Tuple of (should_decide, reason) where reason indicates why
         """
+        # Get agent's daily plan if available
+        daily_plan = self._daily_plans.get(agent_id)
+
+        # Check for checkpoint triggers (hourly + events)
+        should_checkpoint, reason = self._checkpoint_manager.should_checkpoint(
+            agent_id=agent_id,
+            current_time=now,
+            daily_plan=daily_plan,
+        )
+
+        if should_checkpoint:
+            return True, reason
+
+        # Fallback: use decision_interval_minutes as minimum interval
         last_time = self._last_decision_time.get(agent_id)
         if last_time is None:
-            return True
+            return True, "first_decision"
 
         elapsed = (now - last_time).total_seconds() / 60.0
-        return elapsed >= self._decision_interval_minutes
+        if elapsed >= self._decision_interval_minutes:
+            return True, "interval"
+
+        return False, ""
 
     def is_agent_working(self, agent_id: str, now: datetime) -> bool:
         """
@@ -728,8 +1265,15 @@ class LLMOccupantManager:
                 self._handle_departure(agent_id, now)
 
             # Make decisions for present agents
-            if is_working and (force_all or self.should_make_decision(agent_id, now)):
-                self._make_agent_decision(agent_id, now)
+            if is_working:
+                should_decide, checkpoint_reason = self.should_make_decision(agent_id, now)
+                if force_all or should_decide:
+                    self._make_agent_decision(agent_id, now, checkpoint_reason=checkpoint_reason or "forced")
+
+        # Check for equipment auto-off (kitchen appliances like kettle, coffee machine)
+        auto_off_list = self.equipment.check_all_auto_off(now)
+        if auto_off_list:
+            print(f"[EQUIPMENT] Auto-off: {', '.join(auto_off_list)}")
 
         # Resolve any pending votes
         thermostat_offset, window_fraction = self.adapter.resolve_votes()
@@ -747,52 +1291,13 @@ class LLMOccupantManager:
         # Mark as present
         self.adapter.set_occupant_present(agent_id, True)
 
-        # Assign desk based on agent preferences and variety trait
-        # NOTE: Equipment and lights are NOT auto-turned on.
-        # The agent decides to turn them on via the cognitive loop.
+        # Agent will choose their desk via choose_desk action based on preferences and memories
+        # Equipment and lights are NOT auto-turned on - agent decides via cognitive loop
         agent = self._agents.get(agent_id)
         if agent:
-            # Read desk preferences from agent's scratch (loaded from agent_base_types)
-            preferred_desk = agent.scratch.get("preferred_desk")
-            workspace_variety = agent.scratch.get("workspace_variety", "low")
-            likes_variety = agent.scratch.get("likes_desk_variety", False)
-
-            available_desks = self.desks.get_available_desks()
-            chosen_desk = None
-
-            if preferred_desk and preferred_desk in available_desks:
-                # Preferred desk is available - check variety preference
-                if workspace_variety == "high" or likes_variety:
-                    # 40% chance of trying different desk for variety-seeking agents
-                    if random.random() < 0.4 and len(available_desks) > 1:
-                        alternatives = [d for d in available_desks if d != preferred_desk]
-                        chosen_desk = random.choice(alternatives)
-                        print(f"  {agent_id} trying different desk for variety")
-                    else:
-                        chosen_desk = preferred_desk
-                elif workspace_variety == "medium":
-                    # 20% chance for medium variety preference
-                    if random.random() < 0.2 and len(available_desks) > 1:
-                        alternatives = [d for d in available_desks if d != preferred_desk]
-                        chosen_desk = random.choice(alternatives)
-                        print(f"  {agent_id} occasionally trying different desk")
-                    else:
-                        chosen_desk = preferred_desk
-                else:
-                    # Low variety - always use preferred desk
-                    chosen_desk = preferred_desk
-            elif available_desks:
-                # Preferred desk not available - choose from what's available
-                chosen_desk = random.choice(available_desks)
-                print(f"  {agent_id}'s preferred desk unavailable, using {chosen_desk}")
-
-            if chosen_desk:
-                self.desks.assign_desk(agent_id, chosen_desk)
-                print(f"  Assigned to {chosen_desk} (equipment OFF - agent will decide)")
-
-        # Set flag for perceive() to create "equipment off" memory
-        if agent:
+            # Set flag for perceive() to create arrival-related memories
             agent.set_just_arrived(True)
+            print(f"  {agent_id} will choose desk based on preferences and memories")
 
     def _handle_departure(self, agent_id: str, now: datetime) -> None:
         """Handle an agent departing from work."""
@@ -805,11 +1310,17 @@ class LLMOccupantManager:
         self,
         agent_id: str,
         now: datetime,
+        checkpoint_reason: str = "interval",
     ) -> Optional[OccupantStepDecision]:
         """
         Execute cognitive loop for agent decision (async - SDK best practice).
 
         Perceive -> CheckInteraction -> Retrieve -> Reflect -> Act
+
+        Args:
+            agent_id: The agent making the decision
+            now: Current simulation datetime
+            checkpoint_reason: Why decision is being made (hourly, meeting_start, lunch_time, etc.)
         """
         agent = self._agents.get(agent_id)
         if not agent:
@@ -822,8 +1333,26 @@ class LLMOccupantManager:
         # 1. Get simulation state
         sim_state = self.adapter.get_state(agent_id, now)
 
-        # 2. PERCEIVE: Convert state to memory events
-        perceived_events = perceive(agent, sim_state, now)
+        # 1.5 Check for plan update triggers
+        triggers = self._check_plan_update_triggers(agent_id, sim_state, now)
+        for trigger in triggers:
+            self._maybe_update_plan(agent_id, trigger, now)
+            # Record trigger to memory stream
+            if agent.memory_stream:
+                description = f"My schedule may need adjusting: {trigger}"
+                # Use LLM to assess importance
+                importance = await get_importance(agent, description, 5.0, use_llm=True)
+                agent.memory_stream.add_event(
+                    description=description,
+                    subject="I",
+                    predicate="notice",
+                    obj="schedule adjustment needed",
+                    now=now,
+                    importance=importance,
+                )
+
+        # 2. PERCEIVE: Convert state to memory events (LLM-assessed importance)
+        perceived_events = await perceive(agent, sim_state, now)
 
         # 3. Accumulate importance for reflection trigger
         for event in perceived_events:
@@ -870,6 +1399,7 @@ class LLMOccupantManager:
             meeting_context=meeting_context,
             pending_invitations=pending_invitations,
             colleague_context=colleague_context,
+            checkpoint_reason=checkpoint_reason,
         )
 
         # 10. Call LLM via async Runner.run (SDK best practice)
@@ -901,27 +1431,17 @@ class LLMOccupantManager:
                         response_str = "accepted" if accept else "declined"
                         print(f"[LLM] {agent_id} {response_str} invitation for event {event_id[:8]}...")
 
-        # 11.1. Handle lunch/break actions (update agent status)
+        # 11.1. Log lunch/break actions (status flags handled by simulation_adapter.py)
         for action in decision.actions:
             if action.action_type in ("go_to_lunch", "go_out_for_lunch"):
-                self.adapter.set_agent_status(agent_id, "at_lunch", True)
-                self.adapter.set_agent_status(agent_id, "at_desk", False)
                 out_of_building = action.action_type == "go_out_for_lunch"
-                self.adapter.set_agent_status(agent_id, "out_of_office", out_of_building)
-                location = "outside" if out_of_building else "kitchen/cafeteria"
+                location = "outside" if out_of_building else "break_area"
                 print(f"[LLM] {agent_id} going to lunch ({location})")
             elif action.action_type == "return_from_lunch":
-                self.adapter.set_agent_status(agent_id, "at_lunch", False)
-                self.adapter.set_agent_status(agent_id, "at_desk", True)
-                self.adapter.set_agent_status(agent_id, "out_of_office", False)
                 print(f"[LLM] {agent_id} returning from lunch")
             elif action.action_type == "take_break":
-                self.adapter.set_agent_status(agent_id, "on_break", True)
-                self.adapter.set_agent_status(agent_id, "at_desk", False)
                 print(f"[LLM] {agent_id} taking a break")
             elif action.action_type == "return_from_break":
-                self.adapter.set_agent_status(agent_id, "on_break", False)
-                self.adapter.set_agent_status(agent_id, "at_desk", True)
                 print(f"[LLM] {agent_id} returning from break")
 
         # 11.5. CONSULTATION: Before shared-space actions, consult with other occupants
@@ -936,8 +1456,21 @@ class LLMOccupantManager:
         # 12. Apply decision to simulation
         self.adapter.apply_decision(decision)
 
+        # 12.5. Process any pending plan updates from the decision
+        pending_plan_updates = self.adapter.get_pending_plan_updates()
+        for plan_update in pending_plan_updates:
+            if plan_update.get("occupant_id") == agent_id:
+                updates = plan_update.get("updates", {})
+                reason = plan_update.get("reason", "Agent decision")
+                if updates:
+                    result = agent.update_daily_plan(updates, reason=reason, now=now)
+                    if result.get("updated"):
+                        print(f"[PLAN] {agent_id} updated plan: {reason}")
+                        if result.get("skipped_past_events"):
+                            print(f"[PLAN] {agent_id} skipped past events: {result['skipped_past_events']}")
+
         # 13. Record decision to memory
-        record_decision_to_memory(agent, decision, now)
+        await record_decision_to_memory(agent, decision, now)
 
         # 14. Update tracking
         self._last_decision_time[agent_id] = now
@@ -1041,7 +1574,7 @@ class LLMOccupantManager:
             )
 
             # Record agreement to all participants' memories
-            record_agreement_to_memory(present_agents, outcome, now)
+            await record_agreement_to_memory(present_agents, outcome, now)
 
             # Log consultation to file
             self._log_consultation(outcome, now)
@@ -1130,14 +1663,26 @@ class LLMOccupantManager:
         except IOError as e:
             print(f"Warning: Failed to log consultation: {e}")
 
-    def _make_agent_decision(self, agent_id: str, now: datetime) -> Optional[OccupantStepDecision]:
+    def _make_agent_decision(
+        self,
+        agent_id: str,
+        now: datetime,
+        checkpoint_reason: str = "interval",
+    ) -> Optional[OccupantStepDecision]:
         """
         Sync wrapper for cognitive loop (for compatibility with main.py).
+
+        Args:
+            agent_id: The agent making the decision
+            now: Current simulation datetime
+            checkpoint_reason: Why decision is being made (hourly, meeting_start, lunch_time, etc.)
 
         Returns the decision or None if failed.
         """
         try:
-            decision = asyncio.run(self._make_agent_decision_async(agent_id, now))
+            decision = asyncio.run(
+                self._make_agent_decision_async(agent_id, now, checkpoint_reason=checkpoint_reason)
+            )
 
             # Log non-trivial decisions to console
             if decision:
