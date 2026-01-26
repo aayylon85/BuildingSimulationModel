@@ -8,8 +8,9 @@
   "currently": "Bob is following his usual precise schedule and routines.",
   "lifestyle": "Bob arrives exactly at 09:00 and leaves exactly at 18:00. Takes lunch at 12:00 for 30 minutes. Walks 15 minutes to work.",
 
-  "thermal_comfort_c": 19.0,
+  "thermal_preference": "cool",
   "runs_warm": true,
+  "clothing_insulation_typical": "light",
   "light_preference": "task",
   "noise_sensitivity": "low",
 
@@ -17,6 +18,8 @@
   "typical_departure": "17:55-18:05",
   "preferred_desk": "Desk_B",
   "works_weekends": false,
+  "workspace_variety": "low",
+  "likes_desk_variety": false,
 
   "perception_bandwidth": 6,
   "reflection_threshold": 200,

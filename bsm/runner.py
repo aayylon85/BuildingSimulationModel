@@ -581,6 +581,166 @@ def run_simulation_from_config(config_path):
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Checkpoint and Resume Functions
+# ---------------------------------------------------------------------------
+
+def save_simulation_checkpoint(
+    checkpoint_id: str,
+    config_path: str,
+    simulation_time_hour: float,
+    simulation_datetime: datetime.datetime,
+    zone_air_temp_c: float,
+    dynamic_heating_setpoint: np.ndarray,
+    dynamic_cooling_setpoint: np.ndarray,
+    current_window_fraction: float,
+    llm_manager,  # LLMOccupantManager or None
+    current_step: int,
+    total_steps: int,
+    results_dir: str = "results",
+) -> str:
+    """
+    Save a checkpoint of the current simulation state.
+
+    This is a manual checkpoint function - call it when you want to save state
+    for later resumption.
+
+    Args:
+        checkpoint_id: Unique identifier for this checkpoint
+        config_path: Path to simulation config file
+        simulation_time_hour: Current simulation time in hours from start
+        simulation_datetime: Current simulation datetime
+        zone_air_temp_c: Current zone air temperature
+        dynamic_heating_setpoint: Heating setpoint array
+        dynamic_cooling_setpoint: Cooling setpoint array
+        current_window_fraction: Current window open fraction
+        llm_manager: LLMOccupantManager instance (or None if not using LLM agents)
+        current_step: Current simulation step
+        total_steps: Total simulation steps
+        results_dir: Directory for storing checkpoints
+
+    Returns:
+        Path to saved checkpoint directory
+    """
+    from bsm.state.persistence import SimulationPersistence, create_checkpoint
+
+    # Ensure LLM agent state is saved before checkpoint
+    if llm_manager is not None:
+        llm_manager.save_all_agents()
+
+    # Create checkpoint
+    checkpoint = create_checkpoint(
+        checkpoint_id=checkpoint_id,
+        config_path=config_path,
+        simulation_time_hour=simulation_time_hour,
+        simulation_datetime=simulation_datetime,
+        zone_air_temp_c=zone_air_temp_c,
+        dynamic_heating_setpoint=list(dynamic_heating_setpoint),
+        dynamic_cooling_setpoint=list(dynamic_cooling_setpoint),
+        current_window_fraction=current_window_fraction,
+        llm_manager=llm_manager,
+        current_step=current_step,
+        total_steps=total_steps,
+    )
+
+    # Save it
+    persistence = SimulationPersistence(results_dir=results_dir)
+    checkpoint_dir = persistence.save_checkpoint(checkpoint)
+
+    return str(checkpoint_dir)
+
+
+def list_checkpoints(results_dir: str = "results"):
+    """
+    List all available checkpoints.
+
+    Args:
+        results_dir: Directory containing checkpoints
+
+    Returns:
+        List of checkpoint summaries
+    """
+    from bsm.state.persistence import SimulationPersistence
+
+    persistence = SimulationPersistence(results_dir=results_dir)
+    checkpoints = persistence.list_checkpoints()
+
+    if not checkpoints:
+        print("No checkpoints found.")
+        return []
+
+    print(f"\nAvailable checkpoints ({len(checkpoints)}):")
+    print("-" * 80)
+    for cp in checkpoints:
+        print(f"  ID: {cp['id']}")
+        print(f"      Created: {cp['created_at']}")
+        print(f"      Simulation time: {cp['simulation_datetime']}")
+        print(f"      Progress: {cp['progress']}")
+        if cp.get('zone_temp_c') is not None:
+            print(f"      Zone temp: {cp['zone_temp_c']:.1f}C")
+        print()
+
+    return checkpoints
+
+
+def resume_simulation_from_checkpoint(
+    checkpoint_id: str,
+    additional_hours: float = 24.0,
+    results_dir: str = "results",
+):
+    """
+    Resume a simulation from a saved checkpoint.
+
+    Creates a NEW results directory while loading state from the checkpoint.
+    The original checkpoint is preserved.
+
+    Args:
+        checkpoint_id: ID of checkpoint to resume from
+        additional_hours: How many additional simulation hours to run
+        results_dir: Directory containing checkpoints
+
+    Note:
+        This is a placeholder for the full resume implementation.
+        Full implementation requires refactoring run_simulation_from_config
+        to accept start_step and initial state parameters.
+    """
+    from bsm.state.persistence import SimulationPersistence
+
+    persistence = SimulationPersistence(results_dir=results_dir)
+
+    try:
+        checkpoint = persistence.load_checkpoint(checkpoint_id)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    print(f"\n[RESUME] Loading checkpoint: {checkpoint_id}")
+    print(f"  Simulation datetime: {checkpoint.simulation_datetime}")
+    print(f"  Progress: Step {checkpoint.current_step}/{checkpoint.total_steps}")
+    print(f"  Zone temperature: {checkpoint.zone_air_temp_c:.1f}C")
+    print(f"  Agent run dir: {checkpoint.agent_run_dir}")
+    print(f"  Calendar DB: {checkpoint.calendar_db_path}")
+    print(f"  Will run for additional {additional_hours} hours")
+
+    # Load original config
+    try:
+        with open(checkpoint.config_path, 'r') as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Error loading config from checkpoint: {e}")
+        return
+
+    print(f"\n[RESUME] To fully resume, the runner needs to be called with:")
+    print(f"  - Start from step: {checkpoint.current_step}")
+    print(f"  - Initial zone temp: {checkpoint.zone_air_temp_c}C")
+    print(f"  - Agent state from: {checkpoint.agent_run_dir}")
+    print(f"  - Calendar from: {checkpoint.calendar_db_path}")
+    print(f"\nNote: Full resume implementation requires runner refactoring.")
+    print("The checkpoint data has been loaded and validated.")
+
+    return checkpoint
+
+
 def main():
     """Main entry point for CLI usage."""
     parser = argparse.ArgumentParser(

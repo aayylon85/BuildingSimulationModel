@@ -13,11 +13,14 @@ This class manages:
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from bsm.agents.memory.stream import MemoryStream, MemoryNode, CoreMemoryStore
 
@@ -65,6 +68,13 @@ class GenerativeAgent:
         """
         self.agent_folder = Path(agent_folder)
         self.embedder = embedder
+
+        # SAFETY: Prevent accidentally pointing to base_types
+        if "agent_base_types" in str(self.agent_folder.resolve()):
+            raise ValueError(
+                f"GenerativeAgent cannot be initialized with agent_base_types folder: {self.agent_folder}. "
+                "Use copy_agent_base_type() first to copy to a results directory."
+            )
 
         # Set up paths
         self.paths = AgentPaths(
@@ -271,12 +281,48 @@ Works weekends: {self.scratch.get('works_weekends', False)}
         relationships = self.scratch.get("relationship_models", {})
         return relationships.get(other_agent_id)
 
-    def recently_perceived(self, subject: str, within_minutes: int = 30) -> bool:
+    def update_relationship(
+        self,
+        other_agent_id: str,
+        familiarity_delta: float = 0.0,
+        sentiment_delta: float = 0.0,
+    ) -> None:
+        """
+        Update relationship model for another agent.
+
+        Agents learn from interactions - familiarity increases with conversations,
+        sentiment adjusts based on agreement/disagreement outcomes.
+
+        Args:
+            other_agent_id: ID of the other agent
+            familiarity_delta: Change in familiarity (capped to 0-1 range)
+            sentiment_delta: Change in sentiment (capped to 0-1 range)
+        """
+        if "relationship_models" not in self.scratch:
+            self.scratch["relationship_models"] = {}
+
+        relationships = self.scratch["relationship_models"]
+
+        if other_agent_id not in relationships:
+            # Initialize with low familiarity and neutral sentiment
+            relationships[other_agent_id] = {
+                "familiarity": 0.3,
+                "sentiment": 0.5,
+            }
+
+        rel = relationships[other_agent_id]
+
+        # Apply deltas with capping to [0, 1]
+        rel["familiarity"] = max(0.0, min(1.0, rel["familiarity"] + familiarity_delta))
+        rel["sentiment"] = max(0.0, min(1.0, rel["sentiment"] + sentiment_delta))
+
+    def recently_perceived(self, subject: str, now: datetime, within_minutes: int = 30) -> bool:
         """
         Check if agent has recently perceived something about a subject.
 
         Args:
             subject: The subject to check (e.g., another agent ID)
+            now: Current simulation datetime (NOT real-world time)
             within_minutes: Time window in minutes
 
         Returns:
@@ -289,8 +335,8 @@ Works weekends: {self.scratch.get('works_weekends', False)}
         if not recent:
             return False
 
-        now = datetime.now(timezone.utc).timestamp()
-        cutoff = now - (within_minutes * 60)
+        now_ts = now.timestamp()  # Use simulation time, not datetime.now()
+        cutoff = now_ts - (within_minutes * 60)
 
         return any(node.created > cutoff for node in recent)
 
@@ -310,6 +356,15 @@ Works weekends: {self.scratch.get('works_weekends', False)}
     def get_recency_decay(self) -> float:
         """Get recency decay rate from scratch."""
         return self.scratch.get("recency_decay", 0.995)
+
+    def get_perception_bandwidth(self) -> int:
+        """
+        Get perception bandwidth (max number of events to perceive per cycle).
+
+        Stanford-style attention bandwidth limits how many events an agent
+        can attend to in a single timestep, prioritizing the most salient.
+        """
+        return self.scratch.get("perception_bandwidth", 8)
 
     def get_reflection_threshold(self) -> float:
         """Get reflection threshold from scratch."""
@@ -352,6 +407,93 @@ Works weekends: {self.scratch.get('works_weekends', False)}
     def set_daily_plan(self, plan: Dict[str, Any]) -> None:
         """Set daily plan in scratch."""
         self.scratch["daily_plan"] = plan
+
+    def update_daily_plan(self, updates: Dict[str, Any], reason: str, now: datetime) -> None:
+        """
+        Update daily plan based on significant events.
+
+        Args:
+            updates: Dictionary of updates to merge into the plan
+            reason: Human-readable reason for the update
+            now: Current simulation datetime
+        """
+        plan = self.get_daily_plan() or {}
+        plan.update(updates)
+        plan["last_updated"] = now.isoformat()
+        # Track update reasons
+        update_reasons = plan.get("update_reasons", [])
+        update_reasons.append({
+            "reason": reason,
+            "timestamp": now.isoformat(),
+        })
+        plan["update_reasons"] = update_reasons
+        self.set_daily_plan(plan)
+
+    # -------------------------
+    # Daily Clothing
+    # -------------------------
+
+    def get_todays_clothing(self) -> Optional[Dict[str, Any]]:
+        """Get today's clothing choice from scratch."""
+        return self.scratch.get("todays_clothing")
+
+    def set_todays_clothing(self, clothing: Dict[str, Any]) -> None:
+        """
+        Set today's clothing choice in scratch.
+
+        Args:
+            clothing: Dict with 'description', 'warmth_level', 'layers_removable'
+        """
+        self.scratch["todays_clothing"] = clothing
+
+    def clear_todays_clothing(self) -> None:
+        """Clear clothing choice (called at end of day or start of new day)."""
+        if "todays_clothing" in self.scratch:
+            del self.scratch["todays_clothing"]
+
+    # -------------------------
+    # Dual Schedule Management (Stanford-style)
+    # -------------------------
+
+    def set_daily_schedule(
+        self,
+        schedule: List[Dict[str, Any]],
+        preserve_original: bool = True,
+    ) -> None:
+        """
+        Set the daily schedule with optional original preservation.
+
+        Stanford-style: Maintains both a live decomposed schedule and
+        the original hourly schedule for recovery/reference.
+
+        Args:
+            schedule: List of schedule entries (decomposed tasks)
+            preserve_original: If True and no original exists, save as original
+        """
+        if preserve_original and "f_daily_schedule_hourly_org" not in self.scratch:
+            # First schedule of the day - preserve as original
+            self.scratch["f_daily_schedule_hourly_org"] = schedule.copy()
+
+        self.scratch["f_daily_schedule"] = schedule
+
+    def get_daily_schedule(self) -> List[Dict[str, Any]]:
+        """Get current live schedule."""
+        return self.scratch.get("f_daily_schedule", [])
+
+    def get_original_schedule(self) -> List[Dict[str, Any]]:
+        """Get preserved original hourly schedule."""
+        return self.scratch.get("f_daily_schedule_hourly_org", [])
+
+    def reset_schedule_to_original(self) -> None:
+        """Reset live schedule to original (for recovery)."""
+        original = self.get_original_schedule()
+        if original:
+            self.scratch["f_daily_schedule"] = original.copy()
+
+    def clear_daily_schedules(self) -> None:
+        """Clear both schedules (call at start of new day)."""
+        self.scratch["f_daily_schedule"] = []
+        self.scratch.pop("f_daily_schedule_hourly_org", None)
 
     # -------------------------
     # Chatting State Management
@@ -411,8 +553,182 @@ Works weekends: {self.scratch.get('works_weekends', False)}
             return False
         return self.get_chatting_buffer(other_agent_id) == 0
 
-    def save(self) -> None:
-        """Persist all state to files."""
+    # -------------------------
+    # Post-Conversation Reflection (Stanford-style)
+    # -------------------------
+
+    def mark_conversation_end(self, other_agent_id: str, now: datetime) -> None:
+        """
+        Mark that a conversation just ended for post-conversation reflection.
+
+        Stanford-style: Triggers reflection ~10 seconds after conversation,
+        generating planning thoughts and relationship memos. In simulation,
+        this triggers on the next decision cycle.
+
+        Args:
+            other_agent_id: ID of the agent the conversation was with
+            now: Current simulation datetime
+        """
+        if "pending_conversation_reflections" not in self.scratch:
+            self.scratch["pending_conversation_reflections"] = []
+
+        self.scratch["pending_conversation_reflections"].append({
+            "other_agent_id": other_agent_id,
+            "ended_at": now.isoformat(),
+        })
+
+    def get_pending_conversation_reflections(self) -> List[Dict[str, Any]]:
+        """Get conversations that need post-conversation reflection."""
+        return self.scratch.get("pending_conversation_reflections", [])
+
+    def clear_pending_conversation_reflections(self) -> None:
+        """Clear pending conversation reflection triggers."""
+        self.scratch["pending_conversation_reflections"] = []
+
+    async def consolidate_memories_with_llm(self, day: date, now: datetime) -> int:
+        """
+        Use LLM to identify memories that shape personality for consolidation.
+
+        Called at end of day to move significant memories to core memory store.
+
+        Args:
+            day: The day to consolidate memories from
+            now: Current simulation datetime
+
+        Returns:
+            Number of memories consolidated
+        """
+        if not self.memory_stream or not self.core_memory_store:
+            return 0
+
+        # Import here to avoid circular imports
+        from bsm.agents.cognition.modules import assess_memories_for_consolidation
+
+        # Get today's memories
+        day_start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+        day_end = datetime.combine(day, time.max, tzinfo=timezone.utc)
+
+        todays_memories = []
+        for node in self.memory_stream.nodes:
+            node_dt = datetime.fromtimestamp(node.created, tz=timezone.utc)
+            if day_start <= node_dt <= day_end:
+                todays_memories.append(node)
+
+        if not todays_memories:
+            return 0
+
+        # Format memories for assessment
+        memory_data = [
+            (i, m.description, m.importance)
+            for i, m in enumerate(todays_memories)
+        ]
+
+        # Get identity for context
+        identity = self.get_identity_stable_set()
+
+        # Assess which memories to consolidate
+        assessment = await assess_memories_for_consolidation(
+            agent_name=self.name,
+            identity=identity,
+            memories=memory_data,
+        )
+
+        # Consolidate selected memories
+        consolidated = 0
+        for idx in assessment.memories_to_consolidate:
+            if 0 <= idx < len(todays_memories):
+                memory = todays_memories[idx]
+                self.core_memory_store.add(
+                    description=f"[Learned {day}] {memory.description}",
+                    source="daily_consolidation",
+                    importance=memory.importance,
+                )
+                consolidated += 1
+
+        if consolidated > 0:
+            self.core_memory_store.save()
+            print(f"  [CONSOLIDATION] {self.name}: Consolidated {consolidated} memories - {assessment.reasoning}")
+
+        return consolidated
+
+    def save(self, atomic: bool = True) -> None:
+        """
+        Persist all state to files.
+
+        Args:
+            atomic: If True, uses write-then-rename pattern for consistency.
+                   If any write fails, restores from backup.
+        """
+        # SAFETY: Additional check to prevent writing to base_types
+        if "agent_base_types" in str(self.paths.scratch_json.resolve()):
+            raise RuntimeError(
+                f"SAFETY: Refusing to write to agent_base_types: {self.paths.scratch_json}"
+            )
+
+        if not atomic:
+            # Original non-atomic save
+            self._save_simple()
+            return
+
+        # Atomic save: collect all write operations
+        files_to_save: List[Tuple[Path, Path, Callable]] = []
+        backup_suffix = ".bak"
+        temp_suffix = ".tmp"
+
+        # Prepare scratch save
+        scratch_tmp = self.paths.scratch_json.with_suffix(
+            self.paths.scratch_json.suffix + temp_suffix
+        )
+        files_to_save.append((
+            self.paths.scratch_json,
+            scratch_tmp,
+            lambda p=scratch_tmp: self._write_scratch(p)
+        ))
+
+        # Prepare core memory save
+        if self.core_memory_store:
+            files_to_save.extend(self.core_memory_store._prepare_atomic_save())
+
+        # Prepare memory stream save
+        if self.memory_stream:
+            files_to_save.extend(self.memory_stream._prepare_atomic_save())
+
+        try:
+            # Phase 1: Write all temp files
+            for final_path, tmp_path, write_func in files_to_save:
+                write_func()
+
+            # Phase 2: Backup existing and rename temps to final
+            for final_path, tmp_path, _ in files_to_save:
+                if final_path.exists():
+                    backup_path = final_path.with_suffix(final_path.suffix + backup_suffix)
+                    shutil.copy2(final_path, backup_path)
+                tmp_path.rename(final_path)
+
+            # Phase 3: Clean up backups on success
+            for final_path, _, _ in files_to_save:
+                backup_path = final_path.with_suffix(final_path.suffix + backup_suffix)
+                if backup_path.exists():
+                    backup_path.unlink()
+
+        except Exception as e:
+            logger.error(f"Atomic save failed, attempting rollback: {e}")
+            # Rollback: restore from backups
+            for final_path, tmp_path, _ in files_to_save:
+                backup_path = final_path.with_suffix(final_path.suffix + backup_suffix)
+                if backup_path.exists():
+                    shutil.copy2(backup_path, final_path)
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            raise
+
+    def _write_scratch(self, path: Path) -> None:
+        """Write scratch to a specific path (for atomic save)."""
+        with open(path, 'w') as f:
+            json.dump(self.scratch, f, indent=2, default=str)
+
+    def _save_simple(self) -> None:
+        """Simple non-atomic save (original implementation)."""
         # Save scratch
         try:
             with open(self.paths.scratch_json, 'w') as f:

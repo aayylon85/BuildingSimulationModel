@@ -8,8 +8,9 @@
   "currently": "Charlie is working on collaborative projects and organizing team activities.",
   "lifestyle": "Charlie arrives late (10:00-11:00) and leaves late (18:30-19:00). Not a morning person, drives to work.",
 
-  "thermal_comfort_c": 22.0,
+  "thermal_preference": "warm",
   "runs_warm": false,
+  "clothing_insulation_typical": "medium",
   "light_preference": "warm",
   "noise_sensitivity": "low",
 
@@ -17,6 +18,8 @@
   "typical_departure": "18:30-19:00",
   "preferred_desk": "Desk_C",
   "works_weekends": false,
+  "workspace_variety": "medium",
+  "likes_desk_variety": true,
 
   "perception_bandwidth": 10,
   "reflection_threshold": 100,

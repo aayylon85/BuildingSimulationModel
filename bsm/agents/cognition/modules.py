@@ -12,24 +12,209 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from openai import OpenAI
+from pydantic import BaseModel, Field
+
+from agents import Agent, Runner, ModelSettings
+from agents.agent_output import AgentOutputSchema
 
 from bsm.agents.memory.stream import MemoryNode
+from bsm.agents.skeleton import DEFAULT_AGENT_MODEL
 
 if TYPE_CHECKING:
     from bsm.agents.generative_agent import GenerativeAgent
     from bsm.agents.skeleton import CalendarStore
 
-# Module-level OpenAI client for reflections (initialized lazily)
-_reflection_client: Optional[OpenAI] = None
+
+# ---------------------------------------------------------------------------
+# Pydantic Output Schemas for Cognitive Module Agents
+# ---------------------------------------------------------------------------
+
+class ReflectionOutput(BaseModel):
+    """Output schema for reflection generation."""
+    insight: str = Field(description="The reflection insight in first person")
 
 
-def _get_reflection_client() -> OpenAI:
-    """Get or create the OpenAI client for reflections."""
-    global _reflection_client
-    if _reflection_client is None:
-        _reflection_client = OpenAI()
-    return _reflection_client
+class PlanningThoughtOutput(BaseModel):
+    """Output schema for conversation planning thought."""
+    thought: str = Field(description="What to do or keep in mind from the conversation")
+
+
+class MemoThoughtOutput(BaseModel):
+    """Output schema for memo thought about another person."""
+    observation: str = Field(description="Observation about the other person")
+
+
+class ImportanceAssessment(BaseModel):
+    """Output schema for LLM-based importance scoring."""
+    importance: int = Field(ge=1, le=10, description="Importance score from 1-10")
+    reasoning: str = Field(description="Brief reasoning for the score")
+
+
+# ---------------------------------------------------------------------------
+# LLM-Based Importance Scoring
+# ---------------------------------------------------------------------------
+
+def _build_importance_assessor_agent() -> Agent:
+    """Build an agent for assessing event importance."""
+    instructions = """Rate the importance of an event for a person on a scale of 1-10.
+
+1 = purely mundane (routine tasks, making coffee)
+5 = moderately significant (regular meetings, normal work tasks)
+10 = extremely significant (major work milestone, serious conflict)
+
+Consider:
+- How does this relate to their work and responsibilities?
+- Does it affect their comfort or wellbeing?
+- Does it involve important relationships?
+- Is it likely to be remembered?
+
+Be thoughtful but don't overthink - most routine events should be 3-5."""
+
+    return Agent(
+        name="importance_assessor",
+        instructions=instructions,
+        model=DEFAULT_AGENT_MODEL,
+        model_settings=ModelSettings(reasoning_effort="low"),
+        output_type=AgentOutputSchema(ImportanceAssessment),
+    )
+
+
+async def assess_event_importance_llm(
+    agent: "GenerativeAgent",
+    event_description: str,
+) -> int:
+    """
+    Assess importance of an event using LLM (Stanford generative_agents style).
+
+    Args:
+        agent: The agent perceiving the event
+        event_description: Description of the event
+
+    Returns:
+        Importance score from 1-10
+    """
+    identity = agent.get_identity_stable_set() if hasattr(agent, 'get_identity_stable_set') else agent.name
+
+    prompt = f"""Here is a brief description of {agent.name}:
+{identity}
+
+Rate the importance of this event for {agent.name}:
+Event: {event_description}"""
+
+    try:
+        assessor = _build_importance_assessor_agent()
+        result = await Runner.run(assessor, prompt)
+        output: ImportanceAssessment = result.final_output
+        return max(1, min(10, output.importance))  # Clamp to 1-10
+    except Exception as e:
+        print(f"[IMPORTANCE] LLM importance assessment failed: {e}")
+        return 5  # Default to moderate importance
+
+
+async def get_importance(
+    agent: "GenerativeAgent",
+    event_description: str,
+    base_importance: float,
+    use_llm: bool = False,
+) -> float:
+    """
+    Get importance score - uses LLM or returns base_importance based on config.
+
+    Args:
+        agent: The agent perceiving the event
+        event_description: Description of the event
+        base_importance: Hardcoded importance value (used if use_llm=False)
+        use_llm: Whether to use LLM-based scoring
+
+    Returns:
+        Importance score (float)
+    """
+    if use_llm:
+        return float(await assess_event_importance_llm(agent, event_description))
+    return base_importance
+
+
+# ---------------------------------------------------------------------------
+# End-of-Day Memory Consolidation (LLM-Based)
+# ---------------------------------------------------------------------------
+
+class ConsolidationBatch(BaseModel):
+    """Output schema for memory consolidation assessment."""
+    memories_to_consolidate: List[int] = Field(
+        default_factory=list,
+        description="Indices of memories to consolidate into core identity"
+    )
+    reasoning: str = Field(description="Brief explanation of why these memories matter")
+
+
+def _build_consolidation_assessor_agent() -> Agent:
+    """Build an agent for assessing which memories should become core identity."""
+    instructions = """You are analyzing a person's memories from today to determine which
+should become part of their permanent core identity/personality.
+
+ONLY consolidate memories that would genuinely change WHO THE PERSON IS:
+- Major realizations about their preferences (e.g., "I realized I work best in quiet")
+- Significant relationship changes (e.g., "Bob and I had a serious disagreement")
+- Important decisions about their work style (e.g., "I've decided to start taking breaks")
+- Memorable experiences that shape identity (e.g., "I successfully led my first meeting")
+
+DO NOT consolidate:
+- Routine events (meetings attended, thermostat adjustments)
+- Temporary states (felt cold, was busy)
+- Minor observations (colleague arrived, equipment turned on)
+
+Be very selective - most days should consolidate 0-2 memories.
+Return the indices of memories that should be consolidated."""
+
+    return Agent(
+        name="memory_consolidator",
+        instructions=instructions,
+        model=DEFAULT_AGENT_MODEL,
+        model_settings=ModelSettings(reasoning_effort="medium"),
+        output_type=AgentOutputSchema(ConsolidationBatch),
+    )
+
+
+async def assess_memories_for_consolidation(
+    agent_name: str,
+    identity: str,
+    memories: List[tuple[int, str, float]],  # (index, description, importance)
+) -> ConsolidationBatch:
+    """
+    Use LLM to assess which memories should be consolidated into core identity.
+
+    Args:
+        agent_name: Name of the agent
+        identity: Current identity description
+        memories: List of (index, description, importance) tuples
+
+    Returns:
+        ConsolidationBatch with indices to consolidate
+    """
+    if not memories:
+        return ConsolidationBatch(memories_to_consolidate=[], reasoning="No memories to assess")
+
+    memory_list = "\n".join([
+        f"[{idx}] (importance: {imp:.1f}) {desc}"
+        for idx, desc, imp in memories
+    ])
+
+    prompt = f"""Agent: {agent_name}
+Current Identity: {identity}
+
+Today's Memories:
+{memory_list}
+
+Which memories (if any) should become part of {agent_name}'s permanent core identity?
+Return the indices of memories to consolidate, or empty list if none qualify."""
+
+    try:
+        assessor = _build_consolidation_assessor_agent()
+        result = await Runner.run(assessor, prompt)
+        return result.final_output
+    except Exception as e:
+        print(f"[CONSOLIDATION] LLM assessment failed: {e}")
+        return ConsolidationBatch(memories_to_consolidate=[], reasoning=f"Assessment failed: {e}")
 
 
 def perceive(
@@ -43,6 +228,10 @@ def perceive(
     This is the first step in the cognitive loop. The agent observes
     the current state and creates memory events for notable observations.
 
+    Stanford-style attention bandwidth: The agent can only perceive a limited
+    number of events per timestep. Events are prioritized by salience/importance
+    and only the top N (perception_bandwidth) are actually perceived.
+
     Args:
         agent: The generative agent
         sim_state: Current simulation state dict
@@ -54,7 +243,11 @@ def perceive(
     if not agent.memory_stream:
         return []
 
-    perceived_events: List[MemoryNode] = []
+    # Collect potential perceptions with priority scores
+    # Format: (priority, description, subject, predicate, obj, importance)
+    from typing import Callable, Tuple
+    PotentialPerception = Tuple[float, str, str, str, str, float]
+    potential_perceptions: List[PotentialPerception] = []
 
     # Perceive thermal comfort
     temp = sim_state.get("indoor_temp_c", 21.0)
@@ -62,92 +255,95 @@ def perceive(
     temp_diff = abs(temp - comfort_temp)
 
     if temp_diff > 2.0:
-        # Significant discomfort
+        # Significant discomfort - high priority
         feeling = "too warm" if temp > comfort_temp else "too cold"
-        event = agent.memory_stream.add_event(
-            description=f"The room temperature is {temp:.1f}C, which feels {feeling} (I prefer {comfort_temp}C)",
-            subject="room",
-            predicate="feels",
-            obj=feeling,
-            now=now,
-            importance=min(8.0, 5.0 + temp_diff),  # More discomfort = more important
-        )
-        perceived_events.append(event)
+        importance = min(8.0, 5.0 + temp_diff)
+        priority = 8.0 + temp_diff  # Higher discomfort = higher priority
+        potential_perceptions.append((
+            priority,
+            f"The room temperature is {temp:.1f}C, which feels {feeling} (I prefer {comfort_temp}C)",
+            "room", "feels", feeling, importance
+        ))
     elif temp_diff > 1.0:
-        # Mild discomfort
+        # Mild discomfort - medium priority
         feeling = "a bit warm" if temp > comfort_temp else "a bit cool"
-        event = agent.memory_stream.add_event(
-            description=f"The room temperature is {temp:.1f}C, which is {feeling}",
-            subject="room",
-            predicate="feels",
-            obj=feeling,
-            now=now,
-            importance=4.0,
-        )
-        perceived_events.append(event)
+        potential_perceptions.append((
+            5.0 + temp_diff,
+            f"The room temperature is {temp:.1f}C, which is {feeling}",
+            "room", "feels", feeling, 4.0
+        ))
 
     # Perceive other occupants present
     other_occupants = sim_state.get("other_occupants_present", [])
     for other_id in other_occupants:
-        if not agent.recently_perceived(other_id, within_minutes=30):
-            # Haven't noticed them recently
-            event = agent.memory_stream.add_event(
-                description=f"{other_id} is in the office",
-                subject=other_id,
-                predicate="is present in",
-                obj="office",
-                now=now,
-                importance=4.0,
-            )
-            perceived_events.append(event)
+        if not agent.recently_perceived(other_id, now, within_minutes=30):
+            # Haven't noticed them recently - medium priority
+            potential_perceptions.append((
+                5.0,
+                f"{other_id} is in the office",
+                other_id, "is present in", "office", 4.0
+            ))
 
-    # Perceive equipment state if just arrived
-    if agent.has_just_arrived():
-        equipment_status = sim_state.get("equipment_status", {})
-        if equipment_status.get("all_off", True):
-            event = agent.memory_stream.add_event(
-                description="My desk equipment is all off - I need to turn it on to start working",
-                subject="I",
-                predicate="notice",
-                obj="equipment is off",
-                now=now,
-                importance=6.0,
-            )
-            perceived_events.append(event)
+    # Track just_arrived state (will clear flag at end of function)
+    just_arrived = agent.has_just_arrived()
 
-        # Perceive lighting conditions
-        lighting = sim_state.get("lighting_conditions", {})
-        natural_light = lighting.get("natural_light_level", "moderate")
-        desk_light_on = lighting.get("desk_light_on", False)
+    # Perceive equipment state continuously (lower priority - let agent decide based on needs)
+    # Only perceive if not recently noticed to avoid spam
+    equipment_status = sim_state.get("equipment_status", {})
+    equipment_items = equipment_status.get("items", {})
+    for equipment_name, is_on in equipment_items.items():
+        # Only perceive equipment that's off and hasn't been recently noticed
+        if not is_on and not agent.recently_perceived(f"equipment_{equipment_name}", now, within_minutes=30):
+            potential_perceptions.append((
+                3.0,  # Lower priority - let agent decide based on their needs
+                f"The {equipment_name} is currently off",
+                "I", "notice", f"{equipment_name} is off", 3.0
+            ))
 
-        if natural_light in ["dim", "dark"] and not desk_light_on:
-            event = agent.memory_stream.add_event(
-                description=f"It's {natural_light} in here and my desk light is off",
-                subject="workspace",
-                predicate="has",
-                obj=f"{natural_light} lighting",
-                now=now,
-                importance=5.0,
-            )
-            perceived_events.append(event)
+    # Perceive lighting conditions (also continuous, low priority)
+    lighting = sim_state.get("lighting_conditions", {})
+    natural_light = lighting.get("natural_light_level", "moderate")
+    desk_light_on = lighting.get("desk_light_on", False)
 
-        agent.clear_just_arrived()
+    if natural_light in ["dim", "dark"] and not desk_light_on:
+        if not agent.recently_perceived("lighting_dim", now, within_minutes=30):
+            potential_perceptions.append((
+                3.0,  # Lower priority - observational
+                f"The lighting is {natural_light} and the desk light is off",
+                "workspace", "has", f"{natural_light} lighting", 3.0
+            ))
 
-    # Perceive weather
+    # Perceive weather (low priority)
     weather_desc = sim_state.get("weather_description", "")
-    is_sunny = sim_state.get("is_sunny", False)
     outdoor_temp = sim_state.get("outdoor_temp_c", 10.0)
 
-    if weather_desc and not agent.recently_perceived("weather", within_minutes=60):
+    if weather_desc and not agent.recently_perceived("weather", now, within_minutes=60):
+        potential_perceptions.append((
+            3.0,
+            f"The weather outside is {weather_desc}, {outdoor_temp:.1f}C",
+            "weather", "is", weather_desc, 3.0
+        ))
+
+    # Sort by priority (highest first) and limit to perception bandwidth
+    bandwidth = agent.get_perception_bandwidth()
+    potential_perceptions.sort(key=lambda x: x[0], reverse=True)
+
+    # Create only the top N perceptions
+    perceived_events: List[MemoryNode] = []
+    for priority, desc, subj, pred, obj, imp in potential_perceptions[:bandwidth]:
         event = agent.memory_stream.add_event(
-            description=f"The weather outside is {weather_desc}, {outdoor_temp:.1f}C",
-            subject="weather",
-            predicate="is",
-            obj=weather_desc,
+            description=desc,
+            subject=subj,
+            predicate=pred,
+            obj=obj,
             now=now,
-            importance=3.0,
+            importance=imp,
         )
         perceived_events.append(event)
+
+    # Clear just_arrived flag if it was set (always do this even if filtered)
+    if just_arrived:
+        agent.clear_just_arrived()
 
     return perceived_events
 
@@ -260,6 +456,10 @@ async def reflect(
     from recent observations. Triggered when accumulated importance of
     perceived events exceeds the reflection threshold.
 
+    Uses keyword strength tracking (Stanford-style) to generate focal points
+    for memory retrieval, ensuring reflections are grounded in the most
+    salient concepts the agent has been encountering.
+
     Args:
         agent: The generative agent
         now: Current datetime
@@ -278,7 +478,17 @@ async def reflect(
     # Reset trigger
     agent.reset_importance_trigger()
 
-    # Get recent high-importance events
+    # Get focal points from keyword strength tracking (Stanford-style)
+    focal_points = agent.memory_stream.get_reflection_focal_points(top_n=3)
+
+    if not focal_points:
+        # Fallback to generic focal points if no keyword strengths
+        focal_points = ["recent observations", "patterns in my behavior"]
+
+    # Retrieve memories related to focal points
+    retrieved = retrieve(agent, focal_points, now, n_count=10)
+
+    # Get recent high-importance events (for evidence linking)
     recent_events = agent.memory_stream.get_high_importance_events(
         now=now,
         hours=4.0,
@@ -297,6 +507,7 @@ async def reflect(
             insight = await _generate_llm_reflection(
                 agent_name=agent.name,
                 recent_events=recent_events[:10],  # Limit to 10 most recent
+                focal_points=focal_points,
                 model=reflection_model,
             )
 
@@ -322,13 +533,42 @@ async def reflect(
             _generate_template_reflections(agent, recent_events, now)
         )
 
+    # Persist keyword strengths after reflection (ensures reflection focal points
+    # are stable across sessions)
+    if reflections and agent.memory_stream:
+        agent.memory_stream.save()
+
     return reflections
+
+
+def _build_reflection_agent() -> Agent:
+    """Build an agent for generating reflections."""
+    instructions = """You are an office worker reflecting on your experiences.
+
+Generate ONE high-level insight about:
+- Comfort preferences (temperature, lighting)
+- Workspace habits
+- Working patterns
+- Interactions with colleagues
+
+Write in first person (e.g., "I notice that...", "I prefer...", "I tend to...").
+Focus on patterns that help make better decisions in the future.
+Keep it concise (1-2 sentences)."""
+
+    return Agent(
+        name="reflection_agent",
+        instructions=instructions,
+        model=DEFAULT_AGENT_MODEL,
+        model_settings=ModelSettings(reasoning_effort="medium"),
+        output_type=AgentOutputSchema(ReflectionOutput),
+    )
 
 
 async def _generate_llm_reflection(
     agent_name: str,
     recent_events: List[MemoryNode],
-    model: str = "gpt-4o-mini",
+    focal_points: Optional[List[str]] = None,
+    model: str = None,  # Ignored, uses DEFAULT_AGENT_MODEL
 ) -> Optional[str]:
     """
     Generate a reflection using LLM (Stanford-style).
@@ -336,7 +576,8 @@ async def _generate_llm_reflection(
     Args:
         agent_name: Name of the agent
         recent_events: List of recent high-importance events
-        model: OpenAI model to use
+        focal_points: Optional list of keywords/topics to focus reflection on
+        model: Ignored (uses DEFAULT_AGENT_MODEL)
 
     Returns:
         Generated insight string, or None if generation failed
@@ -347,41 +588,27 @@ async def _generate_llm_reflection(
         for i, event in enumerate(recent_events[:10])
     ])
 
+    # Include focal points if provided (Stanford-style keyword-based reflection)
+    focal_context = ""
+    if focal_points:
+        focal_str = ", ".join(focal_points)
+        focal_context = f"\nKey themes to consider: {focal_str}\n"
+
     prompt = f"""You are {agent_name}, an office worker.
 
 Recent observations and experiences:
 {statements}
+{focal_context}
+Based on these observations, generate an insight."""
 
-Based on these observations, what is ONE high-level insight about your:
-- Comfort preferences (temperature, lighting)
-- Workspace habits
-- Working patterns
-- Interactions with colleagues
-
-Write the insight in first person (e.g., "I notice that...", "I prefer...", "I tend to...").
-Focus on patterns that would help you make better decisions in the future.
-Keep it concise (1-2 sentences).
-
-Output only the insight, nothing else."""
-
-    client = _get_reflection_client()
-
-    # Use synchronous call wrapped in async context
-    # (OpenAI client supports async via AsyncOpenAI, but for simplicity we use sync)
-    import asyncio
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=100,
-        )
-    )
-
-    insight = response.choices[0].message.content.strip()
-    return insight if insight else None
+    try:
+        agent = _build_reflection_agent()
+        result = await Runner.run(agent, prompt)
+        output: ReflectionOutput = result.final_output
+        return output.insight if output.insight else None
+    except Exception as e:
+        print(f"[REFLECTION] LLM reflection failed: {e}")
+        return None
 
 
 def _generate_template_reflections(
@@ -425,6 +652,192 @@ def _generate_template_reflections(
     return reflections
 
 
+# ---------------------------------------------------------------------------
+# Post-Conversation Reflection (Stanford-style)
+# ---------------------------------------------------------------------------
+
+async def reflect_on_conversation(
+    agent: "GenerativeAgent",
+    other_agent_id: str,
+    now: datetime,
+    reflection_model: str = "gpt-4o-mini",
+) -> List[MemoryNode]:
+    """
+    Generate reflections after a conversation (Stanford-style).
+
+    Creates two types of thoughts:
+    1. Planning thoughts: What should I do based on this conversation?
+    2. Memo thoughts: What did I learn about the other person?
+
+    Args:
+        agent: The generative agent
+        other_agent_id: ID of the agent the conversation was with
+        now: Current simulation datetime
+        reflection_model: Model to use for LLM reflection
+
+    Returns:
+        List of newly created thought MemoryNodes
+    """
+    if not agent.memory_stream:
+        return []
+
+    reflections: List[MemoryNode] = []
+
+    # Retrieve recent conversation memories with this person
+    focal_points = [
+        f"my conversation with {other_agent_id}",
+        f"what {other_agent_id} mentioned",
+        f"agreements with {other_agent_id}",
+    ]
+    retrieved = retrieve(agent, focal_points, now, n_count=10)
+
+    # Flatten retrieved memories
+    conv_memories: List[MemoryNode] = []
+    for fp, nodes in retrieved.items():
+        conv_memories.extend(nodes)
+
+    if not conv_memories:
+        return []
+
+    # Generate planning thought
+    try:
+        planning_insight = await _generate_conversation_planning_thought(
+            agent_name=agent.name,
+            other_name=other_agent_id,
+            conversation_memories=conv_memories[:5],
+            model=reflection_model,
+        )
+
+        if planning_insight:
+            thought = agent.memory_stream.add_thought(
+                description=planning_insight,
+                evidence_ids=[m.node_id for m in conv_memories[:3] if m.node_id >= 0],
+                now=now,
+                importance=6.0,
+            )
+            reflections.append(thought)
+            print(f"[ConvReflect] {agent.name} planning: {planning_insight}")
+
+    except Exception as e:
+        print(f"[ConvReflect] Planning thought failed for {agent.name}: {e}")
+
+    # Generate memo thought about the other person
+    try:
+        memo_insight = await _generate_conversation_memo_thought(
+            agent_name=agent.name,
+            other_name=other_agent_id,
+            conversation_memories=conv_memories[:5],
+            model=reflection_model,
+        )
+
+        if memo_insight:
+            thought = agent.memory_stream.add_thought(
+                description=memo_insight,
+                evidence_ids=[m.node_id for m in conv_memories[:3] if m.node_id >= 0],
+                now=now,
+                importance=5.0,
+            )
+            reflections.append(thought)
+            print(f"[ConvReflect] {agent.name} memo: {memo_insight}")
+
+    except Exception as e:
+        print(f"[ConvReflect] Memo thought failed for {agent.name}: {e}")
+
+    return reflections
+
+
+def _build_planning_thought_agent() -> Agent:
+    """Build an agent for generating planning thoughts from conversations."""
+    instructions = """Generate ONE specific thing the person should do or keep in mind
+based on their conversation.
+
+Write in first person (e.g., "I should...", "I'll remember to...", "Based on what they said, I...").
+Keep it concise (1 sentence)."""
+
+    return Agent(
+        name="planning_thought_agent",
+        instructions=instructions,
+        model=DEFAULT_AGENT_MODEL,
+        model_settings=ModelSettings(reasoning_effort="low"),
+        output_type=AgentOutputSchema(PlanningThoughtOutput),
+    )
+
+
+async def _generate_conversation_planning_thought(
+    agent_name: str,
+    other_name: str,
+    conversation_memories: List[MemoryNode],
+    model: str = None,  # Ignored, uses DEFAULT_AGENT_MODEL
+) -> Optional[str]:
+    """Generate a planning thought based on conversation."""
+    statements = "\n".join([
+        f"- {mem.description}"
+        for mem in conversation_memories[:5]
+    ])
+
+    prompt = f"""You are {agent_name}, an office worker who just finished talking with {other_name}.
+
+What you remember from the conversation:
+{statements}
+
+Generate a planning thought."""
+
+    try:
+        agent = _build_planning_thought_agent()
+        result = await Runner.run(agent, prompt)
+        output: PlanningThoughtOutput = result.final_output
+        return output.thought if output.thought else None
+    except Exception as e:
+        print(f"[PLANNING] Planning thought generation failed: {e}")
+        return None
+
+
+def _build_memo_thought_agent() -> Agent:
+    """Build an agent for generating memo thoughts about other people."""
+    instructions = """Generate ONE observation about what you learned or noticed
+about the other person from a conversation.
+
+Write in first person (e.g., "They seem to...", "I learned that...", "They mentioned...").
+Keep it concise (1 sentence)."""
+
+    return Agent(
+        name="memo_thought_agent",
+        instructions=instructions,
+        model=DEFAULT_AGENT_MODEL,
+        model_settings=ModelSettings(reasoning_effort="low"),
+        output_type=AgentOutputSchema(MemoThoughtOutput),
+    )
+
+
+async def _generate_conversation_memo_thought(
+    agent_name: str,
+    other_name: str,
+    conversation_memories: List[MemoryNode],
+    model: str = None,  # Ignored, uses DEFAULT_AGENT_MODEL
+) -> Optional[str]:
+    """Generate a memo thought about the other person."""
+    statements = "\n".join([
+        f"- {mem.description}"
+        for mem in conversation_memories[:5]
+    ])
+
+    prompt = f"""You are {agent_name}, an office worker who just finished talking with {other_name}.
+
+What you remember from the conversation:
+{statements}
+
+Generate an observation about {other_name}."""
+
+    try:
+        agent = _build_memo_thought_agent()
+        result = await Runner.run(agent, prompt)
+        output: MemoThoughtOutput = result.final_output
+        return output.observation if output.observation else None
+    except Exception as e:
+        print(f"[MEMO] Memo thought generation failed: {e}")
+        return None
+
+
 def get_decision_focal_points(
     sim_state: Dict[str, Any],
 ) -> List[str]:
@@ -452,7 +865,9 @@ def get_decision_focal_points(
         focal_points.append("lighting and workspace setup")
 
     equipment = sim_state.get("equipment_status", {})
-    if equipment.get("all_off", False):
+    equipment_items = equipment.get("items", {})
+    # Check if any equipment is off (might need to be turned on)
+    if equipment_items and not any(equipment_items.values()):
         focal_points.append("my equipment habits when arriving")
 
     other_occupants = sim_state.get("other_occupants_present", [])
@@ -460,6 +875,47 @@ def get_decision_focal_points(
         focal_points.append(f"my relationship with {other_occupants[0]}")
         # Add focal point for agreements when others are present
         focal_points.append("agreements I made with colleagues about temperature or comfort")
+
+    # Time-aware focal points for lunch and breaks
+    datetime_str = sim_state.get("datetime", "")
+    if datetime_str:
+        try:
+            from datetime import datetime as dt
+            now = dt.fromisoformat(datetime_str.replace("Z", "+00:00"))
+            hour = now.hour
+
+            # Lunch time window (11:00 - 14:00)
+            if 11 <= hour <= 14:
+                focal_points.append("my lunch habits and food preferences")
+                # Check if colleagues are at lunch
+                others_at_lunch = sim_state.get("other_occupants_at_lunch", [])
+                if others_at_lunch:
+                    focal_points.append(f"going to lunch with colleagues")
+
+            # Afternoon break window (14:00 - 16:00)
+            if 14 <= hour <= 16:
+                focal_points.append("taking breaks and energy levels")
+
+            # End of day window (16:00 - 19:00)
+            if 16 <= hour <= 19:
+                focal_points.append("my end of day routine and departure habits")
+                # Check if would be last to leave
+                office_occupancy = sim_state.get("office_occupancy", {})
+                if office_occupancy.get("you_would_be_last_to_leave", False):
+                    focal_points.append("responsibilities when leaving the office last")
+
+            # Morning coffee/settling in (08:00 - 10:00)
+            if 8 <= hour <= 10:
+                focal_points.append("my morning routine at work")
+        except (ValueError, TypeError):
+            pass  # If datetime parsing fails, skip time-aware focal points
+
+    # If currently at lunch or on break, add relevant focal points
+    agent_status = sim_state.get("agent_status", {})
+    if agent_status.get("at_lunch"):
+        focal_points.append("when I usually return from lunch")
+    if agent_status.get("on_break"):
+        focal_points.append("how long I usually take breaks")
 
     return focal_points
 
@@ -476,6 +932,8 @@ def get_planning_focal_points() -> List[str]:
         "recent events that might affect today",
         "meetings or commitments I have",
         "my preferences for arrival and departure times",
+        "my clothing style and what I typically wear",
+        "my lunch and break habits",
     ]
 
 
@@ -575,14 +1033,13 @@ def get_meeting_context(
         should_attend_now = True
         mins_in = current_meeting.get("_minutes_in", 0)
         meeting_alert = (
-            f"MEETING IN PROGRESS: '{current_meeting.get('title', 'Meeting')}' "
-            f"started {mins_in} minutes ago. You should be attending this meeting!"
+            f"Meeting '{current_meeting.get('title', 'Meeting')}' is in progress "
+            f"(started {mins_in} min ago)"
         )
     elif next_meeting and minutes_to_next is not None and minutes_to_next <= 5:
         should_attend_now = True
         meeting_alert = (
-            f"MEETING STARTING SOON: '{next_meeting.get('title', 'Meeting')}' "
-            f"starts in {minutes_to_next} minutes. Head to the meeting room now!"
+            f"Meeting '{next_meeting.get('title', 'Meeting')}' starts in {minutes_to_next} minutes"
         )
 
     return {
@@ -899,10 +1356,18 @@ def format_step_prompt(
         else:
             meeting_lines.append("No meetings scheduled today.")
 
-        # Alert for current or imminent meeting
+        # Alert for current or imminent meeting - make it VERY clear they need to physically attend
         if meeting_alert:
             meeting_lines.append("")
-            meeting_lines.append(f"*** {meeting_alert} ***")
+            meeting_lines.append(f"⚠️ IMPORTANT: {meeting_alert}")
+            current_meeting = meeting_context.get("current_meeting")
+            if current_meeting:
+                meeting_lines.append("")
+                meeting_lines.append(">>> ACTION REQUIRED: Use 'attend_meeting' NOW to physically go to the meeting room!")
+                meeting_lines.append("    (Remember: accepting an invitation doesn't move you there - you must use attend_meeting)")
+            elif meeting_context.get("should_attend_now"):
+                meeting_lines.append("")
+                meeting_lines.append(">>> ACTION REQUIRED: Use 'attend_meeting' to go to the meeting room!")
 
         # Next meeting info
         elif next_meeting and minutes_to_next is not None:
@@ -931,9 +1396,117 @@ def format_step_prompt(
     # Extract recent agreements from retrieved memories
     agreements_section = _extract_agreements_from_memories(retrieved_memories, now)
 
+    # Format equipment status readably
+    equipment_status = sim_state.get("equipment_status", {})
+    equipment_items = equipment_status.get("items", {})
+    equipment_lines = []
+    for equipment_name, is_on in equipment_items.items():
+        state_str = "ON" if is_on else "OFF"
+        equipment_lines.append(f"  - {equipment_name}: {state_str}")
+    equipment_section = "\n".join(equipment_lines) if equipment_lines else "  No equipment tracked"
+
+    # Format lighting readably
+    lighting = sim_state.get("lighting_conditions", {})
+    natural_light = lighting.get("natural_light_level", "moderate")
+    desk_light_on = lighting.get("desk_light_on", False)
+    lighting_section = f"  Natural light: {natural_light}, Desk light: {'ON' if desk_light_on else 'OFF'}"
+
+    # Get work style preferences from core memories if available
+    work_preferences_section = ""
+    if agent.core_memory_store:
+        work_memories = agent.core_memory_store.retrieve_relevant(
+            focal_point="work style equipment preferences routine",
+            n_count=2
+        )
+        if work_memories:
+            # work_memories is List[Tuple[float, Dict]] - extract descriptions
+            prefs = [f"  - {mem['description']}" for _, mem in work_memories]
+            work_preferences_section = f"\n\n=== YOUR WORK PREFERENCES ===\n" + "\n".join(prefs)
+
+    # Get today's clothing if available
+    clothing_section = ""
+    todays_clothing = agent.get_todays_clothing() if hasattr(agent, 'get_todays_clothing') else None
+    if todays_clothing:
+        clothing_desc = todays_clothing.get("description", "Not specified")
+        warmth = todays_clothing.get("warmth_level", "medium")
+        layers_removable = "yes" if todays_clothing.get("layers_removable", True) else "no"
+        clothing_section = f"\nYour clothing today: {clothing_desc} (warmth: {warmth}, can remove layers: {layers_removable})"
+
+    # Get agent's current status
+    agent_status = sim_state.get("agent_status", {})
+    status_parts = []
+    if agent_status.get("at_lunch"):
+        status_parts.append("at lunch")
+    elif agent_status.get("on_break"):
+        status_parts.append("on break")
+    elif agent_status.get("at_desk", True):
+        status_parts.append("at your desk")
+    if agent_status.get("out_of_office"):
+        status_parts.append("outside the building")
+    status_str = ", ".join(status_parts) if status_parts else "at your desk"
+
+    # Update colleague context with lunch/break status
+    others_at_lunch = sim_state.get("other_occupants_at_lunch", [])
+    others_on_break = sim_state.get("other_occupants_on_break", [])
+    colleague_status_lines = []
+    if others_at_lunch:
+        colleague_status_lines.append(f"  At lunch: {', '.join(others_at_lunch)}")
+    if others_on_break:
+        colleague_status_lines.append(f"  On break: {', '.join(others_on_break)}")
+    colleague_status_section = "\n".join(colleague_status_lines) if colleague_status_lines else ""
+
+    # Build location section
+    current_location = sim_state.get("current_location", "desk_area")
+    location_info = sim_state.get("location_info", {})
+    available_locations = sim_state.get("available_locations", [])
+    agents_by_location = sim_state.get("agents_by_location", {})
+
+    location_lines = [f"Current location: {current_location}"]
+    current_loc_info = location_info.get(current_location, {})
+    if current_loc_info.get("description"):
+        location_lines.append(f"  ({current_loc_info['description']})")
+
+    # Show who's where
+    location_lines.append("\nPeople by location:")
+    for loc_name, agents_there in agents_by_location.items():
+        if agents_there:
+            location_lines.append(f"  {loc_name}: {', '.join(agents_there)}")
+
+    # Show break area equipment if available
+    break_area_info = location_info.get("break_area", {})
+    if break_area_info.get("appliances"):
+        location_lines.append(f"\nBreak area appliances: {', '.join(break_area_info['appliances'])}")
+
+    location_section = "\n".join(location_lines)
+
     prompt = f"""
 === WHO YOU ARE ===
 {context['identity']}
+
+=== CURRENT STATE ===
+DateTime: {context['datetime']} ({context['day_of_week']})
+Your status: {status_str}
+Indoor temperature: {sim_state.get('indoor_temp_c', 'N/A')}C
+Outdoor temperature: {sim_state.get('outdoor_temp_c', 'N/A')}C
+Weather: {sim_state.get('weather_description', 'N/A')}{clothing_section}
+Your desk: {sim_state.get('current_desk', 'N/A')}
+Window state: {sim_state.get('window_open_fraction', 0)}
+Thermostat setpoints:
+  Heating: {sim_state.get('thermostat', {{}}).get('heating_setpoint_c', 21)}C (activates when cold)
+  Cooling: {sim_state.get('thermostat', {{}}).get('cooling_setpoint_c', 24)}C (activates when hot)
+
+=== LOCATION ===
+{location_section}
+
+=== WORKSPACE ===
+Lighting:
+{lighting_section}
+Equipment:
+{equipment_section}
+
+=== COLLEAGUES PRESENT ===
+{colleague_context}
+{colleague_status_section}
 
 === YOUR SCHEDULE ===
 {context['schedule']}
@@ -944,30 +1517,19 @@ def format_step_prompt(
 === PENDING INVITATIONS ===
 {invitations_section}
 
-=== COLLEAGUES PRESENT ===
-{colleague_context}
-
 === RECENT AGREEMENTS ===
 {agreements_section}
 
-=== CURRENT STATE ===
-DateTime: {context['datetime']} ({context['day_of_week']})
-Indoor temperature: {sim_state.get('indoor_temp_c', 'N/A')}C
-Outdoor temperature: {sim_state.get('outdoor_temp_c', 'N/A')}C
-Weather: {sim_state.get('weather_description', 'N/A')}
-Your desk: {sim_state.get('current_desk', 'N/A')}
-Lighting: {sim_state.get('lighting_conditions', {})}
-Equipment status: {sim_state.get('equipment_status', {})}
-Window state: {sim_state.get('window_open_fraction', 0)}
-Thermostat: {sim_state.get('thermostat_setpoint_c', 'N/A')}C
-
 === RELEVANT MEMORIES ===
-{context['relevant_memories']}
+{context['relevant_memories']}{work_preferences_section}
 
-Based on who you are, your memories, the meeting status, and the current state, decide what actions to take.
-IMPORTANT: If a meeting is in progress or starting soon, use 'attend_meeting' action to join it.
+Based on who you are, your memories, the current state, and your schedule, decide what actions to take.
+If a meeting is in progress or starting soon, consider attending with 'attend_meeting'.
 If you have pending invitations, use 'respond_to_invitation' to accept or decline.
-IMPORTANT: Respect prior agreements with colleagues. Do not take actions that contradict recent agreements unless circumstances have changed significantly.
+Respect prior agreements with colleagues unless circumstances have changed significantly.
+If you want to go to lunch, use 'go_to_lunch' (stay in building) or 'go_out_for_lunch' (leave building).
+If you're at lunch or on break and ready to return, use 'return_from_lunch' or 'return_from_break'.
+For a short break (coffee, stretch), use 'take_break'.
 """.strip()
 
     return prompt
@@ -1111,6 +1673,12 @@ Do NOT create new meetings that duplicate those listed above.
 
 Based on who you are and your memories, plan your day.
 Consider your typical schedule as a guideline, but you may adjust based on circumstances.
+
+As part of your plan, decide what you'll wear today. Consider:
+- The weather forecast (outdoor temperature)
+- Any meetings you have (formality)
+- Your personal style and comfort preferences
+Provide a description of your outfit and its warmth level (very_light, light, medium, warm, very_warm).
 """.strip()
 
     return prompt
@@ -1123,6 +1691,10 @@ def record_decision_to_memory(
 ) -> None:
     """
     Record a decision to the agent's memory stream.
+
+    NOTE: This function does NOT call agent.save(). The caller is responsible
+    for calling agent.save() to persist the memory to disk. This is intentional
+    to allow batching multiple memory operations before a single save.
 
     Args:
         agent: The generative agent
@@ -1163,6 +1735,10 @@ def record_plan_to_memory(
 ) -> None:
     """
     Record a daily plan to the agent's memory stream.
+
+    NOTE: This function does NOT call agent.save(). The caller is responsible
+    for calling agent.save() to persist the memory to disk. This is intentional
+    to allow batching multiple memory operations before a single save.
 
     Args:
         agent: The generative agent

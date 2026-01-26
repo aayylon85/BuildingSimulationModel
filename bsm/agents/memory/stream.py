@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import re
+import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_ts(dt: datetime) -> float:
@@ -37,6 +41,47 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     if denom == 0:
         return 0.0
     return float(np.dot(a, b) / denom)
+
+
+def _retry_with_backoff(
+    func: Callable,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 10.0,
+):
+    """
+    Retry a function with exponential backoff.
+
+    Args:
+        func: Callable to retry
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries (seconds)
+        max_delay: Maximum delay between retries (seconds)
+
+    Returns:
+        Result of func() if successful
+
+    Raises:
+        Last exception if all retries fail
+    """
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                logger.warning(
+                    f"Embedder failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                    f"Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+    raise last_exception
+
+
+# Default embedding dimension (OpenAI text-embedding-3-small)
+DEFAULT_EMBEDDING_DIM = 1536
 
 
 @dataclass
@@ -138,7 +183,8 @@ class CoreMemoryStore:
 
     Storage:
         agent_folder/
-            core_memories.json    # Permanent core memories with embeddings
+            core_memories.json       # Permanent core memories (metadata only)
+            core_embeddings.json     # Embedding vectors (separate for efficiency)
     """
 
     def __init__(
@@ -159,42 +205,113 @@ class CoreMemoryStore:
         self.embedder = embedder
 
         # Storage
-        self.memories: List[Dict[str, Any]] = []  # List of {description, embedding, source}
-        self.embeddings: Dict[str, List[float]] = {}  # key -> vector
+        self.memories: List[Dict[str, Any]] = []  # List of {description, embedding_key, source}
+        self._embeddings: Dict[str, List[float]] = {}  # key -> vector (private)
 
         if auto_load:
             self._load()
+            self._validate_and_repair()
 
     @property
     def store_path(self) -> Path:
         return self.agent_folder / "core_memories.json"
 
+    @property
+    def embeddings_path(self) -> Path:
+        return self.agent_folder / "core_embeddings.json"
+
+    @property
+    def embeddings(self) -> Dict[str, List[float]]:
+        """Backward compatible property for embeddings access."""
+        return self._embeddings
+
     def _load(self) -> None:
-        """Load core memories from JSON file."""
+        """Load core memories and embeddings from separate JSON files."""
+        # Load memories
         if self.store_path.exists():
             try:
                 with open(self.store_path, 'r') as f:
                     data = json.load(f)
                 self.memories = data.get("memories", [])
-                self.embeddings = data.get("embeddings", {})
+                # Handle old format where embeddings were stored in same file
+                if "embeddings" in data:
+                    self._embeddings = data.get("embeddings", {})
             except (json.JSONDecodeError, IOError) as e:
                 print(f"Warning: Failed to load core_memories.json: {e}")
                 self.memories = []
-                self.embeddings = {}
+
+        # Load embeddings from separate file (new format)
+        if self.embeddings_path.exists():
+            try:
+                with open(self.embeddings_path, 'r') as f:
+                    self._embeddings = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Failed to load core_embeddings.json: {e}")
+
+    def _validate_and_repair(self) -> None:
+        """
+        Validate consistency between memories and embeddings.
+
+        If a memory's embedding_key is missing from _embeddings, attempts
+        to regenerate it. Logs warnings for any inconsistencies found.
+        """
+        if not self.memories:
+            return
+
+        missing_count = 0
+        repaired_count = 0
+
+        for mem in self.memories:
+            emb_key = mem.get("embedding_key", "")
+            if emb_key and emb_key not in self._embeddings:
+                missing_count += 1
+                try:
+                    new_key, _ = self._get_or_create_embedding(mem["description"])
+                    if new_key != emb_key:
+                        logger.warning(
+                            f"Core memory embedding key changed: {emb_key[:8]}... -> {new_key[:8]}..."
+                        )
+                    mem["embedding_key"] = new_key
+                    repaired_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to repair core memory embedding: {e}")
+
+        if missing_count > 0:
+            logger.warning(
+                f"CoreMemoryStore validation: {missing_count} memories had missing embeddings, "
+                f"{repaired_count} repaired"
+            )
 
     def _get_embedding_key(self, text: str) -> str:
         """Generate a consistent key for embedding lookup."""
         return hashlib.sha256(text.encode()).hexdigest()[:32]
 
     def _get_or_create_embedding(self, text: str) -> Tuple[str, List[float]]:
-        """Get existing embedding or create new one."""
+        """
+        Get existing embedding or create new one with error handling.
+
+        Uses retry with exponential backoff for transient failures.
+        Falls back to zero-vector if all retries fail (prevents crashes
+        but marks memory as non-retrievable via cosine similarity).
+        """
         key = self._get_embedding_key(text)
 
-        if key not in self.embeddings:
-            emb_array = self.embedder.embed(text)
-            self.embeddings[key] = emb_array.tolist()
+        if key not in self._embeddings:
+            try:
+                emb_array = _retry_with_backoff(
+                    lambda: self.embedder.embed(text),
+                    max_retries=3,
+                    base_delay=1.0,
+                )
+                self._embeddings[key] = emb_array.tolist()
+            except Exception as e:
+                logger.error(f"Embedder failed after retries for CoreMemoryStore: {e}")
+                # Fallback: create zero-vector embedding
+                # This prevents crashes but memory will have 0 cosine similarity
+                self._embeddings[key] = [0.0] * DEFAULT_EMBEDDING_DIM
+                logger.warning(f"Using zero-vector fallback for key {key[:8]}...")
 
-        return key, self.embeddings[key]
+        return key, self._embeddings[key]
 
     def add(
         self,
@@ -266,10 +383,10 @@ class CoreMemoryStore:
 
         for mem in self.memories:
             emb_key = mem.get("embedding_key", "")
-            if emb_key not in self.embeddings:
+            if emb_key not in self._embeddings:
                 continue
 
-            mem_vec = np.array(self.embeddings[emb_key], dtype=np.float32)
+            mem_vec = np.array(self._embeddings[emb_key], dtype=np.float32)
             relevance = _cosine_sim(focal_vec, mem_vec)
 
             if relevance >= relevance_threshold:
@@ -280,13 +397,49 @@ class CoreMemoryStore:
         return scored[:n_count]
 
     def save(self) -> None:
-        """Persist core memories to file."""
+        """Persist core memories to file, embeddings to separate file."""
+        # Save memories (without embeddings)
         data = {
             "memories": self.memories,
-            "embeddings": self.embeddings,
+            # NOTE: embeddings now stored separately in core_embeddings.json
         }
         with open(self.store_path, 'w') as f:
             json.dump(data, f, indent=2)
+
+        # Save embeddings to separate file
+        with open(self.embeddings_path, 'w') as f:
+            json.dump(self._embeddings, f)
+
+    def _write_memories(self, path: Path) -> None:
+        """Write memories to a specific path (for atomic save)."""
+        data = {"memories": self.memories}
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    def _write_embeddings(self, path: Path) -> None:
+        """Write embeddings to a specific path (for atomic save)."""
+        with open(path, 'w') as f:
+            json.dump(self._embeddings, f)
+
+    def _prepare_atomic_save(self) -> List[Tuple[Path, Path, Callable]]:
+        """
+        Prepare atomic save operations.
+
+        Returns:
+            List of (final_path, tmp_path, write_func) tuples for atomic save
+        """
+        temp_suffix = ".tmp"
+        result = []
+
+        # Core memories
+        mem_tmp = self.store_path.with_suffix(self.store_path.suffix + temp_suffix)
+        result.append((self.store_path, mem_tmp, lambda p=mem_tmp: self._write_memories(p)))
+
+        # Embeddings
+        emb_tmp = self.embeddings_path.with_suffix(self.embeddings_path.suffix + temp_suffix)
+        result.append((self.embeddings_path, emb_tmp, lambda p=emb_tmp: self._write_embeddings(p)))
+
+        return result
 
     def format_for_prompt(self, memories: Optional[List[Dict[str, Any]]] = None) -> str:
         """Format core memories for LLM prompt."""
@@ -343,6 +496,11 @@ class MemoryStream:
         # Keyword index for fast lookup
         self.kw_to_nodes: Dict[str, List[int]] = {}
 
+        # Keyword strength tracking (Stanford-style)
+        # Tracks frequency of keywords in events/thoughts for reflection focal points
+        self.kw_strength_event: Dict[str, int] = {}
+        self.kw_strength_thought: Dict[str, int] = {}
+
         # Ensure directory exists
         memory_dir = self.agent_folder / "memory_stream"
         memory_dir.mkdir(parents=True, exist_ok=True)
@@ -350,6 +508,8 @@ class MemoryStream:
         if auto_load:
             self._load_nodes()
             self._load_embeddings()
+            self._load_keyword_strengths()
+            self._validate_and_repair()
 
     @property
     def nodes_path(self) -> Path:
@@ -358,6 +518,10 @@ class MemoryStream:
     @property
     def embeddings_path(self) -> Path:
         return self.agent_folder / "memory_stream" / "embeddings.json"
+
+    @property
+    def kw_strengths_path(self) -> Path:
+        return self.agent_folder / "memory_stream" / "kw_strengths.json"
 
     def _load_nodes(self) -> None:
         """Load memory nodes from JSON file."""
@@ -382,6 +546,73 @@ class MemoryStream:
             except (json.JSONDecodeError, KeyError) as e:
                 print(f"Warning: Failed to load embeddings: {e}")
                 self.embeddings = {}
+
+    def _load_keyword_strengths(self) -> None:
+        """Load keyword strength tracking from JSON file."""
+        if self.kw_strengths_path.exists():
+            try:
+                with open(self.kw_strengths_path, 'r') as f:
+                    data = json.load(f)
+                self.kw_strength_event = data.get("event", {})
+                self.kw_strength_thought = data.get("thought", {})
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Failed to load kw_strengths.json: {e}")
+                self.kw_strength_event = {}
+                self.kw_strength_thought = {}
+
+    def _validate_and_repair(self) -> None:
+        """
+        Validate consistency between nodes and embeddings.
+
+        If a node's embedding_key is missing from self.embeddings, attempts
+        to regenerate it. Logs warnings for any inconsistencies found.
+
+        This prevents silent memory loss when embeddings.json is corrupted
+        or incomplete.
+        """
+        if not self.nodes:
+            return
+
+        missing_count = 0
+        repaired_count = 0
+
+        for node in self.nodes:
+            if node.embedding_key and node.embedding_key not in self.embeddings:
+                missing_count += 1
+                try:
+                    new_key, _ = self._get_or_create_embedding(node.description)
+                    if new_key != node.embedding_key:
+                        logger.warning(
+                            f"Node {node.node_id} embedding key mismatch: "
+                            f"{node.embedding_key[:8]}... -> {new_key[:8]}..."
+                        )
+                    node.embedding_key = new_key
+                    repaired_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to repair embedding for node {node.node_id}: {e}")
+
+        if missing_count > 0:
+            logger.warning(
+                f"MemoryStream validation: {missing_count} nodes had missing embeddings, "
+                f"{repaired_count} repaired"
+            )
+            # Update id_to_node mapping after repairs
+            self.id_to_node = {n.node_id: n for n in self.nodes}
+
+    def _update_keyword_strengths(self, keywords: Set[str], is_thought: bool = False) -> None:
+        """
+        Update keyword strength counts (Stanford-style).
+
+        Tracks how often keywords appear in events vs thoughts,
+        used for generating reflection focal points.
+
+        Args:
+            keywords: Set of keywords to track
+            is_thought: True if from a thought, False if from an event
+        """
+        target = self.kw_strength_thought if is_thought else self.kw_strength_event
+        for kw in keywords:
+            target[kw] = target.get(kw, 0) + 1
 
     def _build_keyword_index(self) -> None:
         """Build keyword-to-node index for fast lookup."""
@@ -436,13 +667,29 @@ class MemoryStream:
         return hashlib.sha256(text.encode()).hexdigest()[:32]
 
     def _get_or_create_embedding(self, text: str) -> Tuple[str, List[float]]:
-        """Get existing embedding or create new one."""
+        """
+        Get existing embedding or create new one with error handling.
+
+        Uses retry with exponential backoff for transient failures.
+        Falls back to zero-vector if all retries fail (prevents crashes
+        but marks memory as non-retrievable via cosine similarity).
+        """
         key = self._get_embedding_key(text)
 
         if key not in self.embeddings:
-            # Generate embedding
-            emb_array = self.embedder.embed(text)
-            self.embeddings[key] = emb_array.tolist()
+            try:
+                emb_array = _retry_with_backoff(
+                    lambda: self.embedder.embed(text),
+                    max_retries=3,
+                    base_delay=1.0,
+                )
+                self.embeddings[key] = emb_array.tolist()
+            except Exception as e:
+                logger.error(f"Embedder failed after retries for MemoryStream: {e}")
+                # Fallback: create zero-vector embedding
+                # This prevents crashes but memory will have 0 cosine similarity
+                self.embeddings[key] = [0.0] * DEFAULT_EMBEDDING_DIM
+                logger.warning(f"Using zero-vector fallback for key {key[:8]}...")
 
         return key, self.embeddings[key]
 
@@ -501,6 +748,10 @@ class MemoryStream:
         self.id_to_node[node_id] = node
         self._update_keyword_index(node)
 
+        # Update keyword strengths for non-idle events (Stanford-style)
+        if "idle" not in description.lower():
+            self._update_keyword_strengths(keywords, is_thought=False)
+
         return node
 
     def add_thought(
@@ -558,6 +809,9 @@ class MemoryStream:
         self.id_to_node[node_id] = node
         self._update_keyword_index(node)
 
+        # Update keyword strengths for thoughts (Stanford-style)
+        self._update_keyword_strengths(keywords, is_thought=True)
+
         return node
 
     def add_chat(
@@ -609,62 +863,6 @@ class MemoryStream:
 
         return node
 
-    def add_core_memory(
-        self,
-        description: str,
-        source_file: str = "",
-        now: Optional[datetime] = None,
-    ) -> MemoryNode:
-        """
-        DEPRECATED: Use CoreMemoryStore.add() instead.
-
-        This method is kept for backwards compatibility during migration.
-        Core memories should be stored separately in CoreMemoryStore.
-
-        Args:
-            description: The core memory content
-            source_file: Optional source file (e.g., "persona.md")
-            now: Current datetime (defaults to epoch 0 for core)
-
-        Returns:
-            The created MemoryNode
-        """
-        import warnings
-        warnings.warn(
-            "add_core_memory() is deprecated. Use CoreMemoryStore.add() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        node_id = len(self.nodes)
-        now_ts = _utc_ts(now) if now else 0.0
-        keywords = self._extract_keywords(description)
-
-        # Get or create embedding
-        emb_key, _ = self._get_or_create_embedding(description)
-
-        node = MemoryNode(
-            node_id=node_id,
-            node_type="core",
-            depth=0,
-            created=now_ts,
-            last_accessed=now_ts,
-            subject="I",
-            predicate="am/have",
-            object=description,
-            description=description,
-            keywords=keywords,
-            importance=10.0,  # Core memories are always high importance
-            embedding_key=emb_key,
-            evidence_ids=[],
-        )
-
-        self.nodes.append(node)
-        self.id_to_node[node_id] = node
-        self._update_keyword_index(node)
-
-        return node
-
     def retrieve(
         self,
         focal_point: str,
@@ -673,7 +871,7 @@ class MemoryStream:
         recency_weight: float = 1.0,
         relevance_weight: float = 1.0,
         importance_weight: float = 1.0,
-        recency_decay: float = 0.995,
+        recency_decay: float = 0.9715,  # ~1 day half-life (0.9715^24 ≈ 0.5)
         node_types: Optional[List[str]] = None,
         core_memory_store: Optional["CoreMemoryStore"] = None,
         core_memory_count: int = 5,
@@ -865,6 +1063,37 @@ class MemoryStream:
 
         return nodes[:limit]
 
+    def get_reflection_focal_points(self, top_n: int = 3) -> List[str]:
+        """
+        Get top keywords for reflection based on strength tracking (Stanford-style).
+
+        Combines keyword counts from events and thoughts to determine
+        what the agent should reflect on. Thoughts are weighted higher
+        as they represent more processed/important concepts.
+
+        Args:
+            top_n: Number of focal points to return
+
+        Returns:
+            List of top keywords to use as reflection focal points
+        """
+        # Combine event and thought strengths
+        combined: Dict[str, int] = {}
+
+        for kw, count in self.kw_strength_event.items():
+            combined[kw] = combined.get(kw, 0) + count
+
+        for kw, count in self.kw_strength_thought.items():
+            # Weight thoughts higher (they're more processed/important)
+            combined[kw] = combined.get(kw, 0) + count * 2
+
+        if not combined:
+            return []
+
+        # Sort by strength (descending) and return top N keywords
+        sorted_kws = sorted(combined.items(), key=lambda x: x[1], reverse=True)
+        return [kw for kw, _ in sorted_kws[:top_n]]
+
     def save(self) -> None:
         """Persist memory stream to files."""
         # Save nodes
@@ -875,6 +1104,58 @@ class MemoryStream:
         # Save embeddings
         with open(self.embeddings_path, 'w') as f:
             json.dump(self.embeddings, f)
+
+        # Save keyword strengths (Stanford-style tracking)
+        kw_data = {
+            "event": self.kw_strength_event,
+            "thought": self.kw_strength_thought,
+        }
+        with open(self.kw_strengths_path, 'w') as f:
+            json.dump(kw_data, f, indent=2)
+
+    def _write_nodes(self, path: Path) -> None:
+        """Write nodes to a specific path (for atomic save)."""
+        nodes_data = [node.to_dict() for node in self.nodes]
+        with open(path, 'w') as f:
+            json.dump(nodes_data, f, indent=2)
+
+    def _write_embeddings(self, path: Path) -> None:
+        """Write embeddings to a specific path (for atomic save)."""
+        with open(path, 'w') as f:
+            json.dump(self.embeddings, f)
+
+    def _write_kw_strengths(self, path: Path) -> None:
+        """Write keyword strengths to a specific path (for atomic save)."""
+        kw_data = {
+            "event": self.kw_strength_event,
+            "thought": self.kw_strength_thought,
+        }
+        with open(path, 'w') as f:
+            json.dump(kw_data, f, indent=2)
+
+    def _prepare_atomic_save(self) -> List[Tuple[Path, Path, Callable]]:
+        """
+        Prepare atomic save operations.
+
+        Returns:
+            List of (final_path, tmp_path, write_func) tuples for atomic save
+        """
+        temp_suffix = ".tmp"
+        result = []
+
+        # Nodes
+        nodes_tmp = self.nodes_path.with_suffix(self.nodes_path.suffix + temp_suffix)
+        result.append((self.nodes_path, nodes_tmp, lambda p=nodes_tmp: self._write_nodes(p)))
+
+        # Embeddings
+        emb_tmp = self.embeddings_path.with_suffix(self.embeddings_path.suffix + temp_suffix)
+        result.append((self.embeddings_path, emb_tmp, lambda p=emb_tmp: self._write_embeddings(p)))
+
+        # Keyword strengths
+        kw_tmp = self.kw_strengths_path.with_suffix(self.kw_strengths_path.suffix + temp_suffix)
+        result.append((self.kw_strengths_path, kw_tmp, lambda p=kw_tmp: self._write_kw_strengths(p)))
+
+        return result
 
     def get_node_count(self) -> Dict[str, int]:
         """Get count of nodes by type."""

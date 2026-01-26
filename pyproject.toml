@@ -7,7 +7,7 @@ name = "bsm"
 version = "1.0.0"
 description = "Physics-based single-zone building thermal simulation with LLM-powered occupant agents"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 requires-python = ">=3.8"
 authors = [
     {name = "Building Simulation Model Contributors"}
@@ -27,7 +27,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -69,10 +69,10 @@ bsm = "bsm.runner:main"
 bsm-test = "bsm.test_rig:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/BuildingSimulationModel"
-Documentation = "https://github.com/yourusername/BuildingSimulationModel#readme"
-Repository = "https://github.com/yourusername/BuildingSimulationModel"
-Issues = "https://github.com/yourusername/BuildingSimulationModel/issues"
+Homepage = "https://github.com/aayylon85/BuildingSimulationModel"
+Documentation = "https://github.com/aayylon85/BuildingSimulationModel#readme"
+Repository = "https://github.com/aayylon85/BuildingSimulationModel"
+Issues = "https://github.com/aayylon85/BuildingSimulationModel/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -82,8 +82,8 @@ include = ["bsm*"]
 "*" = ["*.json", "*.md", "*.epw"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
+testpaths = ["bsm"]
+python_files = ["*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 

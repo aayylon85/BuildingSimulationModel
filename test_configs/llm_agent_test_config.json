@@ -12,7 +12,7 @@
   "simulation_settings": {
     "dt_minutes": 1,
     "duration_days": 1,
-    "start_date": "2026-01-01",
+    "start_date": "2025-07-01",
     "stabilization_days": 3,
     "hvac_coupling_mode": "auto",
     "hvac_max_power_rate_w_s": 50000.0,
@@ -188,9 +188,13 @@
       "photocopier_active": 400,
       "desktop_computer": 150,
       "projector": 200,
-      "conference_phone": 10
+      "conference_phone": 10,
+      "coffee_machine": 1000,
+      "kettle": 2000,
+      "microwave": 1200,
+      "fridge": 150
     },
-    "shared_equipment": ["photocopier"],
+    "shared_equipment": ["photocopier", "coffee_machine", "kettle", "microwave", "fridge"],
     "items": {
       "laptop_A": {"type": "laptop", "location": "Desk_A"},
       "laptop_B": {"type": "laptop", "location": "Desk_B"},
@@ -198,9 +202,13 @@
       "monitor_A": {"type": "monitor", "location": "Desk_A"},
       "monitor_B": {"type": "monitor", "location": "Desk_B"},
       "monitor_C": {"type": "monitor", "location": "Desk_C"},
-      "photocopier": {"type": "photocopier", "location": "shared"},
+      "photocopier": {"type": "photocopier", "location": "shared_area"},
       "projector": {"type": "projector", "location": "meeting_room"},
-      "conference_phone": {"type": "conference_phone", "location": "meeting_room"}
+      "conference_phone": {"type": "conference_phone", "location": "meeting_room"},
+      "coffee_machine": {"type": "coffee_machine", "location": "break_area"},
+      "kettle": {"type": "kettle", "location": "break_area"},
+      "microwave": {"type": "microwave", "location": "break_area"},
+      "fridge": {"type": "fridge", "location": "break_area", "always_on": true}
     }
   },
 
@@ -252,6 +260,12 @@
     "shared_areas": {
       "photocopier": "Near Desk_B",
       "entrance": "South wall, near Desk_A"
+    },
+    "break_area": {
+      "position": "West wall, near entrance",
+      "characteristics": ["Kitchen facilities", "Seating area", "Water cooler"],
+      "appliances": ["coffee_machine", "kettle", "microwave", "fridge"],
+      "description": "Kitchen/break room with seating for 4, ideal for lunch and coffee breaks"
     }
   },
 

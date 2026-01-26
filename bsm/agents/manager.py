@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -18,6 +19,7 @@ from agents import Agent, Runner
 
 from bsm.agents.skeleton import (
     CalendarStore,
+    ClothingChoice,
     EmbeddingClient,
     OccupantStepDecision,
     DailyPlan,
@@ -32,6 +34,7 @@ from bsm.agents.cognition.modules import (
     perceive,
     retrieve,
     reflect,
+    reflect_on_conversation,
     get_decision_focal_points,
     get_planning_focal_points,
     get_meeting_context,
@@ -45,6 +48,7 @@ from bsm.agents.cognition.conversation import (
     consultation_conversation,
     record_agreement_to_memory,
     ConsultationOutcome,
+    ConversationResult,
 )
 from bsm.agents.memory.stream import MemoryStream, MemoryNode
 from bsm.agents.equipment_manager import EquipmentManager
@@ -61,8 +65,9 @@ def _create_agent_directories(
     """
     Create the agent directory structure:
     agents/YYYY-MM-DD/HH-MM-SS/{agent_id}/
-        - core_memory.sqlite
-        - action_memory.sqlite
+        - scratch.json (working memory)
+        - core_memories.json (permanent personality)
+        - memory_stream/ (events, thoughts, chats in JSON)
         - decisions.log
     agents/YYYY-MM-DD/HH-MM-SS/shared/
         - calendar.sqlite
@@ -108,9 +113,8 @@ def _create_agent_directories(
         agent_dir.mkdir(parents=True, exist_ok=True)
 
         paths[agent_id] = {
-            "core_memory_db": str(agent_dir / "core_memory.sqlite"),
-            "action_memory_db": str(agent_dir / "action_memory.sqlite"),
             "decision_log": str(agent_dir / "decisions.log"),
+            "agent_folder": str(agent_dir),  # Path to agent folder for JSON storage
         }
 
     return paths
@@ -168,14 +172,6 @@ class LLMOccupantManager:
         # Extract shared paths
         calendar_db = self._agent_paths["shared"]["calendar_db"]
         sessions_db = self._agent_paths["shared"]["sessions_db"]
-
-        # Build per-agent memory paths dict
-        agent_memory_paths = {}
-        for agent_id in self._agent_ids:
-            agent_memory_paths[agent_id] = {
-                "core_memory_db": self._agent_paths[agent_id]["core_memory_db"],
-                "action_memory_db": self._agent_paths[agent_id]["action_memory_db"],
-            }
 
         # Initialize per-agent decision log files
         self._decision_log_paths: Dict[str, str] = {}
@@ -254,8 +250,66 @@ class LLMOccupantManager:
         # via GenerativeAgent._seed_core_memories_from_markdown()
 
         run_dir = self._agent_paths.get("run_dir", base_dir)
+        self._actions_log_path = self._agent_paths.get("shared", {}).get("action_log")
         print(f"[LLM] Initialized {len(self._agent_ids)} LLM occupant agents")
         print(f"[LLM] Agent data directory: {run_dir}")
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint_agent_run_dir: str,
+        checkpoint_calendar_db: str,
+        config: dict,
+        get_zone_temp: Callable[[], float],
+        get_weather: Callable[[], Dict[str, Any]],
+        results_dir: Optional[str] = None,
+    ) -> "LLMOccupantManager":
+        """
+        Create LLMOccupantManager from a checkpoint.
+
+        Loads agents from checkpoint directory instead of creating fresh.
+        Creates a NEW results directory while loading state from checkpoint.
+
+        Args:
+            checkpoint_agent_run_dir: Path to checkpoint's agent directory
+            checkpoint_calendar_db: Path to checkpoint's calendar.sqlite
+            config: Simulation configuration dict
+            get_zone_temp: Function returning current zone temperature
+            get_weather: Function returning current weather dict
+            results_dir: Directory for new results (defaults to current dir)
+
+        Returns:
+            LLMOccupantManager initialized from checkpoint state
+        """
+        from pathlib import Path
+        import shutil
+
+        # Override config to continue from checkpoint
+        config = dict(config)  # Don't modify original
+        config['llm_agents'] = dict(config.get('llm_agents', {}))
+        config['llm_agents']['agent_source'] = {
+            'mode': 'continue',
+            'continue_from_run': checkpoint_agent_run_dir,
+        }
+
+        # Create the manager (this creates new directories)
+        manager = cls(
+            config=config,
+            get_zone_temp=get_zone_temp,
+            get_weather=get_weather,
+            results_dir=results_dir,
+        )
+
+        # Copy calendar from checkpoint to new results directory
+        new_calendar_path = manager._agent_paths["shared"]["calendar_db"]
+        if Path(checkpoint_calendar_db).exists():
+            shutil.copy2(checkpoint_calendar_db, new_calendar_path)
+            # Reinitialize calendar with copied database
+            manager.calendar = CalendarStore(new_calendar_path)
+            print(f"[RESUME] Loaded calendar from checkpoint: {checkpoint_calendar_db}")
+
+        print(f"[RESUME] Manager created from checkpoint. New run dir: {manager._agent_paths.get('run_dir')}")
+        return manager
 
     def _validate_api_connection(self) -> None:
         """
@@ -308,6 +362,7 @@ class LLMOccupantManager:
                 title=meeting.title,
                 start=start,
                 end=end,
+                now=now,
                 location=meeting.location if meeting.location else "meeting_room",
             )
 
@@ -394,6 +449,7 @@ class LLMOccupantManager:
             now=now,
             simulation=self.adapter,
             calendar=self.calendar,
+            configured_agent_ids=list(self._agents.keys()),
         )
         result = await Runner.run(planner_agent, prompt, context=context, max_turns=15)
         plan = result.final_output
@@ -405,10 +461,65 @@ class LLMOccupantManager:
         self._daily_plans[agent_id] = plan
         agent.set_daily_plan(plan.model_dump())
 
+        # Store clothing choice for today (resets daily)
+        if plan.clothing:
+            agent.set_todays_clothing(plan.clothing.model_dump())
+            # Add clothing as a perception for the day
+            if agent.memory_stream:
+                clothing_memory = f"I'm wearing {plan.clothing.description} today - {plan.clothing.warmth_level} warmth"
+                agent.memory_stream.add_event(
+                    description=clothing_memory,
+                    subject=agent.scratch.get("first_name", agent_id),
+                    predicate="is wearing",
+                    obj=plan.clothing.description,
+                    importance=2.0,  # Low importance - routine
+                    now=now,
+                )
+
         # Save agent state
         agent.save()
 
         return plan
+
+    def _maybe_update_plan(
+        self,
+        agent_id: str,
+        event: str,
+        now: datetime,
+    ) -> None:
+        """
+        Check if an agent's daily plan needs updating based on significant events.
+
+        Triggered by events like meeting cancellations, urgent requests, or schedule conflicts.
+
+        Args:
+            agent_id: The agent whose plan to check
+            event: Description of the event that occurred
+            now: Current simulation datetime
+        """
+        significant_events = [
+            "meeting_cancelled",
+            "urgent_request",
+            "schedule_conflict",
+            "extended_conversation",
+            "emergency",
+        ]
+
+        # Check if this event is significant enough to warrant a plan update
+        if not any(e in event.lower() for e in significant_events):
+            return
+
+        agent = self._agents.get(agent_id)
+        if not agent:
+            return
+
+        # Update the plan with a note about the change
+        updates = {
+            "plan_modified": True,
+            "modification_event": event,
+        }
+        agent.update_daily_plan(updates, reason=event, now=now)
+        print(f"[PLAN] {agent_id} plan updated due to: {event}")
 
     def plan_day(self, day: date, now: datetime) -> Dict[str, DailyPlan]:
         """
@@ -472,6 +583,45 @@ class LLMOccupantManager:
 
         return self._daily_plans.copy()
 
+    def end_of_day_processing(self, day: date, now: datetime) -> Dict[str, int]:
+        """
+        Process end of day for all agents (memory consolidation).
+
+        Should be called at the end of each simulated day to consolidate
+        significant memories into core memory.
+
+        Args:
+            day: The day that just ended
+            now: Current simulation datetime
+
+        Returns:
+            Dict mapping agent_id to number of memories consolidated
+        """
+        print(f"\n[END OF DAY] Processing memory consolidation for {day}")
+
+        async def consolidate_all():
+            results = {}
+            for agent_id, agent in self._agents.items():
+                try:
+                    count = await agent.consolidate_memories_with_llm(day, now)
+                    results[agent_id] = count
+                except Exception as e:
+                    print(f"  {agent_id}: Consolidation failed - {e}")
+                    results[agent_id] = 0
+            return results
+
+        results = asyncio.run(consolidate_all())
+
+        # Print summary
+        total = sum(results.values())
+        if total > 0:
+            print(f"[END OF DAY] Total memories consolidated: {total}")
+            for agent_id, count in results.items():
+                if count > 0:
+                    print(f"  {agent_id}: {count} memories")
+
+        return results
+
     def should_run_daily_planning(self, now: datetime) -> bool:
         """Check if daily planning should run based on current time."""
         current_date = now.date()
@@ -524,15 +674,12 @@ class LLMOccupantManager:
             return False
 
         try:
-            # Parse arrival and departure times
-            arrival_parts = plan.actual_arrival_time.split(":")
-            departure_parts = plan.actual_departure_time.split(":")
+            # Parse arrival and departure times using datetime for robustness
+            arrival_dt = datetime.strptime(plan.actual_arrival_time, "%H:%M")
+            departure_dt = datetime.strptime(plan.actual_departure_time, "%H:%M")
 
-            arrival_hour = int(arrival_parts[0])
-            arrival_min = int(arrival_parts[1]) if len(arrival_parts) > 1 else 0
-
-            departure_hour = int(departure_parts[0])
-            departure_min = int(departure_parts[1]) if len(departure_parts) > 1 else 0
+            arrival_hour, arrival_min = arrival_dt.hour, arrival_dt.minute
+            departure_hour, departure_min = departure_dt.hour, departure_dt.minute
 
             current_minutes = now.hour * 60 + now.minute
             arrival_minutes = arrival_hour * 60 + arrival_min
@@ -600,16 +747,48 @@ class LLMOccupantManager:
         # Mark as present
         self.adapter.set_occupant_present(agent_id, True)
 
-        # Assign to preferred desk (from agent_base_types scratch.json)
+        # Assign desk based on agent preferences and variety trait
         # NOTE: Equipment and lights are NOT auto-turned on.
         # The agent decides to turn them on via the cognitive loop.
         agent = self._agents.get(agent_id)
         if agent:
-            # Read preferred_desk from agent's scratch (loaded from agent_base_types)
+            # Read desk preferences from agent's scratch (loaded from agent_base_types)
             preferred_desk = agent.scratch.get("preferred_desk")
-            if preferred_desk and preferred_desk in self.desks.get_available_desks():
-                self.desks.assign_desk(agent_id, preferred_desk)
-                print(f"  Assigned to {preferred_desk} (equipment OFF - agent will decide)")
+            workspace_variety = agent.scratch.get("workspace_variety", "low")
+            likes_variety = agent.scratch.get("likes_desk_variety", False)
+
+            available_desks = self.desks.get_available_desks()
+            chosen_desk = None
+
+            if preferred_desk and preferred_desk in available_desks:
+                # Preferred desk is available - check variety preference
+                if workspace_variety == "high" or likes_variety:
+                    # 40% chance of trying different desk for variety-seeking agents
+                    if random.random() < 0.4 and len(available_desks) > 1:
+                        alternatives = [d for d in available_desks if d != preferred_desk]
+                        chosen_desk = random.choice(alternatives)
+                        print(f"  {agent_id} trying different desk for variety")
+                    else:
+                        chosen_desk = preferred_desk
+                elif workspace_variety == "medium":
+                    # 20% chance for medium variety preference
+                    if random.random() < 0.2 and len(available_desks) > 1:
+                        alternatives = [d for d in available_desks if d != preferred_desk]
+                        chosen_desk = random.choice(alternatives)
+                        print(f"  {agent_id} occasionally trying different desk")
+                    else:
+                        chosen_desk = preferred_desk
+                else:
+                    # Low variety - always use preferred desk
+                    chosen_desk = preferred_desk
+            elif available_desks:
+                # Preferred desk not available - choose from what's available
+                chosen_desk = random.choice(available_desks)
+                print(f"  {agent_id}'s preferred desk unavailable, using {chosen_desk}")
+
+            if chosen_desk:
+                self.desks.assign_desk(agent_id, chosen_desk)
+                print(f"  Assigned to {chosen_desk} (equipment OFF - agent will decide)")
 
         # Set flag for perceive() to create "equipment off" memory
         if agent:
@@ -656,14 +835,25 @@ class LLMOccupantManager:
         # 5. REFLECT: Generate insights if threshold reached
         await reflect(agent, now)
 
+        # 5.5 Post-conversation reflections (Stanford-style)
+        # Process any pending conversation reflections
+        pending_reflections = agent.get_pending_conversation_reflections()
+        for pending in pending_reflections:
+            other_id = pending.get("other_agent_id")
+            if other_id:
+                await reflect_on_conversation(agent, other_id, now)
+        agent.clear_pending_conversation_reflections()
+
         # 6. Get meeting context
         meeting_context = get_meeting_context(agent_id, self.calendar, now)
         pending_invitations = self.calendar.get_pending_invitations(agent_id)
 
-        # Add focal point for meeting attendance if needed
+        # Add focal point for meeting attendance only if meeting is imminent (within 10 min)
         focal_points = get_decision_focal_points(sim_state)
-        if meeting_context.get("should_attend_now"):
-            focal_points.append("attending meetings and being punctual")
+        minutes_to_next = meeting_context.get("minutes_to_next_meeting")
+        has_current_meeting = meeting_context.get("current_meeting") is not None
+        if has_current_meeting or (minutes_to_next is not None and minutes_to_next <= 10):
+            focal_points.append("upcoming meeting")
 
         # 7. RETRIEVE: Get relevant memories for decision
         retrieved = retrieve(agent, focal_points, now)
@@ -690,6 +880,7 @@ class LLMOccupantManager:
             now=now,
             simulation=self.adapter,
             calendar=self.calendar,
+            configured_agent_ids=list(self._agents.keys()),
         )
         result = await Runner.run(step_agent, prompt, context=context, max_turns=5)
         decision = result.final_output
@@ -709,6 +900,29 @@ class LLMOccupantManager:
                     if success:
                         response_str = "accepted" if accept else "declined"
                         print(f"[LLM] {agent_id} {response_str} invitation for event {event_id[:8]}...")
+
+        # 11.1. Handle lunch/break actions (update agent status)
+        for action in decision.actions:
+            if action.action_type in ("go_to_lunch", "go_out_for_lunch"):
+                self.adapter.set_agent_status(agent_id, "at_lunch", True)
+                self.adapter.set_agent_status(agent_id, "at_desk", False)
+                out_of_building = action.action_type == "go_out_for_lunch"
+                self.adapter.set_agent_status(agent_id, "out_of_office", out_of_building)
+                location = "outside" if out_of_building else "kitchen/cafeteria"
+                print(f"[LLM] {agent_id} going to lunch ({location})")
+            elif action.action_type == "return_from_lunch":
+                self.adapter.set_agent_status(agent_id, "at_lunch", False)
+                self.adapter.set_agent_status(agent_id, "at_desk", True)
+                self.adapter.set_agent_status(agent_id, "out_of_office", False)
+                print(f"[LLM] {agent_id} returning from lunch")
+            elif action.action_type == "take_break":
+                self.adapter.set_agent_status(agent_id, "on_break", True)
+                self.adapter.set_agent_status(agent_id, "at_desk", False)
+                print(f"[LLM] {agent_id} taking a break")
+            elif action.action_type == "return_from_break":
+                self.adapter.set_agent_status(agent_id, "on_break", False)
+                self.adapter.set_agent_status(agent_id, "at_desk", True)
+                print(f"[LLM] {agent_id} returning from break")
 
         # 11.5. CONSULTATION: Before shared-space actions, consult with other occupants
         decision = await self._maybe_consult_on_shared_action(
@@ -779,6 +993,15 @@ class LLMOccupantManager:
         # No shared-space action, return original decision
         if not shared_space_action:
             return decision
+
+        # For thermostat: skip consultation if proposed setpoint equals current setpoint
+        if shared_space_action.action_type == "thermostat_adjust":
+            current_setpoint = sim_state.get("thermostat_setpoint_c")
+            if current_setpoint is not None and proposed_setpoint is not None:
+                # Check if they're effectively the same (within 0.1 degree tolerance)
+                if abs(proposed_setpoint - current_setpoint) < 0.1:
+                    # No actual change - skip consultation
+                    return decision
 
         # No other occupants, no consultation needed
         if not other_occupants:
@@ -904,8 +1127,8 @@ class LLMOccupantManager:
                     f.write(f"  Agreed: {outcome.agreed_action}\n")
                 f.write(f"  Summary: {outcome.summary}\n")
 
-        except Exception:
-            pass  # Don't fail simulation if logging fails
+        except IOError as e:
+            print(f"Warning: Failed to log consultation: {e}")
 
     def _make_agent_decision(self, agent_id: str, now: datetime) -> Optional[OccupantStepDecision]:
         """
@@ -960,8 +1183,8 @@ class LLMOccupantManager:
                     f.write(f"{timestamp} | {action.action_type} | {params_str}\n")
                 if decision.brief_rationale:
                     f.write(f"  Rationale: {decision.brief_rationale}\n")
-        except Exception:
-            pass  # Don't fail simulation if logging fails
+        except IOError as e:
+            print(f"Warning: Failed to log decision for {agent_id}: {e}")
 
     def _log_conversation(
         self,
@@ -985,8 +1208,8 @@ class LLMOccupantManager:
                     f.write(f"{utt.speaker_id}: \"{utt.utterance}\"\n")
                 f.write(f"\nSUMMARY: {conversation.summary}\n")
                 f.write(f"DURATION: {conversation.duration_minutes} minutes\n")
-        except Exception:
-            pass  # Don't fail simulation if logging fails
+        except IOError as e:
+            print(f"Warning: Failed to log conversation: {e}")
 
     def _log_action(
         self,
@@ -1007,8 +1230,8 @@ class LLMOccupantManager:
                     if len(reason) > 60:
                         reason = reason[:57] + "..."
                     f.write(f"{now.strftime('%Y-%m-%d %H:%M')} | {agent_id:12} | {action.action_type:20} | {reason}\n")
-        except Exception:
-            pass  # Don't fail simulation if logging fails
+        except IOError as e:
+            print(f"Warning: Failed to log action for {agent_id}: {e}")
 
     def get_window_state(self) -> float:
         """Return current window open fraction (0-1)."""

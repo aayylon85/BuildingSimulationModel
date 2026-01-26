@@ -105,7 +105,7 @@ Output your utterance directly.
         name=f"convo_{speaker_id}_{listener_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(temperature=0.7),  # More creative for dialogue
+        model_settings=ModelSettings(reasoning_effort="low"),  # Dialogue is intuitive
         tools=[],
         output_type=AgentOutputSchema(UtteranceOutput, strict_json_schema=False),
     )
@@ -373,6 +373,7 @@ def record_conversation_to_memory(
     Record a conversation to an agent's memory stream.
 
     Creates a 'chat' type memory node with conversation summary.
+    Also marks the conversation end for post-conversation reflection (Stanford-style).
 
     Args:
         agent: Agent whose memory to update
@@ -398,6 +399,16 @@ def record_conversation_to_memory(
         other_agent=other_agent_id,
         now=now,
         importance=5.0,  # Conversations are moderately important
+    )
+
+    # Mark for post-conversation reflection (Stanford-style)
+    agent.mark_conversation_end(other_agent_id, now)
+
+    # Update relationship: familiarity increases with each conversation
+    agent.update_relationship(
+        other_agent_id=other_agent_id,
+        familiarity_delta=0.05,  # Small increase per conversation
+        sentiment_delta=0.0,     # Sentiment neutral for general conversations
     )
 
 
@@ -458,6 +469,115 @@ class ConsultationUtteranceOutput(BaseModel):
     )
 
 
+class ConsensusAssessment(BaseModel):
+    """Output schema for LLM-based consensus assessment."""
+    consensus_reached: bool = Field(description="Whether all participants agreed to the change")
+    agreed_temperature_c: Optional[float] = Field(
+        default=None,
+        description="The agreed-upon temperature in Celsius, if any"
+    )
+    summary: str = Field(description="Brief summary of the consultation outcome")
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="Confidence level (0-1) in the assessment"
+    )
+
+
+def build_consensus_assessor_agent() -> Agent[SimContext]:
+    """
+    Build an agent for assessing consensus from consultation conversations.
+
+    Uses LLM to analyze conversation and determine if agreement was reached.
+    """
+    instructions = """Analyze this consultation conversation and determine:
+1. Did ALL participants agree to a temperature change?
+2. If yes, what specific temperature was agreed upon?
+3. Summarize the outcome.
+
+Be strict: silence or vague responses do NOT count as agreement.
+Look for explicit acceptance like:
+- "okay, let's do 21 degrees"
+- "I agree to 20.5"
+- "that works for me"
+- "fine, let's try 22"
+
+Look for explicit disagreement like:
+- "no way"
+- "I don't agree"
+- "too cold/hot for me"
+- "I refuse"
+
+If the outcome is ambiguous or unclear, set consensus_reached to false."""
+
+    return Agent(
+        name="consensus_assessor",
+        instructions=instructions,
+        model=DEFAULT_AGENT_MODEL,
+        model_settings=ModelSettings(reasoning_effort="low"),
+        output_type=AgentOutputSchema(ConsensusAssessment),
+    )
+
+
+async def assess_consensus_with_llm(
+    utterances: List[ConversationUtterance],
+    proposed_action: str,
+    proposed_temp: Optional[float] = None,
+) -> ConsensusAssessment:
+    """
+    Use LLM to assess whether consensus was reached in a consultation conversation.
+
+    Args:
+        utterances: List of conversation utterances
+        proposed_action: The originally proposed action
+        proposed_temp: The originally proposed temperature (if any)
+
+    Returns:
+        ConsensusAssessment with the LLM's analysis
+    """
+    conversation_text = f"Proposed action: {proposed_action}\n\n"
+    conversation_text += "Conversation:\n"
+    conversation_text += "\n".join(f"{u.speaker_id}: {u.utterance}" for u in utterances)
+
+    agent = build_consensus_assessor_agent()
+    result = await Runner.run(agent, conversation_text)
+    return result.final_output
+
+
+def simple_vote_on_temperature(
+    initiator_comfort_c: float,
+    proposed_temp: float,
+    other_agent_comforts: List[float],
+    current_temp: float,
+) -> tuple[bool, str]:
+    """
+    Simple majority vote on a temperature change (no conversation needed).
+
+    Args:
+        initiator_comfort_c: Initiator's comfort temperature preference
+        proposed_temp: The proposed temperature change
+        other_agent_comforts: List of other agents' comfort preferences
+        current_temp: Current indoor temperature
+
+    Returns:
+        Tuple of (consensus_reached, summary)
+    """
+    votes_for = 1  # Initiator votes yes
+    votes_against = 0
+
+    for their_comfort in other_agent_comforts:
+        # Vote yes if proposed temp is closer to their preference than current
+        if abs(proposed_temp - their_comfort) <= abs(current_temp - their_comfort):
+            votes_for += 1
+        else:
+            votes_against += 1
+
+    total = votes_for + votes_against
+    consensus = votes_for > votes_against
+    summary = f"Vote: {votes_for}/{total} for proposed temperature"
+
+    return consensus, summary
+
+
 def build_consultation_agent(speaker_id: str, is_initiator: bool) -> Agent[SimContext]:
     """
     Build an agent for consultation about shared-space changes.
@@ -495,7 +615,7 @@ Output your response.
         name=f"consultation_{speaker_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(temperature=0.5),  # More focused than casual chat
+        model_settings=ModelSettings(reasoning_effort="low"),  # Dialogue is intuitive
         tools=[],
         output_type=AgentOutputSchema(ConsultationUtteranceOutput, strict_json_schema=False),
     )
@@ -616,6 +736,7 @@ async def consultation_conversation(
     now: datetime,
     max_turns: int = 6,
     calendar: Optional[CalendarStore] = None,
+    consultation_mode: str = "llm",
 ) -> ConsultationOutcome:
     """
     Conduct a consultation about a proposed shared-space change.
@@ -632,6 +753,8 @@ async def consultation_conversation(
         now: Current simulation datetime
         max_turns: Maximum exchanges before forcing decision
         calendar: Optional calendar store
+        consultation_mode: "llm" for LLM assessment, "vote" for simple majority,
+                          "keyword" for legacy keyword-based detection
 
     Returns:
         ConsultationOutcome with the agreed action
@@ -695,83 +818,112 @@ async def consultation_conversation(
             speaker = initiator
             speaker_is_initiator = True
 
-    # Determine outcome based on conversation
-    consensus = len(utterances) > 1 and utterances[-1].end_conversation
+    # Determine outcome based on conversation and consultation_mode
+    consensus = False
+    agreed_action = None
+    summary = ""
 
-    # Expanded agreement detection with more comprehensive word lists
-    last_utterances_text = " ".join(u.utterance.lower() for u in utterances[-4:])
+    if consultation_mode == "llm" and utterances:
+        # Use LLM to assess consensus
+        try:
+            assessment = await assess_consensus_with_llm(
+                utterances=utterances,
+                proposed_action=proposed_action,
+                proposed_temp=proposed_setpoint_c,
+            )
+            consensus = assessment.consensus_reached
+            if consensus:
+                final_temp = assessment.agreed_temperature_c or latest_compromise or proposed_setpoint_c
+                agreed_action = f"set thermostat to {final_temp:.1f}°C"
+                latest_compromise = final_temp
+            summary = assessment.summary
+            print(f"[CONSULTATION] LLM assessment: consensus={consensus}, temp={assessment.agreed_temperature_c}")
+        except Exception as e:
+            print(f"[CONSULTATION] LLM assessment failed, falling back to keyword: {e}")
+            consultation_mode = "keyword"  # Fallback
 
-    # Expanded agreement words/phrases
-    agreement_words = [
-        # Explicit agreement
-        "okay", "ok", "fine", "agree", "agreed", "sure", "alright", "yes",
-        # Positive responses
-        "good", "great", "perfect", "excellent", "wonderful",
-        # Acceptance phrases
-        "sounds good", "sounds great", "sounds fine", "that works",
-        "works for me", "let's do", "let's go with", "i can do",
-        "i'm okay with", "i'm fine with", "i can live with",
-        "im okay with", "im fine with",
-        # Compromise acceptance
-        "compromise", "deal", "fair enough", "reasonable", "acceptable",
-        # Temperature-specific
-        "degrees is fine", "degrees works", "degrees is good",
-        "that temperature", "we can try",
-    ]
-    disagreement_words = [
-        "no way", "absolutely not", "won't accept", "refuse", "disagree",
-        "can't accept", "cannot accept", "too cold", "too hot", "too warm",
-        "not comfortable", "uncomfortable with",
-    ]
-
-    has_agreement = any(w in last_utterances_text for w in agreement_words)
-    has_disagreement = any(w in last_utterances_text for w in disagreement_words)
-
-    # Also check if there's a temperature mentioned in an agreeing context
-    agreed_temp_from_text = None
-    if has_agreement:
-        # Try to extract temperature from the last few utterances
-        for u in reversed(utterances[-4:]):
-            text = u.utterance.lower()
-            if any(w in text for w in agreement_words):
-                # Look for temperature in this agreeing message
-                temp_match = re.search(r'(\d{1,2}(?:\.\d)?)\s*(?:°|degrees?|c\b|celsius)?', text)
-                if temp_match:
-                    try:
-                        agreed_temp_from_text = float(temp_match.group(1))
-                        break
-                    except ValueError:
-                        pass
-
-    if has_agreement and not has_disagreement:
-        consensus = True
-        # Prefer temperature from agreeing text, then latest_compromise, then proposed
-        final_temp = agreed_temp_from_text or latest_compromise or proposed_setpoint_c
-        agreed_action = f"set thermostat to {final_temp:.1f}°C"
-        summary = f"Agreed to {agreed_action} after consultation"
-        latest_compromise = final_temp
-    elif has_disagreement:
-        consensus = False
-        agreed_action = None
-        latest_compromise = None
-        summary = "Could not reach agreement on the proposed change"
-    else:
-        # Ambiguous - check if compromise was proposed and conversation ended naturally
-        if latest_compromise and latest_compromise != proposed_setpoint_c:
-            # A compromise was suggested - assume soft agreement
-            consensus = True
-            agreed_action = f"set thermostat to {latest_compromise:.1f}°C"
-            summary = f"Compromised on {latest_compromise:.1f}°C"
-        elif utterances[-1].end_conversation and len(utterances) >= 2:
-            # Conversation ended naturally without explicit disagreement - soft consensus
-            consensus = True
+    if consultation_mode == "vote" and proposed_setpoint_c is not None:
+        # Use simple majority vote (no conversation needed, but still works post-conversation)
+        initiator_comfort = initiator.scratch.get("thermal_comfort_c", 21.0)
+        other_comforts = [a.scratch.get("thermal_comfort_c", 21.0) for a in listeners]
+        consensus, summary = simple_vote_on_temperature(
+            initiator_comfort_c=initiator_comfort,
+            proposed_temp=proposed_setpoint_c,
+            other_agent_comforts=other_comforts,
+            current_temp=current_temp_c,
+        )
+        if consensus:
             agreed_action = proposed_action
             latest_compromise = proposed_setpoint_c
-            summary = f"Agreed to {proposed_action} (implicit consent)"
-        else:
+        print(f"[CONSULTATION] Vote result: {summary}")
+
+    if consultation_mode == "keyword":
+        # Legacy keyword-based detection
+        consensus = len(utterances) > 1 and utterances[-1].end_conversation
+
+        # Expanded agreement detection with more comprehensive word lists
+        last_utterances_text = " ".join(u.utterance.lower() for u in utterances[-4:])
+
+        # Expanded agreement words/phrases
+        agreement_words = [
+            "okay", "ok", "fine", "agree", "agreed", "sure", "alright", "yes",
+            "good", "great", "perfect", "excellent", "wonderful",
+            "sounds good", "sounds great", "sounds fine", "that works",
+            "works for me", "let's do", "let's go with", "i can do",
+            "i'm okay with", "i'm fine with", "i can live with",
+            "im okay with", "im fine with",
+            "compromise", "deal", "fair enough", "reasonable", "acceptable",
+            "degrees is fine", "degrees works", "degrees is good",
+            "that temperature", "we can try",
+        ]
+        disagreement_words = [
+            "no way", "absolutely not", "won't accept", "refuse", "disagree",
+            "can't accept", "cannot accept", "too cold", "too hot", "too warm",
+            "not comfortable", "uncomfortable with",
+        ]
+
+        has_agreement = any(w in last_utterances_text for w in agreement_words)
+        has_disagreement = any(w in last_utterances_text for w in disagreement_words)
+
+        # Also check if there's a temperature mentioned in an agreeing context
+        agreed_temp_from_text = None
+        if has_agreement:
+            for u in reversed(utterances[-4:]):
+                text = u.utterance.lower()
+                if any(w in text for w in agreement_words):
+                    temp_match = re.search(r'(\d{1,2}(?:\.\d)?)\s*(?:°|degrees?|c\b|celsius)?', text)
+                    if temp_match:
+                        try:
+                            agreed_temp_from_text = float(temp_match.group(1))
+                            break
+                        except ValueError:
+                            pass
+
+        if has_agreement and not has_disagreement:
+            consensus = True
+            final_temp = agreed_temp_from_text or latest_compromise or proposed_setpoint_c
+            agreed_action = f"set thermostat to {final_temp:.1f}°C"
+            summary = f"Agreed to {agreed_action} after consultation"
+            latest_compromise = final_temp
+        elif has_disagreement:
             consensus = False
             agreed_action = None
-            summary = "Consultation ended without clear agreement"
+            latest_compromise = None
+            summary = "Could not reach agreement on the proposed change"
+        else:
+            if latest_compromise and latest_compromise != proposed_setpoint_c:
+                consensus = True
+                agreed_action = f"set thermostat to {latest_compromise:.1f}°C"
+                summary = f"Compromised on {latest_compromise:.1f}°C"
+            elif utterances and utterances[-1].end_conversation and len(utterances) >= 2:
+                consensus = True
+                agreed_action = proposed_action
+                latest_compromise = proposed_setpoint_c
+                summary = f"Agreed to {proposed_action} (implicit consent)"
+            else:
+                consensus = False
+                agreed_action = None
+                summary = "Consultation ended without clear agreement"
 
     return ConsultationOutcome(
         proposed_action=proposed_action,
@@ -825,5 +977,14 @@ def record_agreement_to_memory(
             now=now,
             importance=7.0,  # High importance
         )
+
+        # Update relationships: agreement improves familiarity and sentiment
+        for other_agent in agents:
+            if other_agent.agent_id != agent.agent_id:
+                agent.update_relationship(
+                    other_agent_id=other_agent.agent_id,
+                    familiarity_delta=0.03,  # Small familiarity boost
+                    sentiment_delta=0.05,    # Positive sentiment from agreement
+                )
 
         print(f"  [MEMORY] Recorded agreement for {agent.first_name}")

@@ -1,0 +1,38 @@
+{
+  "agent_id": "CHANGE_ME_001",
+  "name": "Agent Name",
+  "first_name": "FirstName",
+
+  "innate_traits": "trait1, trait2, trait3, trait4",
+  "learned_traits": "Summary of experience and background that influences behavior.",
+  "currently": "What the agent is currently doing or focused on.",
+  "lifestyle": "Summary of schedule and commute patterns.",
+
+  "thermal_preference": "neutral",
+  "runs_warm": false,
+  "clothing_insulation_typical": "medium",
+  "light_preference": "natural",
+  "noise_sensitivity": "moderate",
+
+  "typical_arrival": "08:30-09:00",
+  "typical_departure": "17:00-17:30",
+  "preferred_desk": "Desk_A",
+  "works_weekends": false,
+
+  "perception_bandwidth": 8,
+  "reflection_threshold": 150,
+  "importance_trigger_max": 150,
+  "importance_trigger_curr": 150,
+  "recency_w": 1.0,
+  "relevance_w": 1.0,
+  "importance_w": 1.0,
+  "recency_decay": 0.995,
+
+  "relationship_models": {
+    "other_agent_id": {"familiarity": 0.5, "sentiment": 0.5}
+  },
+
+  "daily_plan": null,
+  "f_daily_schedule": [],
+  "just_arrived": false
+}

@@ -4,7 +4,7 @@ LLMagentskeleton.py
 A minimal, extensible implementation of simulated building-occupant agents using:
 - OpenAI Agents SDK (openai-agents)
 - GPT-5.2 for agentic decisioning
-- Local semantic-search memory in SQLite (embeddings) with time-decay action recall
+- JSON-based semantic-search memory with time-decay action recall
 - Per-agent schedule + shared calendar with RSVP
 - Clean integration seam to your local building simulator
 
@@ -72,10 +72,6 @@ class BuildingSimulationAdapter:
         raise NotImplementedError
 
 
-# NOTE: DummySimulationAdapter removed (orphaned code)
-# Use ProductionSimulationAdapter in simulation_adapter.py for actual simulation
-
-
 # ---------------------------------------------------------------------------
 # Structured outputs (Pydantic) for agent decisions
 # ---------------------------------------------------------------------------
@@ -93,6 +89,14 @@ ActionType = Literal[
     "arrive",
     "depart",
     "respond_to_invitation",  # Accept/decline meeting invitation
+    # Lunch and break actions
+    "go_to_lunch",           # Leave desk for lunch (in building cafeteria/kitchen)
+    "go_out_for_lunch",      # Leave building for lunch (cafe, restaurant, etc.)
+    "return_from_lunch",     # Come back from lunch
+    "take_break",            # Short break (coffee, stretch, walk)
+    "return_from_break",     # Come back from short break
+    # Navigation
+    "move_to",               # Move to a different location (parameters: location)
 ]
 
 class OccupantAction(BaseModel):
@@ -108,6 +112,30 @@ class OccupantStepDecision(BaseModel):
     is_present: bool = True  # Whether occupant is in the building
     actions: List[OccupantAction] = Field(default_factory=list)
     brief_rationale: str = Field(default="")
+
+
+# Clothing warmth levels for comfort model integration
+ClothingWarmthLevel = Literal["very_light", "light", "medium", "warm", "very_warm"]
+
+
+class ClothingChoice(BaseModel):
+    """
+    Agent's clothing choice for the day.
+
+    Includes a natural description and a warmth level for comfort model calculations.
+    Agents decide clothing in the morning based on weather, meetings, and personal style.
+    """
+    description: str = Field(
+        description="Natural description of clothing, e.g., 'Navy cardigan over white blouse, dark trousers'"
+    )
+    warmth_level: ClothingWarmthLevel = Field(
+        default="medium",
+        description="Warmth level: very_light (t-shirt), light (shirt), medium (cardigan), warm (jumper), very_warm (layers)"
+    )
+    layers_removable: bool = Field(
+        default=True,
+        description="Whether the agent can remove a layer if feeling warm"
+    )
 
 
 class MeetingPlan(BaseModel):
@@ -127,6 +155,10 @@ class DailyPlan(BaseModel):
     intended_departure_time: str
     actual_departure_time: str
     meetings: List[MeetingPlan] = Field(default_factory=list)
+    clothing: Optional[ClothingChoice] = Field(
+        default=None,
+        description="What the agent is wearing today - decided based on weather, meetings, and personal style"
+    )
     notes: str = ""
 
 
@@ -219,13 +251,6 @@ class EmbeddingClient:
 
 
 # ---------------------------------------------------------------------------
-# NOTE: SQLiteVectorMemory class removed (replaced by MemoryStream in memory_stream.py)
-# Agent memories are now stored in JSON files per agent folder for easier inspection
-# and compatibility with Stanford generative_agents reference implementation
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Schedule memory + shared calendar (SQLite)
 # ---------------------------------------------------------------------------
 
@@ -265,6 +290,11 @@ class CalendarStore:
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_events_cal ON events(calendar_id, start_ts);")
+            # Unique constraint to prevent duplicate events (same creator, title, start time)
+            con.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_events_no_dup
+                ON events(calendar_id, created_by, title, start_ts)
+            """)
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS rsvps (
@@ -301,6 +331,7 @@ class CalendarStore:
         title: str,
         start: datetime,
         end: datetime,
+        now: datetime,
         location: str = "TBD",
         description: str = "",
     ) -> str:
@@ -323,10 +354,131 @@ class CalendarStore:
                     location,
                     _utc_ts(start),
                     _utc_ts(end),
-                    _utc_ts(datetime.now(timezone.utc)),
+                    _utc_ts(now),
                 ),
             )
         return event_id
+
+    def create_event_if_not_exists(
+        self,
+        calendar_id: str,
+        created_by: str,
+        title: str,
+        start: datetime,
+        end: datetime,
+        now: datetime,
+        location: str = "TBD",
+        description: str = "",
+    ) -> tuple[str, bool, Optional[Dict[str, Any]]]:
+        """
+        Create event only if no similar event exists.
+
+        For shared calendars, checks across ALL creators to prevent duplicates.
+        For personal calendars, only checks same creator.
+
+        Returns:
+            Tuple of (event_id, created, existing_event_info) where:
+            - event_id: ID of the event (new or existing)
+            - created: True if new event was created
+            - existing_event_info: Dict with title/creator if existing event found, else None
+        """
+        with self._conn() as con:
+            # For shared calendar, check across ALL creators
+            if calendar_id == "shared":
+                existing = con.execute(
+                    """
+                    SELECT event_id, title, created_by FROM events
+                    WHERE calendar_id = ?
+                    AND ABS(start_ts - ?) < 1800
+                    AND LOWER(title) LIKE ?
+                    AND cancelled = 0
+                    """,
+                    (calendar_id, _utc_ts(start), f"%{title.lower()[:20]}%")
+                ).fetchone()
+            else:
+                # Personal calendar - only check same creator
+                existing = con.execute(
+                    """
+                    SELECT event_id, title, created_by FROM events
+                    WHERE calendar_id = ? AND created_by = ?
+                    AND ABS(start_ts - ?) < 1800
+                    AND LOWER(title) LIKE ?
+                    AND cancelled = 0
+                    """,
+                    (calendar_id, created_by, _utc_ts(start), f"%{title.lower()[:20]}%")
+                ).fetchone()
+
+            if existing:
+                existing_info = {
+                    "event_id": existing[0],
+                    "title": existing[1],
+                    "created_by": existing[2],
+                }
+                return existing[0], False, existing_info
+
+        # Create new event
+        event_id = self.create_event(
+            calendar_id, created_by, title, start, end, now, location, description
+        )
+        return event_id, True, None
+
+    def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single event by ID."""
+        with self._conn() as con:
+            row = con.execute(
+                """
+                SELECT event_id, calendar_id, created_by, title, description, location,
+                       start_ts, end_ts, cancelled
+                FROM events WHERE event_id = ?
+                """,
+                (event_id,)
+            ).fetchone()
+
+        if not row:
+            return None
+
+        event_id, cal_id, created_by, title, desc, loc, s_ts, e_ts, cancelled = row
+        return {
+            "event_id": event_id,
+            "calendar_id": cal_id,
+            "created_by": created_by,
+            "title": title,
+            "description": desc,
+            "location": loc,
+            "start_datetime_iso": datetime.fromtimestamp(float(s_ts), tz=timezone.utc).isoformat(),
+            "end_datetime_iso": datetime.fromtimestamp(float(e_ts), tz=timezone.utc).isoformat(),
+            "cancelled": bool(cancelled),
+        }
+
+    def get_events_created_by(
+        self, agent_id: str, start: datetime, end: datetime, calendar_id: str = "shared"
+    ) -> List[Dict[str, Any]]:
+        """Get all events created by a specific agent within a time range."""
+        with self._conn() as con:
+            rows = con.execute(
+                """
+                SELECT event_id, title, description, location, start_ts, end_ts, cancelled
+                FROM events
+                WHERE calendar_id = ? AND created_by = ?
+                AND start_ts >= ? AND start_ts < ?
+                AND cancelled = 0
+                ORDER BY start_ts ASC
+                """,
+                (calendar_id, agent_id, _utc_ts(start), _utc_ts(end))
+            ).fetchall()
+
+        return [
+            {
+                "event_id": eid,
+                "title": title,
+                "description": desc,
+                "location": loc,
+                "start_datetime_iso": datetime.fromtimestamp(float(s_ts), tz=timezone.utc).isoformat(),
+                "end_datetime_iso": datetime.fromtimestamp(float(e_ts), tz=timezone.utc).isoformat(),
+                "cancelled": bool(cancelled),
+            }
+            for eid, title, desc, loc, s_ts, e_ts, cancelled in rows
+        ]
 
     def list_events(
         self,
@@ -366,7 +518,7 @@ class CalendarStore:
             )
         return out
 
-    def rsvp(self, event_id: str, agent_id: str, status: Literal["yes", "no", "maybe"]) -> None:
+    def rsvp(self, event_id: str, agent_id: str, status: Literal["yes", "no", "maybe"], now: datetime) -> None:
         with self._conn() as con:
             con.execute(
                 """
@@ -376,7 +528,7 @@ class CalendarStore:
                     status = excluded.status,
                     updated_at_ts = excluded.updated_at_ts
                 """,
-                (event_id, agent_id, status, _utc_ts(datetime.now(timezone.utc))),
+                (event_id, agent_id, status, _utc_ts(now)),
             )
 
     def get_rsvps_for_event(self, event_id: str) -> List[Dict[str, Any]]:
@@ -416,7 +568,7 @@ class CalendarStore:
         event_id: str,
         inviter_id: str,
         invitee_id: str,
-        now: Optional[datetime] = None,
+        now: datetime,
     ) -> str:
         """
         Create an invitation for an agent to attend a meeting.
@@ -425,12 +577,11 @@ class CalendarStore:
             event_id: The event to invite to
             inviter_id: The agent sending the invitation
             invitee_id: The agent being invited
-            now: Current datetime (defaults to UTC now)
+            now: Current simulation datetime
 
         Returns:
             The invitation ID
         """
-        now = now or datetime.now(timezone.utc)
         invite_id = str(uuid.uuid4())
         with self._conn() as con:
             # Only insert if no existing invitation, or update only if still pending
@@ -486,7 +637,7 @@ class CalendarStore:
         event_id: str,
         agent_id: str,
         accept: bool,
-        now: Optional[datetime] = None,
+        now: datetime,
     ) -> bool:
         """
         Respond to a meeting invitation.
@@ -495,12 +646,11 @@ class CalendarStore:
             event_id: The event being responded to
             agent_id: The agent responding
             accept: True to accept, False to decline
-            now: Current datetime (defaults to UTC now)
+            now: Current simulation datetime
 
         Returns:
             True if invitation was found and updated, False otherwise
         """
-        now = now or datetime.now(timezone.utc)
         status = "accepted" if accept else "declined"
 
         with self._conn() as con:
@@ -528,6 +678,142 @@ class CalendarStore:
                 )
 
         return updated
+
+    def get_agent_calendar_view(
+        self,
+        agent_id: str,
+        start: datetime,
+        end: datetime,
+    ) -> Dict[str, Any]:
+        """
+        Get a comprehensive calendar view for an agent.
+
+        This provides a "work calendar" experience showing:
+        - Meetings the agent organized (with response counts)
+        - Meetings the agent has accepted (includes organizer info)
+        - Pending invitations requiring response
+        - Declined invitations (for reference)
+
+        Args:
+            agent_id: The agent whose calendar to view
+            start: Start of time range
+            end: End of time range
+
+        Returns:
+            {
+                "organized": [...],     # Meetings I created
+                "attending": [...],     # Meetings I accepted (not mine)
+                "pending": [...],       # Invitations needing my response
+                "declined": [...],      # Invitations I declined
+                "summary": {"total_meetings": N, "pending_invitations": N}
+            }
+        """
+        start_ts = _utc_ts(start)
+        end_ts = _utc_ts(end)
+
+        with self._conn() as con:
+            # Meetings I organized
+            organized_rows = con.execute(
+                """
+                SELECT e.event_id, e.title, e.location, e.start_ts, e.end_ts, e.description,
+                       (SELECT COUNT(*) FROM invitations WHERE event_id = e.event_id AND status = 'accepted') as accepted_count,
+                       (SELECT COUNT(*) FROM invitations WHERE event_id = e.event_id AND status = 'pending') as pending_count,
+                       (SELECT COUNT(*) FROM invitations WHERE event_id = e.event_id AND status = 'declined') as declined_count
+                FROM events e
+                WHERE e.created_by = ? AND e.cancelled = 0
+                AND e.start_ts >= ? AND e.start_ts < ?
+                ORDER BY e.start_ts
+                """,
+                (agent_id, start_ts, end_ts)
+            ).fetchall()
+
+            # Meetings I accepted (not mine)
+            attending_rows = con.execute(
+                """
+                SELECT e.event_id, e.title, e.location, e.start_ts, e.end_ts,
+                       e.created_by as organizer
+                FROM events e
+                JOIN invitations i ON e.event_id = i.event_id
+                WHERE i.invitee_id = ? AND i.status = 'accepted'
+                AND e.cancelled = 0 AND e.start_ts >= ? AND e.start_ts < ?
+                ORDER BY e.start_ts
+                """,
+                (agent_id, start_ts, end_ts)
+            ).fetchall()
+
+            # Declined invitations (for reference)
+            declined_rows = con.execute(
+                """
+                SELECT e.event_id, e.title, e.start_ts, i.inviter_id
+                FROM events e
+                JOIN invitations i ON e.event_id = i.event_id
+                WHERE i.invitee_id = ? AND i.status = 'declined'
+                AND e.cancelled = 0 AND e.start_ts >= ? AND e.start_ts < ?
+                ORDER BY e.start_ts
+                """,
+                (agent_id, start_ts, end_ts)
+            ).fetchall()
+
+        # Get pending invitations (already implemented)
+        all_pending = self.get_pending_invitations(agent_id)
+        # Filter to time range
+        pending_filtered = [
+            p for p in all_pending
+            if start_ts <= datetime.fromisoformat(p['event_start_iso']).timestamp() < end_ts
+        ]
+
+        # Format organized meetings
+        organized = [
+            {
+                "event_id": row[0],
+                "title": row[1],
+                "location": row[2],
+                "start_datetime_iso": datetime.fromtimestamp(float(row[3]), tz=timezone.utc).isoformat(),
+                "end_datetime_iso": datetime.fromtimestamp(float(row[4]), tz=timezone.utc).isoformat(),
+                "description": row[5],
+                "responses": {
+                    "accepted": row[6],
+                    "pending": row[7],
+                    "declined": row[8],
+                },
+            }
+            for row in organized_rows
+        ]
+
+        # Format attending meetings
+        attending = [
+            {
+                "event_id": row[0],
+                "title": row[1],
+                "location": row[2],
+                "start_datetime_iso": datetime.fromtimestamp(float(row[3]), tz=timezone.utc).isoformat(),
+                "end_datetime_iso": datetime.fromtimestamp(float(row[4]), tz=timezone.utc).isoformat(),
+                "organizer": row[5],
+            }
+            for row in attending_rows
+        ]
+
+        # Format declined
+        declined = [
+            {
+                "event_id": row[0],
+                "title": row[1],
+                "start_datetime_iso": datetime.fromtimestamp(float(row[2]), tz=timezone.utc).isoformat(),
+                "inviter": row[3],
+            }
+            for row in declined_rows
+        ]
+
+        return {
+            "organized": organized,
+            "attending": attending,
+            "pending": pending_filtered,
+            "declined": declined,
+            "summary": {
+                "total_meetings": len(organized) + len(attending),
+                "pending_invitations": len(pending_filtered),
+            },
+        }
 
     def get_all_agent_ids(self) -> List[str]:
         """Get all known agent IDs from invitations and RSVPs."""
@@ -648,8 +934,13 @@ class SimContext:
     occupant_id: str
     now: datetime
     calendar: CalendarStore
-    memory: Optional[SQLiteVectorMemory] = None  # For backward compatibility
+    memory: Optional[Any] = None  # Legacy, unused in new architecture
     simulation: Optional["BuildingSimulationAdapter"] = None  # For new architecture
+    configured_agent_ids: List[str] = None  # All valid agent IDs from config
+
+    def __post_init__(self):
+        if self.configured_agent_ids is None:
+            self.configured_agent_ids = []
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +980,31 @@ def list_shared_calendar(ctx: RunContextWrapper[SimContext], days_ahead: int = 1
         end=end,
     )
 
+
+@function_tool
+def get_my_calendar(ctx: RunContextWrapper[SimContext], days_ahead: int = 7) -> Dict[str, Any]:
+    """
+    Get your complete calendar view including:
+    - Meetings you organized (with response counts from invitees)
+    - Meetings you're attending (that others organized)
+    - Pending invitations requiring your response
+    - Meetings you declined (for reference)
+
+    This is like checking your work calendar to see your schedule and outstanding invitations.
+
+    Args:
+        days_ahead: How many days ahead to look (default 7)
+
+    Returns:
+        Dictionary with 'organized', 'attending', 'pending', 'declined' lists and a 'summary'.
+    """
+    start = ctx.context.now
+    end = start + timedelta(days=days_ahead)
+    return ctx.context.calendar.get_agent_calendar_view(
+        ctx.context.occupant_id, start, end
+    )
+
+
 @function_tool
 def create_shared_event(
     ctx: RunContextWrapper[SimContext],
@@ -701,6 +1017,9 @@ def create_shared_event(
     """
     Create a new event in the shared calendar.
     Datetimes must be ISO-8601; assumed UTC if no timezone is provided.
+
+    Checks for similar existing meetings to avoid duplicates.
+    If a similar meeting already exists, returns info about it instead of creating a duplicate.
     """
     start = datetime.fromisoformat(start_datetime_iso)
     end = datetime.fromisoformat(end_datetime_iso)
@@ -709,16 +1028,36 @@ def create_shared_event(
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
 
-    event_id = ctx.context.calendar.create_event(
+    event_id, created, existing_info = ctx.context.calendar.create_event_if_not_exists(
         calendar_id="shared",
         created_by=ctx.context.occupant_id,
         title=title,
         start=start,
         end=end,
+        now=ctx.context.now,
         location=location,
         description=description,
     )
-    return {"event_id": event_id, "title": title, "start": start.isoformat(), "end": end.isoformat()}
+
+    if not created and existing_info:
+        return {
+            "event_id": event_id,
+            "created": False,
+            "message": (
+                f"A similar meeting '{existing_info['title']}' already exists at this time "
+                f"(created by {existing_info['created_by']}). You may want to check if you "
+                "should attend that meeting instead of creating a new one."
+            ),
+            "existing_meeting": existing_info,
+        }
+
+    return {
+        "event_id": event_id,
+        "created": True,
+        "title": title,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
 
 @function_tool
 def rsvp_shared_event(
@@ -727,7 +1066,7 @@ def rsvp_shared_event(
     status: Literal["yes", "no", "maybe"],
 ) -> Dict[str, Any]:
     """RSVP to a shared calendar event."""
-    ctx.context.calendar.rsvp(event_id=event_id, agent_id=ctx.context.occupant_id, status=status)
+    ctx.context.calendar.rsvp(event_id=event_id, agent_id=ctx.context.occupant_id, status=status, now=ctx.context.now)
     return {"event_id": event_id, "agent_id": ctx.context.occupant_id, "status": status}
 
 
@@ -746,22 +1085,37 @@ def invite_agents_to_meeting(
 
     Args:
         event_id: The event to invite agents to
-        invitee_ids: List of agent IDs to invite
+        invitee_ids: List of agent IDs to invite (must be valid agent IDs from list_known_agents)
 
     Returns:
-        Dict with list of created invitations
+        Dict with list of created invitations and any invalid IDs that were skipped
     """
     invitations = []
+    invalid_ids = []
+    valid_agent_ids = set(ctx.context.configured_agent_ids)
+
     for invitee_id in invitee_ids:
-        if invitee_id != ctx.context.occupant_id:  # Don't invite self
-            invite_id = ctx.context.calendar.add_invitation(
-                event_id=event_id,
-                inviter_id=ctx.context.occupant_id,
-                invitee_id=invitee_id,
-                now=ctx.context.now,
-            )
-            invitations.append({"invitation_id": invite_id, "invitee_id": invitee_id})
-    return {"event_id": event_id, "invitations_sent": invitations}
+        # Skip self
+        if invitee_id == ctx.context.occupant_id:
+            continue
+        # Validate against configured agents
+        if invitee_id not in valid_agent_ids:
+            invalid_ids.append(invitee_id)
+            continue
+        # Create invitation
+        invite_id = ctx.context.calendar.add_invitation(
+            event_id=event_id,
+            inviter_id=ctx.context.occupant_id,
+            invitee_id=invitee_id,
+            now=ctx.context.now,
+        )
+        invitations.append({"invitation_id": invite_id, "invitee_id": invitee_id})
+
+    result = {"event_id": event_id, "invitations_sent": invitations}
+    if invalid_ids:
+        result["invalid_agent_ids"] = invalid_ids
+        result["warning"] = f"Unknown agent IDs were skipped: {invalid_ids}. Use list_known_agents() to see valid IDs."
+    return result
 
 
 @function_tool
@@ -779,10 +1133,11 @@ def list_known_agents(ctx: RunContextWrapper[SimContext]) -> List[str]:
     """
     List all known agent IDs that can be invited to meetings (excluding self).
 
-    Returns list of agent IDs.
+    Returns list of valid agent IDs from the simulation configuration.
     """
-    all_agents = ctx.context.calendar.get_all_agent_ids()
-    return [aid for aid in all_agents if aid != ctx.context.occupant_id]
+    # Use configured agent IDs instead of querying database
+    # This ensures agents can only invite valid agents from the config
+    return [aid for aid in ctx.context.configured_agent_ids if aid != ctx.context.occupant_id]
 
 
 @function_tool
@@ -861,36 +1216,74 @@ def build_step_agent(occupant_id: str) -> Agent[SimContext]:
     instructions = f"""
 You are a simulated building occupant agent (ID: {occupant_id}).
 
-At each timestep, decide your actions based on your preferences (provided in prompt) and current state.
+At each timestep, decide your actions based on your preferences, memories, and current state.
 
-Available actions:
+AVAILABLE ACTIONS:
 - no_op: do nothing (use when comfortable and no immediate needs)
 - thermostat_adjust: adjust setpoint (parameters: setpoint_c)
 - window_set: open/close window (parameters: open: true/false)
 - lights_set: control lights (parameters: light_name, on: true/false)
 - equipment_set: turn equipment on/off (parameters: equipment_name, on: true/false)
-- attend_meeting: go to meeting room for scheduled meeting (parameters: meeting_title)
-- leave_meeting: leave meeting room when meeting ends
+- attend_meeting: physically go to meeting room (parameters: meeting_title)
+- leave_meeting: return to your desk from meeting room
 - respond_to_invitation: accept or decline a meeting invitation (parameters: event_id, accept: true/false)
 
-MEETING ATTENDANCE RULES (HIGH PRIORITY):
-- If the prompt shows "MEETING IN PROGRESS" or "MEETING STARTING SOON", you MUST use 'attend_meeting'
-- Being late to meetings you organized or accepted is unprofessional
-- Check the MEETING STATUS section in your prompt carefully
-- If you have pending invitations, consider responding with 'respond_to_invitation'
+THERMOSTAT:
+- There are TWO setpoints: heating (activates when cold) and cooling (activates when hot)
+- When you use thermostat_adjust, BOTH setpoints shift by the same amount
+- If you're too HOT: lower the setpoint to bring the cooling threshold down
+- If you're too COLD: raise the setpoint to bring the heating threshold up
+- Example: If heating=21C/cooling=24C and you set setpoint_c=23, both shift up by 2C to heating=23C/cooling=26C
 
-Workspace context (in state):
-- lighting_conditions: shows current natural light levels and whether your desk light is on
-- equipment_status: shows which of your devices are currently on or off
-- In typical office work, people often turn on lights when it's dim and turn on their computer before working
-- When leaving for the day, many people turn off their desk equipment and lights
-- Your choices should reflect your personality and current priorities
+EQUIPMENT AND WORKSPACE:
+You can control your desk equipment and lighting. The current state of equipment and lighting
+is shown in your prompt context. Consider your work style, preferences, and current tasks
+when deciding whether to use equipment. Your core memories and past experiences should guide
+these decisions naturally.
 
-Guidelines:
-- Check MEETING STATUS first - meetings take priority over comfort adjustments
-- Prefer minimal actions (use no_op if comfortable and no meetings)
-- Consider other occupants for shared controls
-- Your preferences are provided in the prompt - no need to call memory tools
+MEETINGS - IMPORTANT: Understand the difference between accepting and attending!
+- respond_to_invitation: Accept/decline an invitation - this is just an RSVP (like clicking "Yes" in Outlook)
+  This does NOT move you anywhere. It just lets the organizer know you plan to come.
+- attend_meeting: PHYSICALLY go to the meeting room when meeting time arrives
+  This moves you to the meeting room and turns on meeting equipment (projector, phone)
+- leave_meeting: Return to your desk when meeting ends (turns off equipment if you're last out)
+
+WORKFLOW:
+1. When you receive an invitation: Use respond_to_invitation to accept (this is just RSVP)
+2. When meeting TIME arrives: Use attend_meeting to PHYSICALLY go to the meeting room
+3. When meeting ends: Use leave_meeting to return to your desk
+
+IMPORTANT: Accepting an invitation does NOT move you! When your calendar shows a meeting
+starting NOW, check if you've already used attend_meeting. If not, use it to go there.
+
+SHARED EQUIPMENT:
+- The photocopier is in the shared area - use equipment_set to turn it on/off when needed
+- Check shared_equipment in equipment_status to see what's available and who's using it
+- Turn off shared equipment when you're done using it
+
+NAVIGATION - Office Locations:
+- You can move between named locations using 'move_to' (parameters: location)
+- Available locations:
+  * desk_area: Main workspace with desks (default when arriving)
+  * meeting_room: Enclosed room for meetings
+  * break_area: Kitchen/break room for lunch, coffee, breaks
+  * shared_area: Common area with photocopier
+- Your current location is shown in your state
+- You can only use equipment that's at your current location
+- When going for lunch/break, you'll automatically move to break_area
+- When attending a meeting, you'll automatically move to meeting_room
+
+GUIDELINES:
+- Act according to your personality, preferences, and current priorities
+- Prefer minimal actions when comfortable and no immediate needs
+- Consider other occupants for shared controls (thermostat, windows)
+- Your context, preferences, and relevant memories are in the prompt
+
+END OF DAY:
+- Check office_occupancy to see who else is present
+- If you're the last person leaving, turn off shared lights and equipment
+- Meeting room equipment (projector, conference phone) should be off when empty
+- Zone lighting can stay on if others are still working
 
 Output your decision directly as JSON matching OccupantStepDecision schema.
 """.strip()
@@ -899,7 +1292,7 @@ Output your decision directly as JSON matching OccupantStepDecision schema.
         name=f"occupant_step_{occupant_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(temperature=0.2),
+        model_settings=ModelSettings(reasoning_effort="low"),  # Step decisions are straightforward
         tools=[
             get_current_datetime,
             list_shared_calendar,
@@ -950,7 +1343,7 @@ Your preferences and context are in the prompt. Output your DailyPlan when ready
         name=f"occupant_day_{occupant_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(temperature=0.3),
+        model_settings=ModelSettings(reasoning_effort="high"),  # Day planning requires thoughtful consideration
         tools=[
             get_current_datetime,
             list_my_meetings,
@@ -963,10 +1356,3 @@ Your preferences and context are in the prompt. Output your DailyPlan when ready
         ],
         output_type=AgentOutputSchema(DailyPlan, strict_json_schema=False),
     )
-
-
-# ---------------------------------------------------------------------------
-# NOTE: OccupantAgentSystem class and main_demo() removed (orphaned code)
-# The active orchestrator is LLMOccupantManager in llm_integration.py
-# which uses GenerativeAgent with MemoryStream instead of SQLiteVectorMemory
-# ---------------------------------------------------------------------------

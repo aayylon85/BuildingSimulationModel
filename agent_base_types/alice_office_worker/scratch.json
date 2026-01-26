@@ -8,8 +8,9 @@
   "currently": "Alice is working on her regular duties and maintaining her usual schedule.",
   "lifestyle": "Alice arrives early (08:30-09:00), leaves on time (17:00-17:30), takes lunch at desk around 12:30. Commutes by public transport.",
 
-  "thermal_comfort_c": 21.0,
+  "thermal_preference": "slightly_warm",
   "runs_warm": false,
+  "clothing_insulation_typical": "medium",
   "light_preference": "natural",
   "noise_sensitivity": "moderate",
 
@@ -17,6 +18,8 @@
   "typical_departure": "17:00-17:30",
   "preferred_desk": "Desk_A",
   "works_weekends": false,
+  "workspace_variety": "high",
+  "likes_desk_variety": true,
 
   "perception_bandwidth": 8,
   "reflection_threshold": 150,

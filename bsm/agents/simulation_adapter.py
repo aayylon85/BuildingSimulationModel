@@ -16,6 +16,40 @@ from bsm.agents.lighting_manager import LightingManager
 from bsm.agents.desk_manager import DeskManager
 
 
+# ---------------------------------------------------------------------------
+# Office Location System
+# ---------------------------------------------------------------------------
+
+# Default office locations - can be extended via config
+DEFAULT_OFFICE_LOCATIONS = {
+    "desk_area": {
+        "name": "Desk Area",
+        "description": "Main open plan workspace with desks",
+        "equipment_access": ["desk_equipment"],
+    },
+    "meeting_room": {
+        "name": "Meeting Room",
+        "description": "Enclosed meeting room with projector and conference phone",
+        "capacity": 6,
+        "equipment_access": ["projector", "conference_phone", "meeting_room_lights"],
+    },
+    "break_area": {
+        "name": "Break Area / Kitchen",
+        "description": "Kitchen facilities with seating for breaks and lunch",
+        "appliances": ["coffee_machine", "kettle", "microwave", "fridge"],
+    },
+    "shared_area": {
+        "name": "Shared Area",
+        "description": "Common area near Desk_B with photocopier",
+        "equipment_access": ["photocopier"],
+    },
+    "entrance": {
+        "name": "Entrance",
+        "description": "Main entrance, near Desk_A",
+    },
+}
+
+
 class ZoneStateProvider:
     """
     Provides real-time zone state to the simulation adapter.
@@ -134,6 +168,18 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         # Track occupant presence
         self._present_occupants: Dict[str, bool] = {}  # occupant_id -> is_present
 
+        # Track agent status (at_desk, at_lunch, on_break, out_of_office)
+        # Default status when present: at_desk=True, others=False
+        self._agent_status: Dict[str, Dict[str, bool]] = {}  # occupant_id -> status dict
+
+        # Track agent locations (simple location-based navigation)
+        self._agent_locations: Dict[str, str] = {}  # occupant_id -> location_name
+        self._office_locations = DEFAULT_OFFICE_LOCATIONS.copy()
+
+        # Extend with config-provided locations if available
+        config_locations = self._room_layout.get("locations", {})
+        self._office_locations.update(config_locations)
+
     def _build_room_context(
         self,
         current_desk: Optional[str],
@@ -218,19 +264,41 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         # Build equipment status for agent context
         desk_eq = equipment.get("desk_equipment", {})
-        equipment_states = {name: info.get("is_on", False) for name, info in desk_eq.items()}
+        shared_eq = equipment.get("shared_equipment", {})
+
+        # Desk equipment items (simple name: on/off)
+        desk_equipment_items = {name: info.get("is_on", False) for name, info in desk_eq.items()}
+
+        # Shared equipment with location context
+        shared_equipment_items = {}
+        for name, info in shared_eq.items():
+            shared_equipment_items[name] = {
+                "is_on": info.get("is_on", False),
+                "in_use_by": info.get("in_use_by"),
+            }
 
         equipment_status = {
-            "items": equipment_states,
-            "all_on": all(equipment_states.values()) if equipment_states else True,
-            "all_off": not any(equipment_states.values()) if equipment_states else True,
+            "items": desk_equipment_items,  # Desk equipment for backward compatibility
+            "desk_equipment": desk_equipment_items,
+            "shared_equipment": shared_equipment_items,  # Meeting room, shared area equipment
         }
 
-        # Build other occupants list
+        # Build other occupants list with status
         other_occupants = []
+        other_occupants_at_lunch = []
+        other_occupants_on_break = []
         for occ in occupancy.get("other_occupants", []):
-            if self._present_occupants.get(occ["id"], False):
-                other_occupants.append(occ["id"])
+            occ_id = occ["id"]
+            if self._present_occupants.get(occ_id, False):
+                status = self.get_agent_status(occ_id)
+                other_occupants.append(occ_id)
+                if status.get("at_lunch", False):
+                    other_occupants_at_lunch.append(occ_id)
+                if status.get("on_break", False):
+                    other_occupants_on_break.append(occ_id)
+
+        # Get this agent's current status
+        agent_status = self.get_agent_status(occupant_id)
 
         # Day of week information
         day_of_week = now.strftime("%A")  # "Monday", "Tuesday", etc.
@@ -252,6 +320,12 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             "is_sunny": thermal["is_sunny"],
 
             # Control states
+            "thermostat": {
+                "heating_setpoint_c": self._base_heating_setpoint_c + self._thermostat_offset_c,
+                "cooling_setpoint_c": self._base_cooling_setpoint_c + self._thermostat_offset_c,
+                "offset_c": self._thermostat_offset_c,
+            },
+            # Keep for backward compatibility
             "thermostat_setpoint_c": self._base_heating_setpoint_c + self._thermostat_offset_c,
             "window_open": self._window_open_fraction > 0.5,
             "window_open_fraction": self._window_open_fraction,
@@ -275,7 +349,12 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
             # Other occupants
             "other_occupants_present": other_occupants,
+            "other_occupants_at_lunch": other_occupants_at_lunch,
+            "other_occupants_on_break": other_occupants_on_break,
             "total_occupants_present": len(other_occupants) + (1 if self._present_occupants.get(occupant_id, False) else 0),
+
+            # Agent's current status (at_desk, at_lunch, on_break, out_of_office)
+            "agent_status": agent_status,
 
             # Lighting conditions (for agent decision-making)
             "lighting_conditions": lighting_conditions,
@@ -285,6 +364,22 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
             # Room context (layout and desk information)
             "room_context": self._build_room_context(current_desk, occupancy.get("available_desks", [])),
+
+            # Office occupancy (for end-of-day awareness)
+            "office_occupancy": {
+                "agents_present": [occupant_id] + other_occupants,
+                "total_count": len(other_occupants) + 1,
+                "you_would_be_last_to_leave": len(other_occupants) == 0,
+            },
+
+            # Location information (for navigation)
+            "current_location": self.get_agent_location(occupant_id),
+            "available_locations": self.get_available_locations(),
+            "location_info": self.get_all_locations_info(),
+            "agents_by_location": {
+                loc: self.get_agents_at_location(loc)
+                for loc in self._office_locations.keys()
+            },
         }
 
     def apply_decision(self, decision: OccupantStepDecision) -> None:
@@ -337,6 +432,8 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         elif action_type == "attend_meeting":
             self.desks.enter_meeting_room(occupant_id)
+            self.set_agent_location(occupant_id, "meeting_room")
+            self.set_agent_status(occupant_id, "at_desk", False)
             # Turn on meeting room lights and equipment if first person
             if self.desks.get_meeting_room().get_occupant_count() == 1:
                 self.lighting.turn_on_light("meeting_room")
@@ -345,6 +442,8 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         elif action_type == "leave_meeting":
             self.desks.leave_meeting_room(occupant_id)
+            self.set_agent_location(occupant_id, "desk_area")
+            self.set_agent_status(occupant_id, "at_desk", True)
             # Turn off meeting room if empty
             if self.desks.get_meeting_room().get_occupant_count() == 0:
                 self.lighting.turn_off_light("meeting_room")
@@ -370,6 +469,52 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         elif action_type == "depart":
             self._handle_occupant_departure(occupant_id)
 
+        elif action_type == "move_to":
+            # Move agent to a different location
+            location = params.get("location")
+            if location:
+                success = self.set_agent_location(occupant_id, location)
+                if success:
+                    # Update status based on destination
+                    if location == "desk_area":
+                        self.set_agent_status(occupant_id, "at_desk", True)
+                        self.set_agent_status(occupant_id, "on_break", False)
+                    elif location == "break_area":
+                        self.set_agent_status(occupant_id, "at_desk", False)
+                    elif location == "meeting_room":
+                        self.set_agent_status(occupant_id, "at_desk", False)
+                    elif location == "shared_area":
+                        # Still working, just at shared area
+                        pass
+
+        # Handle break/lunch actions with location tracking
+        elif action_type == "go_to_lunch":
+            self.set_agent_status(occupant_id, "at_lunch", True)
+            self.set_agent_status(occupant_id, "at_desk", False)
+            self.set_agent_location(occupant_id, "break_area")
+
+        elif action_type == "go_out_for_lunch":
+            self.set_agent_status(occupant_id, "at_lunch", True)
+            self.set_agent_status(occupant_id, "at_desk", False)
+            self.set_agent_status(occupant_id, "out_of_office", True)
+            self._agent_locations[occupant_id] = "outside"  # Outside the building
+
+        elif action_type == "return_from_lunch":
+            self.set_agent_status(occupant_id, "at_lunch", False)
+            self.set_agent_status(occupant_id, "at_desk", True)
+            self.set_agent_status(occupant_id, "out_of_office", False)
+            self.set_agent_location(occupant_id, "desk_area")
+
+        elif action_type == "take_break":
+            self.set_agent_status(occupant_id, "on_break", True)
+            self.set_agent_status(occupant_id, "at_desk", False)
+            self.set_agent_location(occupant_id, "break_area")
+
+        elif action_type == "return_from_break":
+            self.set_agent_status(occupant_id, "on_break", False)
+            self.set_agent_status(occupant_id, "at_desk", True)
+            self.set_agent_location(occupant_id, "desk_area")
+
     def _handle_occupant_departure(self, occupant_id: str) -> None:
         """Handle an occupant leaving the building."""
         self._present_occupants[occupant_id] = False
@@ -386,6 +531,10 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         # Release any shared equipment
         self.equipment.release_occupant_equipment(occupant_id)
+
+        # Clear location
+        if occupant_id in self._agent_locations:
+            del self._agent_locations[occupant_id]
 
     def resolve_votes(self) -> Tuple[float, float]:
         """
@@ -437,6 +586,91 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         """Check if occupant is present."""
         return self._present_occupants.get(occupant_id, False)
 
+    def _get_default_agent_status(self) -> Dict[str, bool]:
+        """Get default agent status (at desk, not on break/lunch)."""
+        return {
+            "at_desk": True,
+            "at_lunch": False,
+            "on_break": False,
+            "out_of_office": False,
+        }
+
+    def get_agent_status(self, occupant_id: str) -> Dict[str, bool]:
+        """Get agent's current status (at_desk, at_lunch, on_break, out_of_office)."""
+        if occupant_id not in self._agent_status:
+            self._agent_status[occupant_id] = self._get_default_agent_status()
+        return self._agent_status[occupant_id].copy()
+
+    def set_agent_status(self, occupant_id: str, status_key: str, value: bool) -> None:
+        """
+        Set a specific agent status flag.
+
+        Args:
+            occupant_id: Agent ID
+            status_key: One of "at_desk", "at_lunch", "on_break", "out_of_office"
+            value: True/False
+        """
+        if occupant_id not in self._agent_status:
+            self._agent_status[occupant_id] = self._get_default_agent_status()
+        if status_key in self._agent_status[occupant_id]:
+            self._agent_status[occupant_id][status_key] = value
+
+    # ---------------------------------------------------------------------------
+    # Location Tracking Methods
+    # ---------------------------------------------------------------------------
+
+    def get_agent_location(self, occupant_id: str) -> str:
+        """Get agent's current location. Defaults to 'desk_area' if not set."""
+        return self._agent_locations.get(occupant_id, "desk_area")
+
+    def set_agent_location(self, occupant_id: str, location: str) -> bool:
+        """
+        Set agent's current location.
+
+        Args:
+            occupant_id: Agent ID
+            location: Location name (must be in office_locations)
+
+        Returns:
+            True if location was valid and set, False otherwise
+        """
+        if location not in self._office_locations:
+            return False
+
+        self._agent_locations[occupant_id] = location
+
+        # Update agent status based on location
+        if location == "desk_area":
+            self.set_agent_status(occupant_id, "at_desk", True)
+        else:
+            self.set_agent_status(occupant_id, "at_desk", False)
+
+        if location == "break_area":
+            # If moving to break area, they may be taking break or going to lunch
+            # The specific action (take_break, go_to_lunch) should set the right flag
+            pass
+
+        return True
+
+    def get_available_locations(self) -> List[str]:
+        """Get list of all available location names."""
+        return list(self._office_locations.keys())
+
+    def get_location_info(self, location: str) -> Optional[Dict[str, Any]]:
+        """Get information about a specific location."""
+        return self._office_locations.get(location)
+
+    def get_all_locations_info(self) -> Dict[str, Dict[str, Any]]:
+        """Get information about all locations."""
+        return self._office_locations.copy()
+
+    def get_agents_at_location(self, location: str) -> List[str]:
+        """Get list of agent IDs at a specific location."""
+        return [
+            agent_id for agent_id, loc in self._agent_locations.items()
+            if loc == location and self._present_occupants.get(agent_id, False)
+        ]
+
     def get_present_occupant_ids(self) -> List[str]:
         """Get list of present occupant IDs."""
         return [oid for oid, present in self._present_occupants.items() if present]
@@ -484,6 +718,8 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         self._thermostat_votes.clear()
         self._window_votes.clear()
         self._present_occupants.clear()
+        self._agent_status.clear()  # Reset all agent status
+        self._agent_locations.clear()  # Reset all agent locations
         self.desks.reset_all()
         self.equipment.reset_all()
         self.lighting.reset_all()
