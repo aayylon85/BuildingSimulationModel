@@ -14,7 +14,7 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from openai import OpenAI, APIError, APIConnectionError
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError
 from agents import Agent, Runner
 
 from bsm.agents.skeleton import (
@@ -26,8 +26,10 @@ from bsm.agents.skeleton import (
     LunchPlan,
     BreakPlan,
     StepDecisions,
+    DeskSelectionDecision,
     SimContext,
     build_step_agent,
+    build_arrival_agent,
     build_day_planner_agent,
     DEFAULT_AGENT_MODEL,
     DEFAULT_EMBED_MODEL,
@@ -50,6 +52,7 @@ from bsm.agents.cognition.modules import (
 )
 from bsm.agents.cognition.conversation import (
     consultation_conversation,
+    agent_conversation,
     record_agreement_to_memory,
     ConsultationOutcome,
     ConversationResult,
@@ -58,7 +61,63 @@ from bsm.agents.memory.stream import MemoryStream, MemoryNode
 from bsm.agents.equipment_manager import EquipmentManager
 from bsm.agents.lighting_manager import LightingManager
 from bsm.agents.desk_manager import DeskManager
-from bsm.agents.simulation_adapter import ZoneStateProvider, ProductionSimulationAdapter
+from bsm.agents.simulation_adapter import (
+    ZoneStateProvider,
+    ProductionSimulationAdapter,
+    convert_step_decisions_to_actions,
+)
+
+
+# ---------------------------------------------------------------------------
+# Async Retry Helper for OpenAI API Calls
+# ---------------------------------------------------------------------------
+
+async def run_with_retry(
+    agent: Agent,
+    prompt: str,
+    context: Any = None,
+    max_turns: int = 5,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+):
+    """
+    Run an agent with exponential backoff retry for transient API failures.
+
+    Handles:
+    - RateLimitError (429): Rate limit exceeded
+    - APIError (5xx): Server errors
+    - APIConnectionError: Network issues
+
+    Args:
+        agent: The OpenAI Agent to run
+        prompt: The prompt to send
+        context: Optional SimContext
+        max_turns: Maximum agent turns
+        max_retries: Maximum retry attempts (default: 3)
+        base_delay: Initial delay in seconds (default: 1.0)
+
+    Returns:
+        Runner result on success
+
+    Raises:
+        Last exception if all retries fail
+    """
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            if context:
+                return await Runner.run(agent, prompt, context=context, max_turns=max_turns)
+            else:
+                return await Runner.run(agent, prompt, max_turns=max_turns)
+        except (RateLimitError, APIError, APIConnectionError) as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                # Exponential backoff with jitter
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                print(f"[RETRY] API call failed (attempt {attempt + 1}/{max_retries}): {type(e).__name__}. "
+                      f"Retrying in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+    raise last_exception
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +136,9 @@ class DecisionCheckpointManager:
         self._last_hourly_check: Dict[str, datetime] = {}
         # Track which events have been processed per agent
         self._processed_events: Dict[str, set] = {}
+        # Track when agents started lunch/break for return checkpoints
+        self._lunch_started: Dict[str, datetime] = {}
+        self._break_started: Dict[str, datetime] = {}
 
     def should_checkpoint(
         self,
@@ -98,8 +160,10 @@ class DecisionCheckpointManager:
             - "meeting_start:{title}": Meeting is starting
             - "meeting_end:{title}": Meeting is ending
             - "lunch_time": Time for planned lunch
+            - "lunch_return": Time to return from lunch (30-60 min after start)
             - "morning_break": Time for morning break
             - "afternoon_break": Time for afternoon break
+            - "break_return": Time to return from break (10-20 min after start)
             - "": No checkpoint needed
         """
         if agent_id not in self._processed_events:
@@ -110,6 +174,20 @@ class DecisionCheckpointManager:
         if last_check is None or (current_time - last_check).total_seconds() >= 3600:
             self._last_hourly_check[agent_id] = current_time
             return True, "hourly"
+
+        # Check lunch return checkpoint (30-60 min after start)
+        if agent_id in self._lunch_started:
+            minutes = (current_time - self._lunch_started[agent_id]).total_seconds() / 60
+            if 30 <= minutes <= 60:
+                del self._lunch_started[agent_id]
+                return True, "lunch_return"
+
+        # Check break return checkpoint (10-20 min after start)
+        if agent_id in self._break_started:
+            minutes = (current_time - self._break_started[agent_id]).total_seconds() / 60
+            if 10 <= minutes <= 20:
+                del self._break_started[agent_id]
+                return True, "break_return"
 
         # If no daily plan, only use hourly checkpoints
         if not daily_plan:
@@ -189,7 +267,110 @@ class DecisionCheckpointManager:
     def reset_for_new_day(self, agent_id: str) -> None:
         """Reset checkpoint tracking for a new day."""
         self._processed_events[agent_id] = set()
+        # Clear lunch/break tracking
+        if agent_id in self._lunch_started:
+            del self._lunch_started[agent_id]
+        if agent_id in self._break_started:
+            del self._break_started[agent_id]
         # Keep hourly check - it will naturally reset when >1 hour passes
+
+
+def _validate_break_times(plan: DailyPlan) -> DailyPlan:
+    """
+    Validate and adjust break times to not conflict with meetings.
+
+    If a break time overlaps with a meeting, clear that break from the plan.
+    The agent can reschedule during their decision checkpoints.
+
+    Args:
+        plan: The daily plan from the planner agent
+
+    Returns:
+        Adjusted plan with conflicting breaks removed
+    """
+    if not plan.meetings:
+        return plan
+
+    def parse_time(time_str: str) -> Optional[datetime]:
+        """Parse HH:MM time string to datetime for comparison."""
+        try:
+            return datetime.strptime(time_str, "%H:%M")
+        except (ValueError, TypeError):
+            return None
+
+    def times_conflict(break_time_str: str, meeting_start: str, meeting_end: str) -> bool:
+        """Check if break time falls within meeting time range."""
+        break_time = parse_time(break_time_str)
+        meeting_start_time = parse_time(meeting_start)
+        meeting_end_time = parse_time(meeting_end)
+
+        if not all([break_time, meeting_start_time, meeting_end_time]):
+            return False
+
+        # Add 15-minute buffer around meetings
+        buffer = timedelta(minutes=15)
+        meeting_start_with_buffer = meeting_start_time - buffer
+        meeting_end_with_buffer = meeting_end_time + buffer
+
+        return meeting_start_with_buffer <= break_time <= meeting_end_with_buffer
+
+    # Check morning break
+    if plan.morning_break and plan.morning_break.preferred_time:
+        for meeting in plan.meetings:
+            start_iso = meeting.start_datetime_iso
+            end_iso = meeting.end_datetime_iso
+            # Extract HH:MM from ISO datetime
+            if start_iso and end_iso:
+                meeting_start = start_iso.split('T')[1][:5] if 'T' in start_iso else start_iso
+                meeting_end = end_iso.split('T')[1][:5] if 'T' in end_iso else end_iso
+                if times_conflict(plan.morning_break.preferred_time, meeting_start, meeting_end):
+                    print(f"  [VALIDATION] Morning break at {plan.morning_break.preferred_time} conflicts with meeting, removing")
+                    plan.morning_break = None
+                    break
+
+    # Check afternoon break
+    if plan.afternoon_break and plan.afternoon_break.preferred_time:
+        for meeting in plan.meetings:
+            start_iso = meeting.start_datetime_iso
+            end_iso = meeting.end_datetime_iso
+            if start_iso and end_iso:
+                meeting_start = start_iso.split('T')[1][:5] if 'T' in start_iso else start_iso
+                meeting_end = end_iso.split('T')[1][:5] if 'T' in end_iso else end_iso
+                if times_conflict(plan.afternoon_break.preferred_time, meeting_start, meeting_end):
+                    print(f"  [VALIDATION] Afternoon break at {plan.afternoon_break.preferred_time} conflicts with meeting, removing")
+                    plan.afternoon_break = None
+                    break
+
+    # Check lunch
+    if plan.lunch_plan and plan.lunch_plan.time:
+        for meeting in plan.meetings:
+            start_iso = meeting.start_datetime_iso
+            end_iso = meeting.end_datetime_iso
+            if start_iso and end_iso:
+                meeting_start = start_iso.split('T')[1][:5] if 'T' in start_iso else start_iso
+                meeting_end = end_iso.split('T')[1][:5] if 'T' in end_iso else end_iso
+                if times_conflict(plan.lunch_plan.time, meeting_start, meeting_end):
+                    print(f"  [VALIDATION] Lunch at {plan.lunch_plan.time} conflicts with meeting, adjusting")
+                    # Try to find a non-conflicting lunch time (12:00-14:00 range)
+                    for hour in [12, 13, 14, 11]:
+                        candidate = f"{hour:02d}:00"
+                        has_conflict = False
+                        for m in plan.meetings:
+                            s = m.start_datetime_iso
+                            e = m.end_datetime_iso
+                            if s and e:
+                                ms = s.split('T')[1][:5] if 'T' in s else s
+                                me = e.split('T')[1][:5] if 'T' in e else e
+                                if times_conflict(candidate, ms, me):
+                                    has_conflict = True
+                                    break
+                        if not has_conflict:
+                            plan.lunch_plan.time = candidate
+                            print(f"  [VALIDATION] Adjusted lunch time to {candidate}")
+                            break
+                    break
+
+    return plan
 
 
 def _create_agent_directories(
@@ -288,6 +469,12 @@ class LLMOccupantManager:
         self.config = config
         llm_config = config.get("llm_agents", {})
 
+        # Store agent model from config (used for all LLM agent builders)
+        self._agent_model = llm_config.get("agent_model", DEFAULT_AGENT_MODEL)
+
+        # Store API timeout from config (default 30 seconds per OpenAI best practices)
+        self._api_timeout = llm_config.get("api_timeout_seconds", 30.0)
+
         # Validate API connection (fail early, no fallback)
         self._validate_api_connection()
 
@@ -350,7 +537,10 @@ class LLMOccupantManager:
         )
 
         # Initialize embedding client (shared across agents)
-        self.embedder = EmbeddingClient(model=llm_config.get("embed_model", DEFAULT_EMBED_MODEL))
+        self.embedder = EmbeddingClient(
+            model=llm_config.get("embed_model", DEFAULT_EMBED_MODEL),
+            timeout=self._api_timeout,
+        )
 
         # Initialize calendar store (shared across agents)
         self.calendar = CalendarStore(calendar_db)
@@ -367,8 +557,8 @@ class LLMOccupantManager:
         self._step_agents: Dict[str, Agent] = {}
         self._planner_agents: Dict[str, Agent] = {}
         for agent_id in self._agent_ids:
-            self._step_agents[agent_id] = build_step_agent(agent_id)
-            self._planner_agents[agent_id] = build_day_planner_agent(agent_id)
+            self._step_agents[agent_id] = build_step_agent(agent_id, model=self._agent_model)
+            self._planner_agents[agent_id] = build_day_planner_agent(agent_id, model=self._agent_model)
 
         # Decision interval
         self._decision_interval_minutes = llm_config.get("decision_interval_minutes", 15)
@@ -380,6 +570,9 @@ class LLMOccupantManager:
 
         # Track last decision time per agent
         self._last_decision_time: Dict[str, datetime] = {}
+
+        # Track if decisions were made during current step (for progress reporting)
+        self._decisions_made_this_step: int = 0
 
         # Initialize checkpoint manager for event-triggered decisions
         self._checkpoint_manager = DecisionCheckpointManager()
@@ -589,8 +782,11 @@ class LLMOccupantManager:
             calendar=self.calendar,
             configured_agent_ids=list(self._agents.keys()),
         )
-        result = await Runner.run(planner_agent, prompt, context=context, max_turns=15)
+        result = await run_with_retry(planner_agent, prompt, context=context, max_turns=15)
         plan = result.final_output
+
+        # Validate break times don't conflict with meetings
+        plan = _validate_break_times(plan)
 
         # Record plan to memory
         await record_plan_to_memory(agent, plan, now)
@@ -1028,8 +1224,11 @@ Do NOT use calendar tools - just output your final DailyPlan now.
             calendar=self.calendar,
             configured_agent_ids=list(self._agents.keys()),
         )
-        result = await Runner.run(planner_agent, prompt, context=context, max_turns=5)
+        result = await run_with_retry(planner_agent, prompt, context=context, max_turns=5)
         plan = result.final_output
+
+        # Validate break times don't conflict with meetings
+        plan = _validate_break_times(plan)
 
         # Record plan to memory
         await record_plan_to_memory(agent, plan, now)
@@ -1245,6 +1444,9 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         Returns:
             Tuple of (equipment_power_w, lighting_power_w, thermostat_offset_c, window_fraction)
         """
+        # Reset decision counter for this step (used for progress reporting)
+        self._decisions_made_this_step = 0
+
         # Check for daily planning
         if self.should_run_daily_planning(now):
             self.plan_day(now.date(), now)
@@ -1269,6 +1471,7 @@ Do NOT use calendar tools - just output your final DailyPlan now.
                 should_decide, checkpoint_reason = self.should_make_decision(agent_id, now)
                 if force_all or should_decide:
                     self._make_agent_decision(agent_id, now, checkpoint_reason=checkpoint_reason or "forced")
+                    self._decisions_made_this_step += 1
 
         # Check for equipment auto-off (kitchen appliances like kettle, coffee machine)
         auto_off_list = self.equipment.check_all_auto_off(now)
@@ -1291,13 +1494,141 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         # Mark as present
         self.adapter.set_occupant_present(agent_id, True)
 
-        # Agent will choose their desk via choose_desk action based on preferences and memories
-        # Equipment and lights are NOT auto-turned on - agent decides via cognitive loop
         agent = self._agents.get(agent_id)
         if agent:
             # Set flag for perceive() to create arrival-related memories
             agent.set_just_arrived(True)
-            print(f"  {agent_id} will choose desk based on preferences and memories")
+
+            # Make desk selection decision via dedicated arrival agent
+            desk_decision = self._make_arrival_decision(agent_id, now)
+            if desk_decision:
+                # Apply desk selection
+                selected_desk = desk_decision.selected_desk
+                self.adapter.desks.assign_desk(agent_id, selected_desk)
+                self.adapter._desk_chosen_today[agent_id] = True
+                print(f"  {agent_id} selected {selected_desk}: {desk_decision.reasoning[:50]}...")
+
+                # Turn on equipment specified by the agent
+                for equipment_name in desk_decision.equipment_to_turn_on:
+                    # Map generic names to desk-specific equipment
+                    desk_suffix = selected_desk.split('_')[-1] if '_' in selected_desk else 'A'
+                    full_equipment_name = f"{equipment_name}_{desk_suffix}"
+                    self.adapter.equipment.set_state(full_equipment_name, True)
+                    print(f"    Turned on {full_equipment_name}")
+            else:
+                # Fallback: assign first available desk
+                available = self.adapter.desks.get_available_desks()
+                if available:
+                    fallback_desk = available[0]
+                    self.adapter.desks.assign_desk(agent_id, fallback_desk)
+                    self.adapter._desk_chosen_today[agent_id] = True
+                    print(f"  {agent_id} assigned to {fallback_desk} (fallback)")
+
+    def _make_arrival_decision(self, agent_id: str, now: datetime) -> Optional[DeskSelectionDecision]:
+        """
+        Make desk selection decision for arriving agent.
+
+        This uses a dedicated arrival agent to select the desk for the day.
+        The decision is made once and locked for the entire day.
+        """
+        try:
+            decision = asyncio.run(
+                self._make_arrival_decision_async(agent_id, now)
+            )
+            return decision
+        except Exception as e:
+            print(f"[LLM] {agent_id} arrival decision failed: {e}")
+            return None
+
+    async def _make_arrival_decision_async(
+        self,
+        agent_id: str,
+        now: datetime,
+    ) -> Optional[DeskSelectionDecision]:
+        """
+        Execute arrival agent to select desk (async).
+
+        Args:
+            agent_id: The agent arriving at work
+            now: Current simulation datetime
+
+        Returns:
+            DeskSelectionDecision with selected desk and equipment to turn on
+        """
+        agent = self._agents.get(agent_id)
+        if not agent:
+            print(f"[LLM] {agent_id}: Agent not found for arrival decision")
+            return None
+
+        # Get available desks and their features
+        available_desks = self.adapter.desks.get_available_desks()
+        desk_occupancy = self.adapter.desks.get_desk_occupancy()
+
+        # Build arrival context prompt
+        desk_info_lines = []
+        for desk_name in available_desks:
+            desk_info_lines.append(f"  - {desk_name}: Available")
+        for desk_name, occupant in desk_occupancy.items():
+            if occupant:
+                desk_info_lines.append(f"  - {desk_name}: Occupied by {occupant}")
+
+        desk_info = "\n".join(desk_info_lines) if desk_info_lines else "  No desk information available"
+
+        # Get agent's preferred desk from memories/traits if available
+        preferred_desk = agent.scratch.get("preferred_desk", "No specific preference")
+
+        prompt = f"""
+=== ARRIVAL AT WORK ===
+Time: {now.strftime('%H:%M')} on {now.strftime('%A, %Y-%m-%d')}
+
+=== WHO YOU ARE ===
+{agent.get_identity_stable_set()}
+
+=== YOUR DESK PREFERENCE ===
+{preferred_desk}
+
+=== DESK AVAILABILITY ===
+{desk_info}
+
+=== EQUIPMENT AT EACH DESK ===
+Each desk has: laptop, monitor, desk light
+
+Select your desk for today and specify which equipment to turn on.
+""".strip()
+
+        # Build and run arrival agent
+        arrival_agent = build_arrival_agent(agent_id, model=self._agent_model)
+
+        context = SimContext(
+            occupant_id=agent_id,
+            now=now,
+            simulation=self.adapter,
+            calendar=self.calendar,
+        )
+
+        try:
+            result = await run_with_retry(
+                arrival_agent,
+                prompt,
+                context=context,
+                max_turns=1,  # Simple decision, no tool calls needed
+            )
+
+            desk_decision: DeskSelectionDecision = result.final_output
+
+            # Validate selected desk is available
+            if desk_decision.selected_desk not in available_desks:
+                print(f"[LLM] {agent_id} selected unavailable desk {desk_decision.selected_desk}, using first available")
+                if available_desks:
+                    desk_decision.selected_desk = available_desks[0]
+                else:
+                    return None
+
+            return desk_decision
+
+        except Exception as e:
+            print(f"[LLM] {agent_id} arrival agent error: {e}")
+            return None
 
     def _handle_departure(self, agent_id: str, now: datetime) -> None:
         """Handle an agent departing from work."""
@@ -1311,7 +1642,7 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         agent_id: str,
         now: datetime,
         checkpoint_reason: str = "interval",
-    ) -> Optional[OccupantStepDecision]:
+    ) -> Optional[StepDecisions]:
         """
         Execute cognitive loop for agent decision (async - SDK best practice).
 
@@ -1321,6 +1652,9 @@ Do NOT use calendar tools - just output your final DailyPlan now.
             agent_id: The agent making the decision
             now: Current simulation datetime
             checkpoint_reason: Why decision is being made (hourly, meeting_start, lunch_time, etc.)
+
+        Returns:
+            StepDecisions object with structured decisions for all categories
         """
         agent = self._agents.get(agent_id)
         if not agent:
@@ -1402,7 +1736,7 @@ Do NOT use calendar tools - just output your final DailyPlan now.
             checkpoint_reason=checkpoint_reason,
         )
 
-        # 10. Call LLM via async Runner.run (SDK best practice)
+        # 10. Call LLM via async Runner.run with retry (OpenAI best practice)
         # max_turns=5 is sufficient for step decisions (minimal tool use)
         step_agent = self._step_agents[agent_id]
         context = SimContext(
@@ -1412,8 +1746,22 @@ Do NOT use calendar tools - just output your final DailyPlan now.
             calendar=self.calendar,
             configured_agent_ids=list(self._agents.keys()),
         )
-        result = await Runner.run(step_agent, prompt, context=context, max_turns=5)
-        decision = result.final_output
+        result = await run_with_retry(step_agent, prompt, context=context, max_turns=5)
+        step_decision: StepDecisions = result.final_output
+
+        # 10.5. Convert StepDecisions to OccupantAction list
+        actions = convert_step_decisions_to_actions(step_decision)
+
+        # 10.6. Create OccupantStepDecision wrapper for backward compatibility with adapter
+        decision = OccupantStepDecision(
+            occupant_id=step_decision.occupant_id,
+            datetime_iso=step_decision.timestamp,
+            location_zone=sim_state.get("current_location", "desk_area"),
+            current_desk=sim_state.get("current_desk"),
+            is_present=True,
+            actions=actions,
+            brief_rationale=f"Checkpoint: {checkpoint_reason}",
+        )
 
         # 11. Handle invitation responses (calendar access needed)
         for action in decision.actions:
@@ -1456,35 +1804,46 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         # 12. Apply decision to simulation
         self.adapter.apply_decision(decision)
 
-        # 12.5. Process any pending plan updates from the decision
-        pending_plan_updates = self.adapter.get_pending_plan_updates()
-        for plan_update in pending_plan_updates:
-            if plan_update.get("occupant_id") == agent_id:
-                updates = plan_update.get("updates", {})
-                reason = plan_update.get("reason", "Agent decision")
-                if updates:
-                    result = agent.update_daily_plan(updates, reason=reason, now=now)
-                    if result.get("updated"):
-                        print(f"[PLAN] {agent_id} updated plan: {reason}")
-                        if result.get("skipped_past_events"):
-                            print(f"[PLAN] {agent_id} skipped past events: {result['skipped_past_events']}")
+        # 12.25. Process pending conversations
+        pending_convs = self.adapter.get_pending_conversations()
+        for conv in pending_convs:
+            await self._process_conversation(
+                conv["initiator"], conv["target"], conv["topic"], now
+            )
 
-        # 13. Record decision to memory
-        await record_decision_to_memory(agent, decision, now)
+        # 12.3. Track lunch/break starts for return checkpoints
+        for action in decision.actions:
+            if action.action_type in ("go_to_lunch", "go_out_for_lunch"):
+                self._checkpoint_manager._lunch_started[agent_id] = now
+            elif action.action_type == "take_break":
+                self._checkpoint_manager._break_started[agent_id] = now
+
+        # 12.5. Process plan updates directly from StepDecisions
+        if step_decision.plan_update.action == "update" and step_decision.plan_update.updates:
+            updates = step_decision.plan_update.updates
+            reason = step_decision.plan_update.reasoning
+            result = agent.update_daily_plan(updates, reason=reason, now=now)
+            if result.get("updated"):
+                print(f"[PLAN] {agent_id} updated plan: {reason}")
+                if result.get("skipped_past_events"):
+                    print(f"[PLAN] {agent_id} skipped past events: {result['skipped_past_events']}")
+
+        # 13. Record decision to memory (using StepDecisions for structured reasoning)
+        await record_decision_to_memory(agent, step_decision, now)
 
         # 14. Update tracking
         self._last_decision_time[agent_id] = now
 
-        # 15. Log to file with memory context
-        self._log_decision(agent_id, now, decision, retrieved)
+        # 15. Log to file with memory context (using StepDecisions for structured output)
+        self._log_decision(agent_id, now, step_decision, retrieved, sim_state, checkpoint_reason)
 
-        # 16. Log to shared action log
+        # 16. Log to shared action log (using actions list)
         self._log_action(agent_id, decision, now)
 
         # 17. Save agent state
         agent.save()
 
-        return decision
+        return step_decision
 
     async def _maybe_consult_on_shared_action(
         self,
@@ -1663,6 +2022,86 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         except IOError as e:
             print(f"Warning: Failed to log consultation: {e}")
 
+    async def _process_conversation(
+        self,
+        initiator_id: str,
+        target_id: str,
+        topic: str,
+        now: datetime,
+    ) -> Optional[ConversationResult]:
+        """
+        Process a social conversation between agents.
+
+        Checks that both agents are at the same location before initiating.
+
+        Args:
+            initiator_id: Agent who started the conversation
+            target_id: Agent being talked to
+            topic: Conversation topic
+            now: Current simulation datetime
+
+        Returns:
+            ConversationResult if successful, None otherwise
+        """
+        initiator = self._agents.get(initiator_id)
+        target = self._agents.get(target_id)
+
+        if not initiator or not target:
+            print(f"[CONV] Cannot find agents: {initiator_id} or {target_id}")
+            return None
+
+        # Check same location
+        initiator_loc = self.adapter.get_agent_location(initiator_id)
+        target_loc = self.adapter.get_agent_location(target_id)
+        if initiator_loc != target_loc:
+            print(f"[CONV] {initiator_id} can't talk to {target_id} - different locations ({initiator_loc} vs {target_loc})")
+            return None
+
+        try:
+            result = await agent_conversation(
+                init_agent=initiator,
+                target_agent=target,
+                now=now,
+                calendar=self.calendar,
+            )
+            self._log_conversation(initiator_id, target_id, topic, result, now)
+            return result
+        except Exception as e:
+            print(f"[CONV] Conversation failed: {e}")
+            return None
+
+    def _log_conversation(
+        self,
+        initiator_id: str,
+        target_id: str,
+        topic: str,
+        result: ConversationResult,
+        now: datetime,
+    ) -> None:
+        """Log a conversation to the actions log."""
+        try:
+            log_path = self._actions_log_path
+            if not log_path or not os.path.exists(log_path):
+                return
+
+            timestamp = now.strftime('%Y-%m-%d %H:%M')
+
+            with open(log_path, 'a') as f:
+                f.write(f"\n[{timestamp}] CONVERSATION\n")
+                f.write(f"  Initiator: {initiator_id}\n")
+                f.write(f"  Target: {target_id}\n")
+                f.write(f"  Topic: {topic}\n")
+                f.write(f"  Turns: {len(result.utterances)}\n")
+                if result.summary:
+                    f.write(f"  Summary: {result.summary}\n")
+                f.write("  ---\n")
+                for utt in result.utterances:
+                    speaker_name = utt.speaker.split('_')[0].capitalize() if '_' in utt.speaker else utt.speaker
+                    f.write(f"  {speaker_name}: {utt.utterance[:100]}{'...' if len(utt.utterance) > 100 else ''}\n")
+
+        except IOError as e:
+            print(f"Warning: Failed to log conversation: {e}")
+
     def _make_agent_decision(
         self,
         agent_id: str,
@@ -1686,9 +2125,29 @@ Do NOT use calendar tools - just output your final DailyPlan now.
 
             # Log non-trivial decisions to console
             if decision:
-                non_trivial = [a for a in decision.actions if a.action_type != "no_op"]
+                non_trivial = []
+                # Check each category for non-trivial actions
+                if decision.thermostat.action != "leave_as_is":
+                    non_trivial.append(f"thermostat:{decision.thermostat.action}")
+                if decision.lighting.action != "leave_as_is":
+                    non_trivial.append(f"lighting:{decision.lighting.action}")
+                # Check equipment_decisions list for any non-trivial actions
+                for eq_dec in decision.equipment_decisions:
+                    if eq_dec.action != "leave_as_is":
+                        non_trivial.append(f"equipment:{eq_dec.equipment_name}:{eq_dec.action}")
+                if decision.location.action != "stay":
+                    non_trivial.append(f"location:{decision.location.action}")
+                if decision.conversation.action != "none":
+                    non_trivial.append(f"conversation:{decision.conversation.action}")
+                if decision.break_decision and decision.break_decision.action != "continue_working":
+                    non_trivial.append(f"break:{decision.break_decision.action}")
+                if decision.meeting_equipment and decision.meeting_equipment.action != "accept_current":
+                    non_trivial.append(f"meeting_equipment:{decision.meeting_equipment.action}")
+                if decision.plan_update.action != "keep_current":
+                    non_trivial.append(f"plan_update:{decision.plan_update.action}")
+
                 if non_trivial:
-                    actions_str = ", ".join(a.action_type for a in non_trivial)
+                    actions_str = ", ".join(non_trivial)
                     print(f"[LLM] {agent_id}: {actions_str}")
 
             return decision
@@ -1701,10 +2160,12 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         self,
         agent_id: str,
         now: datetime,
-        decision: OccupantStepDecision,
+        decision: StepDecisions,
         retrieved_memories: Optional[Dict[str, List[MemoryNode]]] = None,
+        sim_state: Optional[Dict[str, Any]] = None,
+        checkpoint_reason: str = "interval",
     ) -> None:
-        """Log a decision to the agent's decision log file with memory context."""
+        """Log a structured decision to the agent's decision log file with full context."""
         try:
             log_path = self._decision_log_paths.get(agent_id)
             if not log_path:
@@ -1712,22 +2173,64 @@ Do NOT use calendar tools - just output your final DailyPlan now.
             with open(log_path, 'a') as f:
                 timestamp = now.strftime('%Y-%m-%d %H:%M')
 
+                # Header with checkpoint info
+                f.write(f"\n{'='*70}\n")
+                f.write(f"[{timestamp}] CHECKPOINT: {checkpoint_reason}\n")
+                f.write(f"{'='*70}\n")
+
+                # State before decision
+                if sim_state:
+                    f.write(f"\n--- STATE BEFORE ---\n")
+                    f.write(f"Location: {sim_state.get('current_location', 'N/A')}\n")
+                    f.write(f"Desk: {sim_state.get('current_desk', 'N/A')}\n")
+                    f.write(f"Indoor Temp: {sim_state.get('indoor_temp_c', 'N/A')}C\n")
+                    equipment = sim_state.get('equipment_status', {}).get('items', {})
+                    if equipment:
+                        f.write(f"Equipment:\n")
+                        for eq, is_on in equipment.items():
+                            f.write(f"  {eq}: {'ON' if is_on else 'OFF'}\n")
+
+                # All category decisions with reasoning
+                f.write(f"\n--- DECISIONS ---\n")
+                f.write(f"Thermostat: {decision.thermostat.action}\n")
+                f.write(f"  Reason: {decision.thermostat.reasoning}\n")
+                if decision.thermostat.action == "adjust":
+                    f.write(f"  Direction: {decision.thermostat.adjustment_direction}, Amount: {decision.thermostat.adjustment_amount}\n")
+
+                f.write(f"Lighting: {decision.lighting.action}\n")
+                f.write(f"  Reason: {decision.lighting.reasoning}\n")
+
+                # Equipment decisions (list format)
+                f.write(f"Equipment Decisions: {len(decision.equipment_decisions)} items\n")
+                for eq_dec in decision.equipment_decisions:
+                    f.write(f"  - {eq_dec.equipment_name}: {eq_dec.action}\n")
+                    f.write(f"    Reason: {eq_dec.reasoning}\n")
+
+                f.write(f"Location: {decision.location.action}\n")
+                f.write(f"  Reason: {decision.location.reasoning}\n")
+                if decision.location.destination:
+                    f.write(f"  Destination: {decision.location.destination}\n")
+
+                f.write(f"Conversation: {decision.conversation.action}\n")
+                f.write(f"  Reason: {decision.conversation.reasoning}\n")
+
+                f.write(f"Plan Update: {decision.plan_update.action}\n")
+                f.write(f"  Reason: {decision.plan_update.reasoning}\n")
+
+                # Optional decisions
+                if decision.break_decision:
+                    f.write(f"Break: {decision.break_decision.action}\n")
+                    f.write(f"  Reason: {decision.break_decision.reasoning}\n")
+
                 # Log retrieved memories (cognitive context)
                 if retrieved_memories:
-                    f.write(f"\n[{timestamp}] Retrieved memories:\n")
+                    f.write(f"\n--- RETRIEVED MEMORIES ---\n")
                     for focal_pt, memories in retrieved_memories.items():
                         f.write(f"  '{focal_pt}': {len(memories)} memories\n")
-                        # Log first few memory descriptions for context
-                        for mem in memories[:3]:
+                        for mem in memories[:2]:
                             desc = mem.description[:80] + "..." if len(mem.description) > 80 else mem.description
                             f.write(f"    - {desc}\n")
 
-                # Log actions
-                for action in decision.actions:
-                    params_str = str(action.parameters) if action.parameters else "{}"
-                    f.write(f"{timestamp} | {action.action_type} | {params_str}\n")
-                if decision.brief_rationale:
-                    f.write(f"  Rationale: {decision.brief_rationale}\n")
         except IOError as e:
             print(f"Warning: Failed to log decision for {agent_id}: {e}")
 
@@ -1815,6 +2318,13 @@ Do NOT use calendar tools - just output your final DailyPlan now.
     def get_present_agents(self) -> List[str]:
         """Get list of currently present agent IDs."""
         return self.adapter.get_present_occupant_ids()
+
+    def had_decisions_this_step(self) -> bool:
+        """Check if any agent decisions were made during the current step.
+
+        Used by runner.py to track decision count for progress reporting.
+        """
+        return self._decisions_made_this_step > 0
 
     def get_daily_plan(self, agent_id: str) -> Optional[DailyPlan]:
         """Get the daily plan for an agent."""

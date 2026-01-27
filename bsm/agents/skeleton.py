@@ -126,65 +126,109 @@ class OccupantStepDecision(BaseModel):
 
 class ThermostatDecision(BaseModel):
     """Decision about thermostat adjustment based on how agent feels."""
-    action: Literal["adjust", "leave_as_is"]
-    reasoning: str = Field(description="How agent feels (hot/cold/comfortable) based on actual temp")
-    adjustment_direction: Optional[Literal["warmer", "cooler"]] = None
-    adjustment_amount: Optional[float] = Field(default=None, description="Degrees to adjust")
+    action: Literal["adjust", "leave_as_is"] = Field(
+        description="Whether to adjust the thermostat or leave it as is"
+    )
+    reasoning: str = Field(
+        description="How agent feels (hot/cold/comfortable) based on actual temperature"
+    )
+    adjustment_direction: Optional[Literal["warmer", "cooler"]] = Field(
+        default=None,
+        description="Direction to adjust: 'warmer' if feeling cold, 'cooler' if feeling hot"
+    )
+    adjustment_amount: Optional[float] = Field(
+        default=None,
+        description="Degrees (C) to adjust, e.g., 1.0 or 2.0"
+    )
 
 
 class LightingDecision(BaseModel):
     """Decision about lighting at current location."""
-    action: Literal["turn_on", "turn_off", "adjust_brightness", "leave_as_is"]
-    reasoning: str
-    target_device: Optional[str] = None
-    brightness_level: Optional[int] = Field(default=None, ge=0, le=100, description="Brightness 0-100%")
+    action: Literal["turn_on", "turn_off", "adjust_brightness", "leave_as_is"] = Field(
+        description="Lighting action to take"
+    )
+    reasoning: str = Field(description="Why this lighting action was chosen")
+    target_device: Optional[str] = Field(
+        default=None,
+        description="Light device name, e.g., 'desk_light' or 'meeting_room_light'"
+    )
+    brightness_level: Optional[int] = Field(
+        default=None, ge=0, le=100,
+        description="Brightness level 0-100% (only for adjust_brightness)"
+    )
 
 
 class EquipmentDecision(BaseModel):
-    """Decision about equipment use (kettle, coffee machine, etc.)."""
-    action: Literal["use", "turn_off", "leave_as_is"]
-    reasoning: str
-    equipment_name: Optional[str] = None
-    duration_minutes: Optional[int] = Field(default=None, description="For kitchen equipment auto-off")
+    """Decision about a single piece of equipment. Create one entry per equipment item."""
+    equipment_name: str = Field(
+        description="Single equipment item name, e.g., 'laptop_A' or 'monitor_A'. Do NOT combine names."
+    )
+    action: Literal["turn_on", "turn_off", "leave_as_is"] = Field(
+        description="What to do: turn_on (if OFF and needed), turn_off (if ON and not needed), leave_as_is"
+    )
+    reasoning: str = Field(
+        description="Brief explanation of why this action was chosen for this equipment"
+    )
 
 
 class LocationDecision(BaseModel):
     """Decision about moving to a different location."""
-    action: Literal["move", "stay"]
-    reasoning: str
-    destination: Optional[str] = Field(default=None, description="Target location: desk_area, meeting_room, break_area, shared_area")
+    action: Literal["move", "stay"] = Field(description="Whether to move to a different location or stay")
+    reasoning: str = Field(description="Why this location decision was made")
+    destination: Optional[str] = Field(
+        default=None,
+        description="Target location: desk_area, meeting_room, break_area, shared_area"
+    )
 
 
 class ConversationDecision(BaseModel):
     """Decision about initiating conversation with nearby agents."""
-    action: Literal["initiate", "none"]
-    reasoning: str
-    target_agent: Optional[str] = None
-    topic: Optional[str] = Field(default=None, description="Topic - not limited to thermostat")
+    action: Literal["initiate", "none"] = Field(description="Whether to start a conversation")
+    reasoning: str = Field(description="Why this conversation decision was made")
+    target_agent: Optional[str] = Field(default=None, description="Agent ID to talk to")
+    topic: Optional[str] = Field(
+        default=None,
+        description="Conversation topic - can be work, social, comfort, or any relevant subject"
+    )
 
 
 class BreakDecision(BaseModel):
-    """Decision about taking a break."""
-    action: Literal["take_break", "continue_working"]
-    reasoning: str
-    break_type: Optional[Literal["at_desk", "break_room"]] = None
-    activity: Optional[str] = Field(default=None, description="tea, coffee, snack, stretch, etc.")
+    """Decision about taking a break or returning from break/lunch."""
+    action: Literal["take_break", "continue_working", "return_from_lunch", "return_from_break"] = Field(
+        description="Whether to take a break, continue working, or return from break/lunch"
+    )
+    reasoning: str = Field(description="Why this break decision was made")
+    break_type: Optional[Literal["at_desk", "break_area"]] = Field(
+        default=None,
+        description="Where to take the break (only for take_break action)"
+    )
+    activity: Optional[str] = Field(
+        default=None,
+        description="Break activity: tea, coffee, snack, stretch, walk, etc."
+    )
 
 
 class MeetingEquipmentDecision(BaseModel):
     """Decision about equipment at meeting start/end (for meeting host)."""
-    action: Literal["request_change", "accept_current"]
-    reasoning: str
-    equipment_requests: Optional[List[str]] = Field(default=None, description="e.g., ['turn on projector', 'close blinds']")
+    action: Literal["request_change", "accept_current"] = Field(
+        description="Whether to request equipment changes or accept current state"
+    )
+    reasoning: str = Field(description="Why this meeting equipment decision was made")
+    equipment_requests: Optional[List[str]] = Field(
+        default=None,
+        description="List of equipment changes, e.g., ['turn on projector', 'close blinds']"
+    )
 
 
 class PlanUpdateDecision(BaseModel):
     """Decision about whether to update the daily plan based on current circumstances."""
-    action: Literal["update", "keep_current"]
+    action: Literal["update", "keep_current"] = Field(
+        description="Whether to update the daily plan or keep current"
+    )
     reasoning: str = Field(description="Why plan update is or isn't needed")
     updates: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Updates to apply: e.g., {'lunch_plan': {'location': 'go_out', 'time': '13:00', 'reasoning': '...'}, 'afternoon_break': {...}}"
+        description="Updates to apply: e.g., {'lunch_plan': {'location': 'go_out', 'time': '13:00'}, 'afternoon_break': {...}}"
     )
 
 
@@ -195,12 +239,31 @@ class StepDecisions(BaseModel):
     checkpoint_reason: str = Field(description="'hourly', 'meeting_start', 'meeting_end', 'lunch_time', 'morning_break', 'afternoon_break'")
     thermostat: ThermostatDecision
     lighting: LightingDecision
-    equipment: EquipmentDecision
+    equipment_decisions: List[EquipmentDecision] = Field(
+        default_factory=list,
+        description="List of decisions for each piece of equipment. One entry per item - do NOT combine names."
+    )
     location: LocationDecision
     conversation: ConversationDecision
     break_decision: Optional[BreakDecision] = Field(default=None, description="Only during break-eligible times")
     meeting_equipment: Optional[MeetingEquipmentDecision] = Field(default=None, description="Only at meeting boundaries for host")
     plan_update: PlanUpdateDecision = Field(description="Whether to update daily plan based on current circumstances")
+
+
+class DeskSelectionDecision(BaseModel):
+    """
+    One-time desk selection decision made upon arrival.
+
+    This is a separate decision from regular step decisions - it happens ONCE
+    when the agent arrives at work and locks in their desk for the entire day.
+    """
+    occupant_id: str
+    selected_desk: str = Field(description="The desk ID to claim for the day (e.g., 'Desk_A', 'Desk_B')")
+    reasoning: str = Field(description="Why this desk was chosen based on preferences, proximity to colleagues, window access, etc.")
+    equipment_to_turn_on: List[str] = Field(
+        default_factory=list,
+        description="Equipment to turn on immediately upon sitting down (e.g., ['laptop', 'monitor'])"
+    )
 
 
 # Clothing warmth levels for comfort model integration
@@ -239,14 +302,14 @@ class MeetingPlan(BaseModel):
 
 class LunchPlan(BaseModel):
     """Lunch planning details decided during daily planning."""
-    location: Literal["at_desk", "break_room", "go_out"]
+    location: Literal["at_desk", "break_area", "go_out"]
     time: str = Field(description="Planned lunch time in HH:MM format")
     reasoning: str = Field(description="Why this location/time was chosen based on preferences and schedule")
 
 
 class BreakPlan(BaseModel):
     """Break planning details decided during daily planning."""
-    location: Literal["at_desk", "break_room"]
+    location: Literal["at_desk", "break_area"]
     activity: str = Field(description="tea, coffee, walk, stretch, etc.")
     preferred_time: str = Field(description="Planned break time in HH:MM format")
     reasoning: str = Field(description="Why this break was planned based on habits and schedule")
@@ -312,8 +375,13 @@ class EmbeddingClient:
     Small wrapper around OpenAI embeddings endpoint with LRU caching.
     Caches embeddings to reduce API calls and costs.
     """
-    def __init__(self, model: str = DEFAULT_EMBED_MODEL, cache_size: int = 1000) -> None:
-        self.client = OpenAI()
+    def __init__(
+        self,
+        model: str = DEFAULT_EMBED_MODEL,
+        cache_size: int = 1000,
+        timeout: float = 30.0,
+    ) -> None:
+        self.client = OpenAI(timeout=timeout)
         self.model = model
         self._cache_size = cache_size
         self._cache: Dict[str, np.ndarray] = {}
@@ -1330,7 +1398,7 @@ def respond_to_invitation(
 # Agent factory
 # ---------------------------------------------------------------------------
 
-def build_step_agent(occupant_id: str) -> Agent[SimContext]:
+def build_step_agent(occupant_id: str, model: str = DEFAULT_AGENT_MODEL) -> Agent[SimContext]:
     """
     Agent used at decision checkpoints to decide occupant actions.
     Uses structured output OccupantStepDecision.
@@ -1339,6 +1407,10 @@ def build_step_agent(occupant_id: str) -> Agent[SimContext]:
     - Hourly (regular check-in)
     - At meeting start/end times
     - At planned lunch/break times
+
+    Args:
+        occupant_id: The agent's ID
+        model: The OpenAI model to use (default: DEFAULT_AGENT_MODEL from config)
     """
     instructions = f"""
 You are a simulated building occupant agent (ID: {occupant_id}).
@@ -1361,8 +1433,13 @@ Equipment:
 
 Location & Movement:
 - move_to: move to a different location (parameters: location)
-- choose_desk: select a desk ONCE when you arrive for the day (parameters: desk_id)
-  NOTE: You can only choose a desk once per day. After your initial choice, it remains your desk.
+  NOTE: Your desk was assigned when you arrived. You cannot change desks during the day.
+
+EQUIPMENT AWARENESS:
+- Your equipment status (ON/OFF) is shown in the state section of your prompt
+- You NEED your laptop and monitor ON to do your work
+- If equipment is OFF when you arrive or need to work, turn it on using equipment_set
+- Turn off equipment when leaving for the day to save energy
 
 Meetings:
 - attend_meeting: physically go to meeting room (parameters: meeting_title)
@@ -1372,7 +1449,7 @@ Lunch & Breaks:
 - go_to_lunch: have lunch in the break room (stay in building)
 - go_out_for_lunch: leave building for lunch (cafe, restaurant, walk)
 - return_from_lunch: return to work after lunch
-- take_break: take a short break (parameters: location - "at_desk" or "break_room")
+- take_break: take a short break (parameters: location - "at_desk" or "break_area")
 - return_from_break: return to work after break
 
 Social:
@@ -1380,8 +1457,9 @@ Social:
 
 THERMOSTAT - Focus on how you FEEL:
 - Check the actual indoor temperature and notice how you feel (too hot, too cold, comfortable)
-- If you feel TOO HOT: lower the COOLING setpoint
-- If you feel TOO COLD: raise the HEATING setpoint
+- If you feel TOO HOT: Request direction="cooler" - this LOWERS the cooling setpoint to get more cooling
+- If you feel TOO COLD: Request direction="warmer" - this RAISES the heating setpoint to get more heating
+- adjustment_amount: Use a positive number (e.g., 1.0 or 2.0 degrees)
 - Your personality affects sensitivity: some people run hot, others cold
 - Only adjust when genuinely uncomfortable - don't manage setpoints abstractly
 - Use your thermal preferences and memories to guide comfort decisions
@@ -1393,22 +1471,30 @@ LIGHTING - Consider your preferences and current needs:
 - Turn off lights when leaving an area or if natural light is adequate
 
 EQUIPMENT - Be mindful of energy:
-- Turn on equipment when you need it
-- Kitchen appliances (kettle, coffee machine, microwave) will auto-off after use
+- Turn on equipment when you need it (laptop, monitor must be ON to work)
 - Turn off equipment when done, especially shared equipment
 - Meeting room equipment (projector, phone) should be off when room is empty
 
+KITCHEN EQUIPMENT (in break_area):
+- For tea: use_appliance(appliance_name="kettle") - auto-off after 2 minutes
+- For coffee: use_appliance(appliance_name="coffee_machine") - auto-off after 10 minutes
+- For heating food: use_appliance(appliance_name="microwave") - auto-off after 5 minutes
+- These appliances turn off automatically, you don't need to turn them off manually
+
 BREAKS - Follow your daily plan and preferences:
 - At break checkpoints, consider taking a break based on your planned schedule
-- Choose location based on your preferences: at_desk (quick) or break_room (social, make tea/coffee)
+- Choose location based on your preferences: at_desk (quick) or break_area (social, make tea/coffee)
 - Your core memories about tea/coffee preferences should guide break behavior
 - Remember how you like your tea or coffee!
 
 LUNCH - Follow your daily plan:
 - At lunch checkpoint, take lunch according to your plan
 - "at_desk": Stay and eat at your desk
-- "break_room": Eat in the kitchen/break room (social)
+- "break_area": Eat in the kitchen/break area (social)
 - "go_out": Leave the building (nice weather, need fresh air, get food)
+- Your daily plan includes what food you brought today
+- If your food needs heating (leftovers, soup, etc.), use the microwave in break_area
+- If your food is cold (salad, sandwich), no heating needed
 
 MEETINGS - As host or attendee:
 - At meeting_start checkpoint: use attend_meeting to go to the meeting room
@@ -1448,26 +1534,99 @@ DECISION GUIDELINES:
 5. Consider other occupants for shared controls (thermostat, windows)
 6. Your relevant memories are retrieved and shown in the prompt
 
-Output your decision as JSON matching OccupantStepDecision schema.
-Include a brief_rationale explaining your reasoning.
+OUTPUT REQUIREMENTS:
+You MUST return a structured decision for EVERY category with reasoning:
+- thermostat: "adjust" or "leave_as_is" (with reasoning about how you feel)
+- lighting: "turn_on", "turn_off", "adjust_brightness", or "leave_as_is" (with reasoning)
+- equipment_decisions: A LIST of decisions, one for EACH piece of equipment
+  - Each entry: {"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "..."}
+  - Actions: "turn_on", "turn_off", or "leave_as_is"
+  - DO NOT combine equipment names - create separate entries for laptop, monitor, etc.
+- location: "move" or "stay" (with reasoning)
+- conversation: "initiate" or "none" (with reasoning)
+- plan_update: "update" or "keep_current" (with reasoning)
+
+EQUIPMENT DECISIONS EXAMPLE:
+```json
+"equipment_decisions": [
+  {"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "Need laptop for work"},
+  {"equipment_name": "monitor_A", "action": "turn_on", "reasoning": "Need monitor for work"}
+]
+```
+
+Every decision MUST include reasoning explaining WHY you chose that action.
+Your output MUST be valid JSON matching the StepDecisions schema.
 """.strip()
 
     return Agent(
         name=f"occupant_step_{occupant_id}",
         instructions=instructions,
-        model=DEFAULT_AGENT_MODEL,
+        model=model,
         model_settings=ModelSettings(reasoning_effort="medium"),  # Step decisions require cognitive reasoning
         tools=[
             get_current_datetime,
             list_shared_calendar,
         ],
-        output_type=AgentOutputSchema(OccupantStepDecision, strict_json_schema=False),
+        output_type=AgentOutputSchema(StepDecisions, strict_json_schema=False),
     )
 
-def build_day_planner_agent(occupant_id: str) -> Agent[SimContext]:
+
+def build_arrival_agent(occupant_id: str, model: str = DEFAULT_AGENT_MODEL) -> Agent[SimContext]:
+    """
+    Agent used ONCE upon arrival to select desk for the day.
+
+    This is a separate decision from regular step decisions. The agent
+    selects their desk based on availability, preferences, and colleague locations.
+    This desk assignment is LOCKED for the entire day.
+
+    Args:
+        occupant_id: The agent's ID
+        model: The OpenAI model to use (default: DEFAULT_AGENT_MODEL from config)
+    """
+    instructions = f"""
+You are a simulated building occupant agent (ID: {occupant_id}).
+
+You have just ARRIVED at work for the day. Your first task is to select your desk.
+
+IMPORTANT: This is a ONE-TIME decision. The desk you choose will be YOUR desk for
+the ENTIRE day. You cannot change it later.
+
+DECISION CRITERIA:
+Consider the following when choosing your desk:
+1. Your preferred desk (if you have one from habit or preference)
+2. Proximity to colleagues you work closely with
+3. Natural light and window access
+4. Quiet vs collaborative areas
+5. Which desks are currently available
+
+EQUIPMENT:
+After selecting your desk, specify which equipment to turn on immediately.
+Typically you'll want your laptop and monitor ON to start working.
+
+OUTPUT:
+- selected_desk: The desk ID you're claiming (e.g., "Desk_A", "Desk_B", "Desk_C")
+- reasoning: Explain WHY you chose this desk
+- equipment_to_turn_on: List equipment to activate (e.g., ["laptop", "monitor"])
+""".strip()
+
+    return Agent(
+        name=f"arrival_{occupant_id}",
+        instructions=instructions,
+        model=model,
+        model_settings=ModelSettings(reasoning_effort="low"),  # Simple desk selection
+        tools=[],  # No tools needed - state is provided in prompt
+        output_type=AgentOutputSchema(DeskSelectionDecision, strict_json_schema=False),
+    )
+
+
+def build_day_planner_agent(occupant_id: str, model: str = DEFAULT_AGENT_MODEL) -> Agent[SimContext]:
     """
     Agent used once per day to plan attendance and working hours.
     Uses structured output DailyPlan.
+
+    Args:
+        occupant_id: The agent's ID
+        model: The OpenAI model to use (default: DEFAULT_AGENT_MODEL from config)
     """
     instructions = f"""
 You are a simulated building occupant agent (ID: {occupant_id}).
@@ -1496,14 +1655,14 @@ Required DailyPlan fields (HH:MM format):
 LUNCH PLANNING:
 - Choose where to have lunch based on your preferences and today's schedule:
   * "at_desk": Quick working lunch, eat at your desk
-  * "break_room": Social lunch in the kitchen/break room
+  * "break_area": Social lunch in the kitchen/break area
   * "go_out": Leave the building (cafe, restaurant, walk)
 - Consider weather, meetings before/after lunch, and your energy level
 - Use your core memories about lunch habits to guide this decision
 
 BREAK PLANNING:
 - Plan morning break (typically 10:00-10:30) and afternoon break (typically 15:00-15:30)
-- Choose location: "at_desk" (quick) or "break_room" (social, make tea/coffee)
+- Choose location: "at_desk" (quick) or "break_area" (social, make tea/coffee)
 - Activity: tea, coffee, water, snack, stretch, walk
 - Use your core memories about tea/coffee preferences:
   * Do you prefer tea or coffee?
@@ -1527,7 +1686,7 @@ Your preferences, habits, and context are in the prompt. Output your DailyPlan w
     return Agent(
         name=f"occupant_day_{occupant_id}",
         instructions=instructions,
-        model=DEFAULT_AGENT_MODEL,
+        model=model,
         model_settings=ModelSettings(reasoning_effort="high"),  # Day planning requires thoughtful consideration
         tools=[
             get_current_datetime,

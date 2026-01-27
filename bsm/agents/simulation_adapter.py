@@ -10,10 +10,163 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from bsm.agents.skeleton import BuildingSimulationAdapter, OccupantStepDecision, OccupantAction
+from bsm.agents.skeleton import (
+    BuildingSimulationAdapter,
+    OccupantStepDecision,
+    OccupantAction,
+    StepDecisions,
+)
 from bsm.agents.equipment_manager import EquipmentManager
 from bsm.agents.lighting_manager import LightingManager
 from bsm.agents.desk_manager import DeskManager
+
+
+# ---------------------------------------------------------------------------
+# StepDecisions to OccupantAction Converter
+# ---------------------------------------------------------------------------
+
+# Kitchen appliances that use use_appliance action type
+KITCHEN_APPLIANCES = {"kettle", "coffee_machine", "microwave"}
+
+
+def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantAction]:
+    """
+    Convert structured StepDecisions to OccupantAction list for simulation.
+
+    This bridges the gap between:
+    - Structured output (mandatory category decisions with reasoning)
+    - Simulation adapter (OccupantAction list)
+
+    Args:
+        decision: StepDecisions from agent
+
+    Returns:
+        List of OccupantAction objects for simulation adapter
+    """
+    actions: List[OccupantAction] = []
+
+    # Thermostat
+    if decision.thermostat.action == "adjust":
+        direction = decision.thermostat.adjustment_direction
+        amount = decision.thermostat.adjustment_amount or 1.0
+        # Convert direction + amount to setpoint change
+        if direction == "warmer":
+            setpoint_delta = amount
+        elif direction == "cooler":
+            setpoint_delta = -amount
+        else:
+            setpoint_delta = 0
+        if setpoint_delta != 0:
+            actions.append(OccupantAction(
+                action_type="thermostat_adjust",
+                parameters={
+                    "direction": direction,
+                    "amount": amount,
+                    "setpoint_delta_c": setpoint_delta,
+                },
+                confidence=0.8,
+            ))
+
+    # Lighting
+    if decision.lighting.action in ("turn_on", "turn_off", "adjust_brightness"):
+        light_on = decision.lighting.action in ("turn_on", "adjust_brightness")
+        actions.append(OccupantAction(
+            action_type="lights_set",
+            parameters={
+                "action": decision.lighting.action,
+                "target": decision.lighting.target_device or "desk_light",
+                "on": light_on,
+                "brightness": decision.lighting.brightness_level,
+            },
+            confidence=0.8,
+        ))
+
+    # Equipment - process each decision separately
+    for eq_decision in decision.equipment_decisions:
+        if eq_decision.action == "turn_on":
+            equipment_name = eq_decision.equipment_name
+            if equipment_name.lower() in KITCHEN_APPLIANCES:
+                actions.append(OccupantAction(
+                    action_type="use_appliance",
+                    parameters={"appliance_name": equipment_name},
+                    confidence=0.8,
+                ))
+            else:
+                actions.append(OccupantAction(
+                    action_type="equipment_set",
+                    parameters={"equipment_name": equipment_name, "on": True},
+                    confidence=0.8,
+                ))
+        elif eq_decision.action == "turn_off":
+            actions.append(OccupantAction(
+                action_type="equipment_set",
+                parameters={"equipment_name": eq_decision.equipment_name, "on": False},
+                confidence=0.8,
+            ))
+
+    # Location
+    if decision.location.action == "move" and decision.location.destination:
+        actions.append(OccupantAction(
+            action_type="move_to",
+            parameters={"destination": decision.location.destination},
+            confidence=0.8,
+        ))
+
+    # Conversation
+    if decision.conversation.action == "initiate":
+        actions.append(OccupantAction(
+            action_type="initiate_conversation",
+            parameters={
+                "target_agent": decision.conversation.target_agent,  # Match schema field name
+                "topic": decision.conversation.topic,
+            },
+            confidence=0.8,
+        ))
+
+    # Plan update
+    if decision.plan_update.action == "update" and decision.plan_update.updates:
+        actions.append(OccupantAction(
+            action_type="update_daily_plan",
+            parameters={
+                "updates": decision.plan_update.updates,
+                "reason": decision.plan_update.reasoning,
+            },
+            confidence=0.8,
+        ))
+
+    # Break decision (if present)
+    if decision.break_decision:
+        if decision.break_decision.action == "take_break":
+            actions.append(OccupantAction(
+                action_type="take_break",
+                parameters={
+                    "location": decision.break_decision.break_type,
+                    "activity": decision.break_decision.activity,
+                },
+                confidence=0.8,
+            ))
+        elif decision.break_decision.action == "return_from_lunch":
+            actions.append(OccupantAction(
+                action_type="return_from_lunch",
+                parameters={},
+                confidence=0.8,
+            ))
+        elif decision.break_decision.action == "return_from_break":
+            actions.append(OccupantAction(
+                action_type="return_from_break",
+                parameters={},
+                confidence=0.8,
+            ))
+
+    # If no actions, add explicit no_op
+    if not actions:
+        actions.append(OccupantAction(
+            action_type="no_op",
+            parameters={},
+            confidence=1.0,
+        ))
+
+    return actions
 
 
 # ---------------------------------------------------------------------------
@@ -417,9 +570,28 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         elif action_type == "thermostat_adjust":
             # Record vote for thermostat
+            # Support both direct setpoint and direction-based adjustment
             setpoint = params.get("setpoint_c")
+            direction = params.get("direction")
+            amount = params.get("amount", 1.0)
+
             if setpoint is not None:
+                # Direct setpoint provided
                 self._thermostat_votes.append((occupant_id, float(setpoint)))
+            elif direction:
+                # Direction-based adjustment
+                # Calculate desired setpoint based on direction and current base
+                if direction == "warmer":
+                    # Agent feels cold, wants higher heating setpoint
+                    desired_setpoint = self._base_heating_setpoint_c + float(amount)
+                    print(f"[THERMO] {occupant_id} feels cold, requesting warmer (+{amount}C)")
+                elif direction == "cooler":
+                    # Agent feels hot, wants lower cooling setpoint (represented as lower heating equivalent)
+                    desired_setpoint = self._base_heating_setpoint_c - float(amount)
+                    print(f"[THERMO] {occupant_id} feels hot, requesting cooler (-{amount}C)")
+                else:
+                    desired_setpoint = self._base_heating_setpoint_c
+                self._thermostat_votes.append((occupant_id, desired_setpoint))
 
         elif action_type == "window_set":
             # Record vote for window
@@ -486,11 +658,19 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         elif action_type == "move_to":
             # Move agent to a different location
-            # Note: Only updates location, not status. Status is memory-driven
-            # and should be set by explicit actions (go_to_lunch, take_break, etc.)
-            location = params.get("location")
+            location = params.get("destination")  # Matches LocationDecision.destination field
             if location:
                 self.set_agent_location(occupant_id, location)
+                # Auto-clear lunch/break status if returning to desk area
+                # This handles the case where agent moves to desk without explicit return action
+                if location == "desk_area":
+                    status = self.get_agent_status(occupant_id)
+                    if status.get("at_lunch"):
+                        self.set_agent_status(occupant_id, "at_lunch", False)
+                        self.set_agent_status(occupant_id, "at_desk", True)
+                    if status.get("on_break"):
+                        self.set_agent_status(occupant_id, "on_break", False)
+                        self.set_agent_status(occupant_id, "at_desk", True)
 
         # Handle break/lunch actions with location tracking
         elif action_type == "go_to_lunch":
@@ -536,7 +716,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         elif action_type == "initiate_conversation":
             # Record conversation intent - actual conversation handled by manager
             # This allows tracking of who wants to talk to whom about what
-            target_agent = params.get("agent_id")
+            target_agent = params.get("target_agent")  # Matches schema field name
             topic = params.get("topic", "general")
             if target_agent:
                 # Store the conversation request for manager to process
@@ -598,6 +778,10 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         # Clear location
         if occupant_id in self._agent_locations:
             del self._agent_locations[occupant_id]
+
+        # Clear agent status on departure (safety net for at_lunch, on_break, etc.)
+        if occupant_id in self._agent_status:
+            del self._agent_status[occupant_id]
 
     def resolve_votes(self) -> Tuple[float, float]:
         """
@@ -833,3 +1017,21 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         self.lighting.reset_all()
         self.equipment.reset_all()
         self._present_occupants.clear()
+
+    def save_locations(self, filepath: str) -> None:
+        """Save agent locations to JSON file for persistence."""
+        import json
+        with open(filepath, 'w') as f:
+            json.dump({
+                "locations": self._agent_locations.copy(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }, f, indent=2)
+
+    def load_locations(self, filepath: str) -> None:
+        """Load agent locations from JSON file."""
+        import json
+        from pathlib import Path
+        if Path(filepath).exists():
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+                self._agent_locations = data.get("locations", {})

@@ -25,6 +25,27 @@ logger = logging.getLogger(__name__)
 from bsm.agents.memory.stream import MemoryStream, MemoryNode, CoreMemoryStore
 
 
+def _parse_time_str(time_str: str) -> Optional[time]:
+    """
+    Parse a HH:MM time string to a time object.
+
+    Args:
+        time_str: Time string in HH:MM format
+
+    Returns:
+        time object, or None if parsing fails
+    """
+    if not time_str:
+        return None
+    try:
+        parts = time_str.split(":")
+        if len(parts) >= 2:
+            return time(int(parts[0]), int(parts[1]))
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
 @dataclass
 class AgentPaths:
     """Paths to agent data files."""
@@ -405,7 +426,11 @@ Works weekends: {self.scratch.get('works_weekends', False)}
         return self.scratch.get("daily_plan")
 
     def set_daily_plan(self, plan: Dict[str, Any]) -> None:
-        """Set daily plan in scratch."""
+        """Set daily plan in scratch. Also saves initial plan for history tracking."""
+        # Save initial plan if this is the first time setting it today
+        if "initial_daily_plan" not in self.scratch or self.scratch.get("initial_daily_plan", {}).get("date_iso") != plan.get("date_iso"):
+            self.scratch["initial_daily_plan"] = plan.copy()
+            self.scratch["plan_updates"] = []
         self.scratch["daily_plan"] = plan
 
     def update_daily_plan(self, updates: Dict[str, Any], reason: str, now: datetime) -> Dict[str, Any]:
@@ -424,7 +449,7 @@ Works weekends: {self.scratch.get('works_weekends', False)}
             Dict with update results: {"updated": bool, "skipped_past_events": list}
         """
         plan = self.get_daily_plan() or {}
-        current_time_str = now.strftime("%H:%M")
+        current_time = now.time()  # Use time object for proper comparison
         skipped_past_events = []
 
         # Filter meeting updates - can't modify past meetings
@@ -454,7 +479,8 @@ Works weekends: {self.scratch.get('works_weekends', False)}
         if "lunch_plan" in updates:
             lunch_plan = updates.get("lunch_plan", {})
             lunch_time_str = lunch_plan.get("time", "") if isinstance(lunch_plan, dict) else ""
-            if lunch_time_str and lunch_time_str < current_time_str:
+            lunch_time = _parse_time_str(lunch_time_str)
+            if lunch_time and lunch_time < current_time:
                 skipped_past_events.append(f"Lunch time '{lunch_time_str}' (already passed)")
                 del updates["lunch_plan"]
 
@@ -463,7 +489,8 @@ Works weekends: {self.scratch.get('works_weekends', False)}
             if break_key in updates:
                 break_plan = updates.get(break_key, {})
                 break_time_str = break_plan.get("preferred_time", "") if isinstance(break_plan, dict) else ""
-                if break_time_str and break_time_str < current_time_str:
+                break_time = _parse_time_str(break_time_str)
+                if break_time and break_time < current_time:
                     skipped_past_events.append(f"{break_key.replace('_', ' ').title()} at '{break_time_str}' (already passed)")
                     del updates[break_key]
 
@@ -486,6 +513,42 @@ Works weekends: {self.scratch.get('works_weekends', False)}
             "updated": bool(updates),
             "skipped_past_events": skipped_past_events,
         }
+
+    def save_plan_history(self, filepath: str = None) -> None:
+        """
+        Save complete plan history to dedicated file for review after simulation.
+
+        Creates a structured JSON file showing:
+        - Initial plan (as first created)
+        - Current plan (after all updates)
+        - All updates with timestamps and reasons
+        - Final state summary
+
+        Args:
+            filepath: Path to save history. Defaults to agent_folder/plan_history.json
+        """
+        import json
+        from pathlib import Path
+
+        if filepath is None:
+            filepath = Path(self.agent_folder) / "plan_history.json"
+
+        history = {
+            "agent_id": self.name,
+            "initial_plan": self.scratch.get("initial_daily_plan"),
+            "current_plan": self.scratch.get("daily_plan"),
+            "updates": self.scratch.get("plan_updates", []) + (
+                self.scratch.get("daily_plan", {}).get("update_reasons", [])
+            ),
+            "final_state": {
+                "arrival": self.scratch.get("daily_plan", {}).get("actual_arrival_time"),
+                "departure": self.scratch.get("daily_plan", {}).get("actual_departure_time"),
+                "meetings_attended": self.scratch.get("meetings_attended", []),
+            },
+        }
+
+        with open(filepath, 'w') as f:
+            json.dump(history, f, indent=2, default=str)
 
     # -------------------------
     # Daily Clothing
@@ -820,7 +883,7 @@ def copy_agent_base_type(
     base_type_folder: str,
     destination_folder: str,
     agent_id: str,
-) -> GenerativeAgent:
+) -> Path:
     """
     Copy an agent base type to a new destination for simulation.
 
@@ -833,7 +896,7 @@ def copy_agent_base_type(
         agent_id: Agent ID to assign
 
     Returns:
-        Initialized GenerativeAgent instance
+        Path to the copied agent folder (caller should create GenerativeAgent from this)
     """
     source = Path(base_type_folder)
     dest = Path(destination_folder)

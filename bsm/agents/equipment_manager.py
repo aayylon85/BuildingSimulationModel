@@ -49,9 +49,9 @@ DEFAULT_HEAT_GAIN_FRACTIONS = {
 
 # Auto-off durations for kitchen appliances (in minutes)
 KITCHEN_AUTO_OFF_MINUTES = {
-    "kettle": 5,        # Kettle boils then auto-off
+    "kettle": 2,           # Kettle boils then auto-off (was 5)
     "coffee_machine": 10,  # Coffee brews then auto-off
-    "microwave": 3,     # Microwave cycle then auto-off
+    "microwave": 5,        # Microwave cycle then auto-off (was 3)
 }
 
 

@@ -1357,6 +1357,7 @@ Include your equipment changes in your MeetingEquipmentDecision.
 def format_colleague_context(
     agent: "GenerativeAgent",
     present_agent_ids: List[str],
+    agents_by_location: Optional[Dict[str, List[str]]] = None,
 ) -> str:
     """
     Format information about colleagues present for the step prompt.
@@ -1367,27 +1368,47 @@ def format_colleague_context(
     Args:
         agent: The generative agent
         present_agent_ids: List of other agent IDs currently present
+        agents_by_location: Optional dict mapping location to list of agent IDs there
 
     Returns:
         Formatted string describing colleagues present
     """
     if not present_agent_ids:
-        return "No colleagues currently present."
+        return "No colleagues currently in the building."
 
-    lines = []
+    lines = ["Colleagues in the building:"]
     for other_id in present_agent_ids:
         rel_info = agent.get_relationship_info(other_id)
         if rel_info:
             familiarity = rel_info.get("familiarity", 0.5)
             sentiment = rel_info.get("sentiment", 0.5)
 
-            # Convert to descriptive terms
-            fam_desc = "high" if familiarity > 0.7 else ("moderate" if familiarity > 0.4 else "low")
-            sent_desc = "positive" if sentiment > 0.6 else ("neutral" if sentiment > 0.4 else "negative")
+            # Convert to descriptive terms with more detail
+            if familiarity > 0.7:
+                fam_desc = "you know them well"
+            elif familiarity > 0.4:
+                fam_desc = "you've worked together"
+            else:
+                fam_desc = "new colleague"
 
-            lines.append(f"- {other_id} (familiarity: {fam_desc}, sentiment: {sent_desc})")
+            if sentiment > 0.6:
+                sent_desc = "good relationship"
+            elif sentiment > 0.4:
+                sent_desc = "neutral"
+            else:
+                sent_desc = "some tension"
+
+            lines.append(f"  - {other_id} ({fam_desc}, {sent_desc})")
         else:
-            lines.append(f"- {other_id} (no relationship data)")
+            lines.append(f"  - {other_id} (haven't met yet)")
+
+    # Add location breakdown if provided
+    if agents_by_location:
+        lines.append("\nBy location:")
+        for loc_name, agents in agents_by_location.items():
+            others = [a for a in agents if a != agent.agent_id]
+            if others:
+                lines.append(f"  - {loc_name}: {', '.join(others)}")
 
     return "\n".join(lines)
 
@@ -1736,19 +1757,48 @@ def format_step_prompt(
     # Build colleague section
     if colleague_context is None:
         other_occupants = sim_state.get("other_occupants_present", [])
-        colleague_context = format_colleague_context(agent, other_occupants)
+        agents_by_loc = sim_state.get("agents_by_location", {})
+        colleague_context = format_colleague_context(agent, other_occupants, agents_by_loc)
 
     # Extract recent agreements from retrieved memories
     agreements_section = _extract_agreements_from_memories(retrieved_memories, now)
 
-    # Format equipment status readably
+    # Format equipment status readably - separate by category for clarity
     equipment_status = sim_state.get("equipment_status", {})
     equipment_items = equipment_status.get("items", {})
-    equipment_lines = []
+    current_desk = sim_state.get("current_desk", "")
+
+    # Separate equipment into desk vs shared
+    desk_equipment_lines = []
+    shared_equipment_lines = []
+
     for equipment_name, is_on in equipment_items.items():
         state_str = "ON" if is_on else "OFF"
-        equipment_lines.append(f"  - {equipment_name}: {state_str}")
-    equipment_section = "\n".join(equipment_lines) if equipment_lines else "  No equipment tracked"
+        # Check if this is desk equipment (contains desk letter suffix like _A, _B, _C)
+        is_desk_equipment = any(equipment_name.endswith(f"_{suffix}") for suffix in ['A', 'B', 'C', 'D', 'E'])
+        if is_desk_equipment:
+            desk_equipment_lines.append(f"    - {equipment_name}: {state_str}")
+        else:
+            shared_equipment_lines.append(f"    - {equipment_name}: {state_str}")
+
+    equipment_section_parts = []
+    if current_desk:
+        equipment_section_parts.append(f"  Your desk ({current_desk}):")
+        if desk_equipment_lines:
+            equipment_section_parts.extend(desk_equipment_lines)
+        else:
+            equipment_section_parts.append("    (no equipment assigned)")
+    if shared_equipment_lines:
+        equipment_section_parts.append("  Shared equipment:")
+        equipment_section_parts.extend(shared_equipment_lines)
+
+    equipment_section = "\n".join(equipment_section_parts) if equipment_section_parts else "  No equipment tracked"
+
+    # Add warning if work equipment is off
+    laptop_on = any(equipment_items.get(f"laptop_{s}", False) for s in ['A', 'B', 'C', 'D', 'E'])
+    monitor_on = any(equipment_items.get(f"monitor_{s}", False) for s in ['A', 'B', 'C', 'D', 'E'])
+    if current_desk and (not laptop_on or not monitor_on):
+        equipment_section += "\n  >>> NOTE: Your laptop/monitor may be OFF. Turn them ON to work."
 
     # Format lighting readably
     lighting = sim_state.get("lighting_conditions", {})
@@ -1812,6 +1862,15 @@ def format_step_prompt(
     if current_loc_info.get("description"):
         location_lines.append(f"  ({current_loc_info['description']})")
 
+    # Show who else is at YOUR current location (important for social awareness)
+    agents_at_current = agents_by_location.get(current_location, [])
+    # Filter out self
+    others_here = [a for a in agents_at_current if a != agent.agent_id]
+    if others_here:
+        location_lines.append(f"\n  >>> COLLEAGUES HERE WITH YOU: {', '.join(others_here)}")
+    else:
+        location_lines.append(f"\n  >>> You are alone at this location.")
+
     # Show equipment available at current location
     if location_equipment:
         location_lines.append("\nEquipment available here:")
@@ -1843,8 +1902,10 @@ def format_step_prompt(
         "meeting_start": "A meeting is starting",
         "meeting_end": "A meeting is ending",
         "lunch_time": "It's time for your planned lunch",
+        "lunch_return": "Time to return from lunch",
         "morning_break": "It's time for your morning break",
         "afternoon_break": "It's time for your afternoon break",
+        "break_return": "Time to return from break",
         "interval": "Regular decision interval",
         "first_decision": "First decision of the day",
         "forced": "Decision requested",
@@ -1855,15 +1916,21 @@ def format_step_prompt(
         meeting_name = checkpoint_reason.split(":", 1)[1]
         checkpoint_display += f" - '{meeting_name}'"
 
+    # Build equipment note if all equipment is OFF
+    equipment_note = ""
+    if equipment_items and not any(equipment_items.values()):
+        equipment_note = "\n>>> Note: Your equipment is ALL OFF. You need laptop and monitor ON to work."
+
     prompt = f"""
+╔══════════════════════════════════════════════════════════════╗
+║  CURRENT TIME: {now.strftime('%H:%M')} on {context['day_of_week']}, {now.strftime('%Y-%m-%d')}
+║  CHECKPOINT: {checkpoint_display.upper()}
+╚══════════════════════════════════════════════════════════════╝
+
 === WHO YOU ARE ===
 {context['identity']}
 
-=== DECISION CHECKPOINT ===
-Reason: {checkpoint_display}
-
 === CURRENT STATE ===
-DateTime: {context['datetime']} ({context['day_of_week']})
 Your status: {status_str}
 Indoor temperature: {sim_state.get('indoor_temp_c', 'N/A')}C
 Outdoor temperature: {sim_state.get('outdoor_temp_c', 'N/A')}C
@@ -1877,11 +1944,11 @@ Thermostat setpoints:
 === LOCATION ===
 {location_section}
 
-=== WORKSPACE ===
-Lighting:
+=== YOUR EQUIPMENT STATUS ===
+{equipment_section}{equipment_note}
+
+=== LIGHTING ===
 {lighting_section}
-Equipment:
-{equipment_section}
 
 === COLLEAGUES PRESENT ===
 {colleague_context}
@@ -1909,6 +1976,48 @@ Respect prior agreements with colleagues unless circumstances have changed signi
 If you want to go to lunch, use 'go_to_lunch' (stay in building) or 'go_out_for_lunch' (leave building).
 If you're at lunch or on break and ready to return, use 'return_from_lunch' or 'return_from_break'.
 For a short break (coffee, stretch), use 'take_break'.
+"""
+
+    # Add lunch context if it's lunch time
+    if checkpoint_reason.startswith("lunch_time"):
+        daily_plan = agent.get_daily_plan() or {}
+        lunch_plan = daily_plan.get('lunch_plan', {})
+        if lunch_plan:
+            lunch_location = lunch_plan.get('location', 'break_area')
+            lunch_food = lunch_plan.get('food_description', '')
+            lunch_context = f"\n=== LUNCH TIME ===\nYour planned lunch location: {lunch_location}"
+            if lunch_food:
+                lunch_context += f"\nFood you brought: {lunch_food}"
+                lunch_context += "\nIf your food needs heating (leftovers, soup, etc.), use the microwave in break_area."
+            prompt += lunch_context
+
+    # Add return guidance for lunch/break return checkpoints
+    if checkpoint_reason == "lunch_return":
+        prompt += """
+
+=== LUNCH RETURN ===
+Your lunch break is over. It's time to return to your desk.
+
+ACTION REQUIRED: Set break_decision.action to "return_from_lunch"
+
+This will:
+- Update your status from at_lunch to at_desk
+- Move you back to your desk area
+
+Remember to also turn your equipment back on (laptop, monitor) when you return!
+"""
+
+    if checkpoint_reason == "break_return":
+        prompt += """
+
+=== BREAK RETURN ===
+Your break is over. It's time to return to your desk.
+
+ACTION REQUIRED: Set break_decision.action to "return_from_break"
+
+This will:
+- Update your status from on_break to at_desk
+- Move you back to your desk area
 """
 
     # Add meeting host equipment context if applicable
@@ -2063,6 +2172,18 @@ Do NOT create new meetings that duplicate those listed above.
 Based on who you are and your memories, plan your day.
 Consider your typical schedule as a guideline, but you may adjust based on circumstances.
 
+IMPORTANT - BREAKS AND MEETINGS:
+- Do NOT schedule breaks (morning_break or afternoon_break) that overlap with your meetings
+- Check your confirmed meetings above BEFORE setting break times
+- If you have a meeting at 10:00, do NOT schedule morning_break at 10:00
+- If you have a meeting at 15:00, do NOT schedule afternoon_break at 15:00
+- Choose break times that are at least 30 minutes away from any meeting
+
+LUNCH PLANNING:
+- Similarly, avoid scheduling lunch during meetings
+- Check your meetings when choosing your lunch time
+
+CLOTHING:
 As part of your plan, decide what you'll wear today. Consider:
 - The weather forecast (outdoor temperature)
 - Any meetings you have (formality)
@@ -2075,11 +2196,14 @@ Provide a description of your outfit and its warmth level (very_light, light, me
 
 async def record_decision_to_memory(
     agent: "GenerativeAgent",
-    decision: Any,  # OccupantStepDecision
+    decision: Any,  # StepDecisions or OccupantStepDecision
     now: datetime,
 ) -> None:
     """
     Record a decision to the agent's memory stream.
+
+    Supports both StepDecisions (structured category decisions) and
+    OccupantStepDecision (legacy action list) for backward compatibility.
 
     NOTE: This function does NOT call agent.save(). The caller is responsible
     for calling agent.save() to persist the memory to disk. This is intentional
@@ -2087,36 +2211,97 @@ async def record_decision_to_memory(
 
     Args:
         agent: The generative agent
-        decision: The decision that was made
+        decision: The decision that was made (StepDecisions or OccupantStepDecision)
         now: Current datetime
     """
     if not agent.memory_stream:
         return
 
-    # Extract action descriptions
-    actions = getattr(decision, 'actions', [])
-    non_trivial = [a for a in actions if getattr(a, 'action_type', '') != 'no_op']
+    # Check if this is a StepDecisions (has category decisions) or OccupantStepDecision (has actions list)
+    if hasattr(decision, 'thermostat') and hasattr(decision, 'lighting'):
+        # StepDecisions - record each non-trivial decision with its reasoning
+        decisions_made = []
 
-    if not non_trivial:
-        return
+        if decision.thermostat.action != "leave_as_is":
+            desc = f"Thermostat: {decision.thermostat.action} - {decision.thermostat.reasoning}"
+            decisions_made.append(desc)
 
-    action_desc = ", ".join([getattr(a, 'action_type', 'unknown') for a in non_trivial])
-    rationale = getattr(decision, 'brief_rationale', '')
+        if decision.lighting.action != "leave_as_is":
+            desc = f"Lighting: {decision.lighting.action} - {decision.lighting.reasoning}"
+            decisions_made.append(desc)
 
-    description = f"I decided to: {action_desc}"
-    if rationale:
-        description += f". Reason: {rationale}"
+        # Process equipment_decisions list
+        for eq_dec in decision.equipment_decisions:
+            if eq_dec.action != "leave_as_is":
+                desc = f"Equipment ({eq_dec.equipment_name}): {eq_dec.action} - {eq_dec.reasoning}"
+                decisions_made.append(desc)
 
-    # Use LLM to assess importance of this decision
-    importance = await get_importance(agent, description, 5.0, use_llm=True)
-    agent.memory_stream.add_event(
-        description=description,
-        subject="I",
-        predicate="decided",
-        obj=action_desc,
-        now=now,
-        importance=importance,
-    )
+        if decision.location.action == "move":
+            desc = f"Moved to {decision.location.destination}: {decision.location.reasoning}"
+            decisions_made.append(desc)
+
+        if decision.conversation.action == "initiate":
+            desc = f"Started conversation: {decision.conversation.reasoning}"
+            decisions_made.append(desc)
+
+        if decision.plan_update.action == "update":
+            desc = f"Updated plan: {decision.plan_update.reasoning}"
+            decisions_made.append(desc)
+
+        if not decisions_made:
+            return  # No non-trivial decisions
+
+        # Create combined memory with all decisions
+        full_desc = f"At {now.strftime('%H:%M')}: " + "; ".join(decisions_made)
+        importance = await get_importance(agent, full_desc, 5.0, use_llm=True)
+
+        # Extract action types for predicate/object
+        action_types = []
+        if decision.thermostat.action != "leave_as_is":
+            action_types.append("thermostat")
+        # Check equipment_decisions list for any non-trivial actions
+        for eq_dec in decision.equipment_decisions:
+            if eq_dec.action != "leave_as_is":
+                action_types.append(f"equipment:{eq_dec.equipment_name}")
+                break  # Only add one "equipment" to avoid duplication
+        if decision.lighting.action != "leave_as_is":
+            action_types.append("lighting")
+        if decision.location.action == "move":
+            action_types.append("move")
+
+        agent.memory_stream.add_event(
+            description=full_desc,
+            subject="I",
+            predicate="decided",
+            obj=", ".join(action_types) if action_types else "no change",
+            now=now,
+            importance=importance,
+        )
+    else:
+        # Legacy OccupantStepDecision with actions list
+        actions = getattr(decision, 'actions', [])
+        non_trivial = [a for a in actions if getattr(a, 'action_type', '') != 'no_op']
+
+        if not non_trivial:
+            return
+
+        action_desc = ", ".join([getattr(a, 'action_type', 'unknown') for a in non_trivial])
+        rationale = getattr(decision, 'brief_rationale', '')
+
+        description = f"I decided to: {action_desc}"
+        if rationale:
+            description += f". Reason: {rationale}"
+
+        # Use LLM to assess importance of this decision
+        importance = await get_importance(agent, description, 5.0, use_llm=True)
+        agent.memory_stream.add_event(
+            description=description,
+            subject="I",
+            predicate="decided",
+            obj=action_desc,
+            now=now,
+            importance=importance,
+        )
 
 
 async def record_plan_to_memory(

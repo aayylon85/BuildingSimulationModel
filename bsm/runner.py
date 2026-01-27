@@ -246,20 +246,15 @@ def run_simulation_from_config(config_path):
                 # Get simulation datetime
                 sim_datetime = get_simulation_datetime(config, time_hours[t])
 
-                # Only query LLM at decision intervals
-                if t % steps_per_occupant_check == 0:
-                    # Run LLM agent step
-                    equipment_power, lighting_power, thermostat_offset, window_fraction = llm_manager.step(
-                        now=sim_datetime,
-                        force_all=True,
-                    )
+                # Call step() every timestep - let checkpoint system control when decisions happen
+                # Decisions trigger at: (1) hourly checkpoints, OR (2) plan events starting/ending
+                equipment_power, lighting_power, thermostat_offset, window_fraction = llm_manager.step(
+                    now=sim_datetime,
+                    force_all=False,  # Let DecisionCheckpointManager control decision timing
+                )
+                # Count only when actual decisions were made
+                if llm_manager.had_decisions_this_step():
                     llm_decision_count += 1
-                else:
-                    # Just get current state without querying LLM
-                    equipment_power = llm_manager.get_equipment_power_w()
-                    lighting_power = llm_manager.get_lighting_power_w()
-                    thermostat_offset = llm_manager.get_thermostat_offset()
-                    window_fraction = llm_manager.get_window_state()
 
                 # Update state based on LLM decisions
                 current_window_fraction = window_fraction
