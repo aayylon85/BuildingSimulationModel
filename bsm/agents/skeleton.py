@@ -49,6 +49,53 @@ DEFAULT_ACTION_HALF_LIFE_DAYS = 14.0
 # Retrieval limits (keep small to reduce token pressure)
 DEFAULT_TOP_K = 6
 
+# ---------------------------------------------------------------------------
+# Action Parameter Schema - Single source of truth for action parameters
+# ---------------------------------------------------------------------------
+# This defines the expected parameters for each action type.
+# Use this to validate parameters in both conversion and application.
+
+ACTION_PARAMS = {
+    "thermostat_adjust": {
+        "direction": str,       # "warmer", "cooler", or "maintain_current"
+        "amount": float,        # Degrees C to adjust
+        "setpoint_delta_c": float,  # Calculated delta (positive for warmer, negative for cooler)
+    },
+    "lights_set": {
+        "action": str,          # "turn_on", "turn_off", "adjust_brightness", "keep_current"
+        "target": str,          # Light device name
+        "on": bool,             # Whether light should be on
+        "brightness": int,      # Brightness level 0-100 (optional)
+    },
+    "equipment_set": {
+        "equipment_name": str,  # Equipment name (e.g., "laptop_A")
+        "on": bool,             # Whether equipment should be on
+    },
+    "move_to": {
+        "destination": str,     # Target location: desk_area, meeting_room, break_area, shared_area
+    },
+    "initiate_conversation": {
+        "target_agent": str,    # Agent ID to talk to
+        "topic": str,           # Conversation topic
+    },
+    "take_break": {
+        "location": str,        # Where to take break (at_desk, break_area)
+        "activity": str,        # Break activity (tea, coffee, walk, etc.)
+    },
+    "go_to_lunch": {},          # No parameters needed
+    "go_out_for_lunch": {},     # No parameters needed
+    "return_from_lunch": {},    # No parameters needed
+    "return_from_break": {},    # No parameters needed
+    "no_op": {},                # No parameters needed
+    "use_appliance": {
+        "appliance_name": str,  # Appliance to use (kettle, microwave, etc.)
+    },
+    "update_daily_plan": {
+        "updates": dict,        # Plan updates
+        "reason": str,          # Why the update
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Building simulation seam
@@ -126,8 +173,8 @@ class OccupantStepDecision(BaseModel):
 
 class ThermostatDecision(BaseModel):
     """Decision about thermostat adjustment based on how agent feels."""
-    action: Literal["adjust", "leave_as_is"] = Field(
-        description="Whether to adjust the thermostat or leave it as is"
+    action: Literal["adjust", "maintain_current"] = Field(
+        description="Whether to adjust the thermostat or maintain current setting"
     )
     reasoning: str = Field(
         description="How agent feels (hot/cold/comfortable) based on actual temperature"
@@ -144,7 +191,7 @@ class ThermostatDecision(BaseModel):
 
 class LightingDecision(BaseModel):
     """Decision about lighting at current location."""
-    action: Literal["turn_on", "turn_off", "adjust_brightness", "leave_as_is"] = Field(
+    action: Literal["turn_on", "turn_off", "adjust_brightness", "keep_current"] = Field(
         description="Lighting action to take"
     )
     reasoning: str = Field(description="Why this lighting action was chosen")
@@ -163,8 +210,8 @@ class EquipmentDecision(BaseModel):
     equipment_name: str = Field(
         description="Single equipment item name, e.g., 'laptop_A' or 'monitor_A'. Do NOT combine names."
     )
-    action: Literal["turn_on", "turn_off", "leave_as_is"] = Field(
-        description="What to do: turn_on (if OFF and needed), turn_off (if ON and not needed), leave_as_is"
+    action: Literal["turn_on", "turn_off", "keep_current"] = Field(
+        description="What to do: turn_on (if OFF and needed), turn_off (if ON and not needed), keep_current (no change needed)"
     )
     reasoning: str = Field(
         description="Brief explanation of why this action was chosen for this equipment"
@@ -1529,18 +1576,18 @@ LOCATIONS:
 DECISION GUIDELINES:
 1. Consider the CHECKPOINT REASON - it tells you why you're making a decision now
 2. Act according to your personality, preferences, and memories
-3. ALWAYS provide a decision, even if it's "leave as is" or "no_op"
+3. ALWAYS provide a decision, even if it's to maintain current state
 4. Prefer minimal actions when comfortable and no immediate needs
 5. Consider other occupants for shared controls (thermostat, windows)
 6. Your relevant memories are retrieved and shown in the prompt
 
 OUTPUT REQUIREMENTS:
 You MUST return a structured decision for EVERY category with reasoning:
-- thermostat: "adjust" or "leave_as_is" (with reasoning about how you feel)
-- lighting: "turn_on", "turn_off", "adjust_brightness", or "leave_as_is" (with reasoning)
+- thermostat: "adjust" or "maintain_current" (with reasoning about how you feel)
+- lighting: "turn_on", "turn_off", "adjust_brightness", or "keep_current" (with reasoning)
 - equipment_decisions: A LIST of decisions, one for EACH piece of equipment
-  - Each entry: {"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "..."}
-  - Actions: "turn_on", "turn_off", or "leave_as_is"
+  - Each entry: {{"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "..."}}
+  - Actions: "turn_on", "turn_off", or "keep_current"
   - DO NOT combine equipment names - create separate entries for laptop, monitor, etc.
 - location: "move" or "stay" (with reasoning)
 - conversation: "initiate" or "none" (with reasoning)
@@ -1549,8 +1596,8 @@ You MUST return a structured decision for EVERY category with reasoning:
 EQUIPMENT DECISIONS EXAMPLE:
 ```json
 "equipment_decisions": [
-  {"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "Need laptop for work"},
-  {"equipment_name": "monitor_A", "action": "turn_on", "reasoning": "Need monitor for work"}
+  {{"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "Need laptop for work"}},
+  {{"equipment_name": "monitor_A", "action": "turn_on", "reasoning": "Need monitor for work"}}
 ]
 ```
 

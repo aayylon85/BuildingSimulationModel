@@ -7,8 +7,12 @@ to the actual building simulation.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# Setup module logger
+logger = logging.getLogger(__name__)
 
 from bsm.agents.skeleton import (
     BuildingSimulationAdapter,
@@ -741,6 +745,16 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                     "updates": updates,
                     "reason": reason,
                 })
+
+        # Log action application (except no_op to reduce noise)
+        if action_type != "no_op":
+            location = self.get_agent_location(occupant_id)
+            status = self.get_agent_status(occupant_id)
+            status_flags = [k for k, v in status.items() if v]
+            logger.debug(
+                f"[ACTION] {occupant_id}: {action_type} | "
+                f"location={location} | status={status_flags} | params={params}"
+            )
 
     def get_pending_conversations(self) -> list:
         """Get and clear pending conversation requests."""

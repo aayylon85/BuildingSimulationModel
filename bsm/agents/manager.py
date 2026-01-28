@@ -761,6 +761,40 @@ class LLMOccupantManager:
         # Get meetings agent has already created or accepted
         my_meetings = self.calendar.get_agent_meetings(agent_id, day_start, day_end)
 
+        # Add meetings to agent memory for natural retrieval
+        if my_meetings and agent.memory_stream:
+            for meeting in my_meetings:
+                title = meeting.get("title", "Untitled meeting")
+                start_iso = meeting.get("start_iso", "")
+                end_iso = meeting.get("end_iso", "")
+                location = meeting.get("location", "meeting_room")
+                attendees = meeting.get("attendees", [])
+
+                # Format time nicely
+                try:
+                    start_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+                    end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+                    time_str = f"{start_dt.strftime('%H:%M')} to {end_dt.strftime('%H:%M')}"
+                except (ValueError, AttributeError):
+                    time_str = "scheduled time"
+
+                meeting_desc = f"I have a meeting '{title}' from {time_str} in {location}"
+                if attendees:
+                    other_attendees = [a for a in attendees if a != agent_id]
+                    if other_attendees:
+                        meeting_desc += f" with {', '.join(other_attendees)}"
+
+                # Add to memory with meeting-related keywords
+                agent.memory_stream.add_event(
+                    description=meeting_desc,
+                    subject="I",
+                    predicate="have meeting",
+                    obj=title,
+                    now=now,
+                    importance=5.0,  # Meetings are moderately important
+                )
+                print(f"[MEMORY] {agent_id}: Added meeting to memory - {title}")
+
         # Build planning prompt with cognitive context
         prompt = format_planning_prompt(
             agent=agent,
@@ -1513,7 +1547,7 @@ Do NOT use calendar tools - just output your final DailyPlan now.
                     # Map generic names to desk-specific equipment
                     desk_suffix = selected_desk.split('_')[-1] if '_' in selected_desk else 'A'
                     full_equipment_name = f"{equipment_name}_{desk_suffix}"
-                    self.adapter.equipment.set_state(full_equipment_name, True)
+                    self.adapter.equipment.set_equipment_state(full_equipment_name, True, agent_id)
                     print(f"    Turned on {full_equipment_name}")
             else:
                 # Fallback: assign first available desk
@@ -1712,7 +1746,7 @@ Select your desk for today and specify which equipment to turn on.
         pending_invitations = self.calendar.get_pending_invitations(agent_id)
 
         # Add focal point for meeting attendance only if meeting is imminent (within 10 min)
-        focal_points = get_decision_focal_points(sim_state)
+        focal_points = get_decision_focal_points(sim_state, checkpoint_reason)
         minutes_to_next = meeting_context.get("minutes_to_next_meeting")
         has_current_meeting = meeting_context.get("current_meeting") is not None
         if has_current_meeting or (minutes_to_next is not None and minutes_to_next <= 10):
@@ -1802,7 +1836,49 @@ Select your desk for today and specify which equipment to turn on.
         )
 
         # 12. Apply decision to simulation
+        # Capture location before applying decision for memory recording
+        previous_location = self.adapter.get_agent_location(agent_id)
+
         self.adapter.apply_decision(decision)
+
+        # 12.1. Record location changes to agent memory
+        new_location = self.adapter.get_agent_location(agent_id)
+        if new_location != previous_location:
+            # Determine what kind of move this was
+            location_actions = [a for a in decision.actions if a.action_type in (
+                "move_to", "go_to_lunch", "go_out_for_lunch", "return_from_lunch",
+                "take_break", "return_from_break", "attend_meeting", "leave_meeting"
+            )]
+            move_reason = ""
+            if location_actions:
+                move_action = location_actions[0]
+                if move_action.action_type == "go_to_lunch":
+                    move_reason = " to have lunch"
+                elif move_action.action_type == "go_out_for_lunch":
+                    move_reason = " to have lunch outside"
+                elif move_action.action_type == "return_from_lunch":
+                    move_reason = " after lunch"
+                elif move_action.action_type == "take_break":
+                    activity = move_action.parameters.get("activity", "break")
+                    move_reason = f" for a {activity}"
+                elif move_action.action_type == "return_from_break":
+                    move_reason = " after break"
+                elif move_action.action_type == "attend_meeting":
+                    move_reason = " for a meeting"
+                elif move_action.action_type == "leave_meeting":
+                    move_reason = " after the meeting ended"
+
+            # Record location change to agent memory
+            location_desc = f"I moved from {previous_location or 'unknown'} to {new_location}{move_reason}"
+            agent.memory_stream.add_event(
+                description=location_desc,
+                subject=agent_id,
+                predicate="moved to",
+                obj=new_location,
+                now=now,
+                importance=3.0,  # Low-medium importance for routine movement
+            )
+            print(f"[MEMORY] {agent_id}: {location_desc}")
 
         # 12.25. Process pending conversations
         pending_convs = self.adapter.get_pending_conversations()
@@ -1876,7 +1952,14 @@ Select your desk for today and specify which equipment to turn on.
         for action in decision.actions:
             if action.action_type == "thermostat_adjust":
                 shared_space_action = action
-                proposed_setpoint = action.parameters.get("setpoint_c")
+                # Calculate proposed setpoint from delta
+                # Actions use setpoint_delta_c (relative change), not setpoint_c (absolute)
+                delta = action.parameters.get("setpoint_delta_c", 0)
+                current_setpoint = sim_state.get("thermostat_setpoint_c", 21.0)
+                proposed_setpoint = current_setpoint + delta if delta else None
+                # Store the calculated setpoint back for later use
+                if proposed_setpoint is not None:
+                    action.parameters["_proposed_setpoint_c"] = proposed_setpoint
                 break
             elif action.action_type == "window_set":
                 shared_space_action = action
@@ -1910,9 +1993,51 @@ Select your desk for today and specify which equipment to turn on.
         if len(present_agents) <= 1:
             return decision
 
+        # ORGANIC CONVERSATIONS: Only consult if there's potential conflict
+        # Check if other agents have significantly different thermal preferences
+        if shared_space_action.action_type == "thermostat_adjust" and proposed_setpoint is not None:
+            initiator_pref = agent.scratch.get("thermal_comfort_c", 21.0)
+            has_potential_conflict = False
+
+            for other_agent in present_agents[1:]:  # Skip initiator
+                other_pref = other_agent.scratch.get("thermal_comfort_c", 21.0)
+                # Check if preferences differ significantly (> 1.5°C apart)
+                # or if proposed change moves away from other's preference
+                pref_diff = abs(initiator_pref - other_pref)
+                proposal_moves_away = (
+                    (proposed_setpoint > other_pref + 1.0 and initiator_pref > other_pref) or
+                    (proposed_setpoint < other_pref - 1.0 and initiator_pref < other_pref)
+                )
+                if pref_diff > 1.5 or proposal_moves_away:
+                    has_potential_conflict = True
+                    break
+
+            if not has_potential_conflict:
+                # No significant preference difference - allow action without consultation
+                # Record a brief notification to other agents' memories instead
+                for other_agent in present_agents[1:]:
+                    if other_agent.memory_stream:
+                        notification = f"{agent.first_name} adjusted the thermostat to {proposed_setpoint:.1f}°C"
+                        other_agent.memory_stream.add_event(
+                            description=notification,
+                            subject=agent.first_name,
+                            predicate="adjusted",
+                            obj="thermostat",
+                            now=now,
+                            importance=2.0,  # Low importance for minor changes
+                        )
+                print(f"[THERMO] {agent.agent_id} adjusting thermostat without consultation (no conflict detected)")
+                return decision
+
         # Build proposed action description
         if shared_space_action.action_type == "thermostat_adjust":
-            proposed_action = f"set thermostat to {proposed_setpoint}°C"
+            direction = shared_space_action.parameters.get("direction", "adjust")
+            delta = shared_space_action.parameters.get("setpoint_delta_c", 0)
+            current_setpoint = sim_state.get("thermostat_setpoint_c", 21.0)
+            if proposed_setpoint is not None:
+                proposed_action = f"adjust thermostat {direction} to {proposed_setpoint:.1f}°C (currently {current_setpoint:.1f}°C)"
+            else:
+                proposed_action = f"adjust thermostat {direction} by {abs(delta):.1f}°C"
         else:
             window_state = "open" if shared_space_action.parameters.get("open", False) else "close"
             proposed_action = f"{window_state} the window"
@@ -2127,13 +2252,13 @@ Select your desk for today and specify which equipment to turn on.
             if decision:
                 non_trivial = []
                 # Check each category for non-trivial actions
-                if decision.thermostat.action != "leave_as_is":
+                if decision.thermostat.action != "maintain_current":
                     non_trivial.append(f"thermostat:{decision.thermostat.action}")
-                if decision.lighting.action != "leave_as_is":
+                if decision.lighting.action != "keep_current":
                     non_trivial.append(f"lighting:{decision.lighting.action}")
                 # Check equipment_decisions list for any non-trivial actions
                 for eq_dec in decision.equipment_decisions:
-                    if eq_dec.action != "leave_as_is":
+                    if eq_dec.action != "keep_current":
                         non_trivial.append(f"equipment:{eq_dec.equipment_name}:{eq_dec.action}")
                 if decision.location.action != "stay":
                     non_trivial.append(f"location:{decision.location.action}")

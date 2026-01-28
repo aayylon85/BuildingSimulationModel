@@ -1065,12 +1065,14 @@ Generate an observation about {other_name}."""
 
 def get_decision_focal_points(
     sim_state: Dict[str, Any],
+    checkpoint_reason: Optional[str] = None,
 ) -> List[str]:
     """
-    Generate focal points for memory retrieval based on current state.
+    Generate focal points for memory retrieval based on current state and checkpoint reason.
 
     Args:
         sim_state: Current simulation state
+        checkpoint_reason: Why this decision checkpoint was triggered (e.g., 'hourly', 'meeting_start')
 
     Returns:
         List of focal point strings
@@ -1079,6 +1081,23 @@ def get_decision_focal_points(
         "what should I do right now",
         "my preferences and habits",
     ]
+
+    # Add checkpoint-specific focal points
+    if checkpoint_reason:
+        checkpoint_base = checkpoint_reason.split(":")[0]  # Handle "meeting_start:Meeting Name" format
+        checkpoint_focal_points = {
+            "hourly": ["my typical hourly routine"],
+            "first_decision": ["what I usually do when I first arrive at work", "my morning startup routine"],
+            "meeting_start": ["how I prepare for meetings", "my meeting habits"],
+            "meeting_end": ["what I do after meetings end", "refocusing after meetings"],
+            "lunch_time": ["my lunch preferences and habits", "where I like to eat lunch"],
+            "lunch_return": ["when I return from lunch", "my post-lunch routine"],
+            "morning_break": ["my morning break habits", "when I take coffee breaks"],
+            "afternoon_break": ["my afternoon break habits", "staying energized in the afternoon"],
+            "break_return": ["returning to work after breaks"],
+            "forced": ["urgent matters that need attention"],
+        }
+        focal_points.extend(checkpoint_focal_points.get(checkpoint_base, []))
 
     # Add context-specific focal points
     temp = sim_state.get("indoor_temp_c", 21.0)
@@ -1976,6 +1995,14 @@ Respect prior agreements with colleagues unless circumstances have changed signi
 If you want to go to lunch, use 'go_to_lunch' (stay in building) or 'go_out_for_lunch' (leave building).
 If you're at lunch or on break and ready to return, use 'return_from_lunch' or 'return_from_break'.
 For a short break (coffee, stretch), use 'take_break'.
+
+CONVERSATIONS:
+If colleagues are nearby, consider whether you want to talk to them naturally.
+- You might discuss the temperature if you're uncomfortable and want to see how others feel
+- You could chat about work, plans, or social topics
+- You don't need to consult others for minor thermostat adjustments - just make the change
+- If you're unsure if others would be affected, a quick conversation can help
+Use conversation.action="initiate" with a topic when you want to start a conversation.
 """
 
     # Add lunch context if it's lunch time
@@ -2222,17 +2249,17 @@ async def record_decision_to_memory(
         # StepDecisions - record each non-trivial decision with its reasoning
         decisions_made = []
 
-        if decision.thermostat.action != "leave_as_is":
+        if decision.thermostat.action != "maintain_current":
             desc = f"Thermostat: {decision.thermostat.action} - {decision.thermostat.reasoning}"
             decisions_made.append(desc)
 
-        if decision.lighting.action != "leave_as_is":
+        if decision.lighting.action != "keep_current":
             desc = f"Lighting: {decision.lighting.action} - {decision.lighting.reasoning}"
             decisions_made.append(desc)
 
         # Process equipment_decisions list
         for eq_dec in decision.equipment_decisions:
-            if eq_dec.action != "leave_as_is":
+            if eq_dec.action != "keep_current":
                 desc = f"Equipment ({eq_dec.equipment_name}): {eq_dec.action} - {eq_dec.reasoning}"
                 decisions_made.append(desc)
 
@@ -2257,14 +2284,14 @@ async def record_decision_to_memory(
 
         # Extract action types for predicate/object
         action_types = []
-        if decision.thermostat.action != "leave_as_is":
+        if decision.thermostat.action != "maintain_current":
             action_types.append("thermostat")
         # Check equipment_decisions list for any non-trivial actions
         for eq_dec in decision.equipment_decisions:
-            if eq_dec.action != "leave_as_is":
+            if eq_dec.action != "keep_current":
                 action_types.append(f"equipment:{eq_dec.equipment_name}")
                 break  # Only add one "equipment" to avoid duplication
-        if decision.lighting.action != "leave_as_is":
+        if decision.lighting.action != "keep_current":
             action_types.append("lighting")
         if decision.location.action == "move":
             action_types.append("move")
