@@ -1,9 +1,10 @@
 """
-Defines functions to create boundary conditions (schedules, weather) 
+Defines functions to create boundary conditions (schedules, weather)
 for the thermal simulation from a configuration dictionary.
 """
 import numpy as np
 from bsm.weather.generators import get_weather_generator
+from bsm.boundary.equipment_schedules import create_equipment_schedules
 
 def create_boundary_conditions(config, num_steps, time_hours):
     """
@@ -22,6 +23,8 @@ def create_boundary_conditions(config, num_steps, time_hours):
             - internal_gains_profile (np.array)
             - window_opening_profile (np.array)
             - weather_data (list[dict])
+            - equipment_power_profile (np.array)
+            - lighting_power_profile (np.array)
     """
     schedules = config['schedules']
     
@@ -67,11 +70,34 @@ def create_boundary_conditions(config, num_steps, time_hours):
 
         internal_gains_profile[i] += num_occupants_present * gain_per_occupant
 
-        
+    # --- Generate Equipment and Lighting Schedules ---
+    # Determine mode based on whether occupants are defined
+    # If occupants list is non-empty, use "simple" mode (occupant-presence-based)
+    # If occupants list is empty, use "baseline" mode (fixed schedule)
+    llm_enabled = config.get('llm_agents', {}).get('enabled', False)
+
+    if llm_enabled:
+        # LLM mode handles equipment/lighting separately via managers
+        # Return zero profiles (runner.py will use LLM manager values)
+        equipment_power_profile = np.zeros(num_steps)
+        lighting_power_profile = np.zeros(num_steps)
+    elif occupants:
+        # Simple agents mode: occupant-presence-based with randomness
+        equipment_power_profile, lighting_power_profile = create_equipment_schedules(
+            config, num_steps, time_hours, mode="simple"
+        )
+    else:
+        # Baseline mode: fixed schedules tied to occupied hours
+        equipment_power_profile, lighting_power_profile = create_equipment_schedules(
+            config, num_steps, time_hours, mode="baseline"
+        )
+
     return (
-        heating_setpoint_profile, 
-        cooling_setpoint_profile, 
-        internal_gains_profile, 
-        window_opening_profile, 
-        weather_data
+        heating_setpoint_profile,
+        cooling_setpoint_profile,
+        internal_gains_profile,
+        window_opening_profile,
+        weather_data,
+        equipment_power_profile,
+        lighting_power_profile,
     )

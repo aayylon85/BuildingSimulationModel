@@ -67,36 +67,74 @@ class UtteranceOutput(BaseModel):
 # Conversation Agent Builder
 # ---------------------------------------------------------------------------
 
-def build_conversation_agent(speaker_id: str, listener_id: str) -> Agent[SimContext]:
+def build_conversation_agent(
+    speaker_id: str,
+    listener_id: str,
+    valid_colleagues: Optional[List[str]] = None
+) -> Agent[SimContext]:
     """
     Build an agent for generating a single conversation utterance.
 
     Args:
         speaker_id: ID of the agent speaking
         listener_id: ID of the agent listening
+        valid_colleagues: List of valid colleague IDs in the office (for anti-hallucination)
 
     Returns:
         Agent configured for conversation utterance generation
     """
+    # Build colleague constraint section
+    if valid_colleagues:
+        colleague_names = ", ".join(valid_colleagues)
+        colleague_constraint = f"""
+<colleague_constraint>
+IMPORTANT: The ONLY colleagues in this office are: {colleague_names}
+Do NOT reference, mention, or discuss any other people by name.
+If you think of other names (Priya, Sam, Martin, etc.), they do NOT work here.
+Only discuss the colleague you are currently talking to ({listener_id}).
+</colleague_constraint>
+"""
+    else:
+        colleague_constraint = ""
+
     instructions = f"""
-You are {speaker_id}, having a conversation with {listener_id} in an office setting.
+You are {speaker_id}, having a natural workplace conversation with {listener_id}.
+{colleague_constraint}
+<recent_conversation_check>
+BEFORE choosing a topic, recall recent conversations with this person.
+Do NOT repeat topics already discussed today (coffee, lunch plans, weekend, etc.)
+If you've already talked about something today, choose a DIFFERENT topic.
+Vary your conversation topics throughout the day.
+</recent_conversation_check>
 
-Generate your next utterance in the conversation based on:
-- The conversation history so far
-- Your relationship with {listener_id}
-- Your personality and current context
+<conversation_topics>
+PREFERRED TOPICS (in order of preference):
+1. SOCIAL: Making plans together - "Want to grab coffee?", "Shall we go for lunch?"
+2. PERSONAL: Weekend plans, hobbies, life outside work
+3. ENVIRONMENT: Temperature comfort, office conditions
+4. LIGHT WORK: Brief updates on actual tasks, not elaborate fictional projects
 
-Guidelines:
-- Keep utterances natural and brief (1-3 sentences typical)
-- Reference shared context, work topics, or past interactions when relevant
-- Be conversational - use contractions, casual language appropriate to workplace
+AVOID:
+- Long discussions about fictional projects, deadlines, or deliverables
+- Referencing people who aren't in the conversation or aren't your colleagues
+- Detailed planning of work tasks (this isn't a meeting)
+- Making up project names, client names, or events
+
+Temperature/thermostat should rarely come up unless you're genuinely uncomfortable.
+</conversation_topics>
+
+<guidelines>
+- Keep utterances natural and brief (1-2 sentences)
+- Be CASUAL and SOCIAL, not overly professional
+- Reference your memories, shared context, or past interactions
 - Set end_conversation=true when the conversation naturally concludes:
-  - Agreement/understanding reached
-  - Topic exhausted or need to get back to work
-  - Natural goodbye or "I should get back to..."
-  - Someone mentions needing to leave
-- Conversations typically last 4-8 exchanges total
-- Don't drag conversations out unnecessarily
+  - Agreement reached or understanding expressed
+  - Topic exhausted
+  - Someone mentions needing to get back to work
+- Conversations typically last 3-6 exchanges total
+- Don't drag conversations out or repeat yourself
+- If suggesting a break/lunch together, make a CONCRETE plan (time, where to go)
+</guidelines>
 
 Output your utterance directly.
 """.strip()
@@ -148,12 +186,14 @@ def _build_conversation_context(
     else:
         history_text = "(This is the start of the conversation)"
 
-    # Retrieve relevant memories about the other person
+    # Retrieve relevant memories about the other person and shared experiences
     focal_points = [
-        f"conversations with {listener.agent_id}",
+        f"conversations with {listener.first_name}",
         f"what I know about {listener.first_name}",
+        f"shared experiences with {listener.first_name}",
+        "recent interesting things at work",
     ]
-    retrieved = retrieve(speaker, focal_points, now, n_count=5)
+    retrieved = retrieve(speaker, focal_points, now, n_count=6)
 
     # Format memories
     memory_lines = []
@@ -163,22 +203,25 @@ def _build_conversation_context(
     memories_text = "\n".join(memory_lines) if memory_lines else "No specific memories."
 
     context = f"""
-=== YOUR IDENTITY ===
+<identity>
 {identity}
+</identity>
 
-=== RELATIONSHIP ===
+<relationship_with_colleague>
 {relationship}
+</relationship_with_colleague>
 
-=== RELEVANT MEMORIES ===
+<relevant_memories purpose="context for natural conversation">
 {memories_text}
+</relevant_memories>
 
-=== CONVERSATION SO FAR ===
+<conversation_so_far>
 {history_text}
+</conversation_so_far>
 
-=== CURRENT TIME ===
-{now.strftime('%H:%M on %A')}
+<current_time>{now.strftime('%H:%M on %A')}</current_time>
 
-Now generate your response to continue the conversation.
+Generate your natural response to continue the conversation. Reference your memories or shared experiences when relevant.
 """.strip()
 
     return context
@@ -190,6 +233,7 @@ async def generate_one_utterance(
     conversation_history: List[ConversationUtterance],
     now: datetime,
     calendar: Optional[CalendarStore] = None,
+    valid_colleagues: Optional[List[str]] = None,
 ) -> ConversationUtterance:
     """
     Generate a single utterance in a conversation.
@@ -200,6 +244,7 @@ async def generate_one_utterance(
         conversation_history: Previous utterances
         now: Current datetime
         calendar: Optional calendar store
+        valid_colleagues: List of valid colleague IDs in the office (for anti-hallucination)
 
     Returns:
         The generated utterance
@@ -207,8 +252,10 @@ async def generate_one_utterance(
     # Build context
     context = _build_conversation_context(speaker, listener, conversation_history, now)
 
-    # Build agent
-    convo_agent = build_conversation_agent(speaker.agent_id, listener.agent_id)
+    # Build agent with valid colleagues for anti-hallucination
+    convo_agent = build_conversation_agent(
+        speaker.agent_id, listener.agent_id, valid_colleagues=valid_colleagues
+    )
 
     # Create simulation context
     sim_context = SimContext(
@@ -236,6 +283,7 @@ async def agent_conversation(
     now: datetime,
     max_turns: int = 8,
     calendar: Optional[CalendarStore] = None,
+    valid_colleagues: Optional[List[str]] = None,
 ) -> ConversationResult:
     """
     Conduct a multi-turn conversation between two agents.
@@ -248,6 +296,7 @@ async def agent_conversation(
         now: Current simulation datetime
         max_turns: Maximum number of exchanges (default 8)
         calendar: Optional calendar store for context
+        valid_colleagues: List of valid colleague IDs in the office (for anti-hallucination)
 
     Returns:
         ConversationResult with all utterances and summary
@@ -266,6 +315,7 @@ async def agent_conversation(
             conversation_history=utterances,
             now=now,
             calendar=calendar,
+            valid_colleagues=valid_colleagues,
         )
         utterances.append(utterance)
 
@@ -592,26 +642,30 @@ def build_consultation_agent(speaker_id: str, is_initiator: bool) -> Agent[SimCo
     Returns:
         Agent configured for consultation utterance generation
     """
-    role = "proposing a change" if is_initiator else "responding to a proposed change"
+    role = "proposing a temperature adjustment" if is_initiator else "being asked about a temperature change"
 
     instructions = f"""
-You are {speaker_id}, {role} to the office shared controls (thermostat or windows).
+You are {speaker_id}, {role} to the office thermostat.
 
-This is a CONSULTATION - you need to discuss and find a compromise that works for everyone.
+<context>
+This is a quick check-in with colleagues about comfort, not a formal negotiation.
+Most temperature discussions are resolved quickly - people are generally flexible.
+</context>
 
-Guidelines:
-- Be respectful of others' comfort preferences
-- Consider compromises (e.g., meeting halfway on temperature)
-- If you feel too hot, you prefer lower temperatures; if cold, prefer higher
+<guidelines>
+- Keep responses brief and casual (1-2 sentences max)
+- It's fine to quickly agree if you're comfortable or close to comfortable
+- A difference of 0.5-1°C is usually not worth arguing about
+- Express your preference naturally: "Yeah, that works for me" or "Could we maybe try X instead?"
 - Set end_consultation=true when:
-  - Agreement is reached on a specific action
-  - You both decide to leave things as they are
-  - Clear disagreement where no compromise is possible
-- Use proposed_compromise to suggest a specific temperature value
-- Keep responses brief (1-2 sentences)
-- Consultations typically last 3-6 exchanges
+  - Quick agreement reached (most common outcome)
+  - You decide current temp is fine
+  - Brief disagreement acknowledged
+- Use proposed_compromise only if suggesting a specific temperature
+- Consultations should be 2-4 exchanges, not lengthy debates
+</guidelines>
 
-Output your response.
+Output your response naturally.
 """.strip()
 
     return Agent(
@@ -654,6 +708,25 @@ def _build_consultation_context(
     # Other participants' names
     other_names = ", ".join(l.first_name for l in listeners)
 
+    # Retrieve memories about thermal comfort and the other participants
+    focal_points = [
+        "my temperature preferences",
+        "how I feel about the office temperature",
+    ]
+    # Add memories about each listener
+    for listener in listeners:
+        focal_points.append(f"what I know about {listener.first_name}")
+
+    retrieved = retrieve(speaker, focal_points, now, n_count=5)
+
+    # Format memories
+    memory_lines = []
+    for fp, nodes in retrieved.items():
+        if nodes:
+            for node in nodes[:2]:  # Top 2 per focal point
+                memory_lines.append(f"- {node.description}")
+    memories_text = "\n".join(memory_lines) if memory_lines else "No specific memories about this topic."
+
     # Format conversation history
     if conversation_history:
         history_lines = []
@@ -667,21 +740,33 @@ def _build_consultation_context(
     role_text = f"You proposed: {proposed_action}" if is_initiator else f"Someone proposed: {proposed_action}"
 
     context = f"""
-=== YOUR IDENTITY & COMFORT PREFERENCES ===
+<identity>
 {identity}
+</identity>
 
-=== CONSULTATION REQUEST ===
+<consultation_request>
 {role_text}
 Current zone temperature: {current_temp_c:.1f}°C
 Other participants: {other_names}
+</consultation_request>
 
-=== DISCUSSION SO FAR ===
+<relevant_memories purpose="your past experiences with temperature and these colleagues">
+{memories_text}
+</relevant_memories>
+
+<discussion_so_far>
 {history_text}
+</discussion_so_far>
 
-=== CURRENT TIME ===
-{now.strftime('%H:%M')}
+<current_time>{now.strftime('%H:%M')}</current_time>
 
-Respond to continue the consultation. Aim for a compromise everyone can accept.
+<guidance>
+Respond naturally to continue the consultation. You're discussing comfort, not negotiating a contract.
+- Keep responses brief and conversational (1-2 sentences)
+- It's fine to quickly agree if the proposal seems reasonable
+- Express your actual comfort preference, but be flexible
+- A small compromise (0.5-1°C) is usually acceptable to everyone
+</guidance>
 """.strip()
 
     return context

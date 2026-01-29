@@ -262,6 +262,20 @@ class DecisionCheckpointManager:
             except (ValueError, TypeError):
                 pass
 
+        # Check work activity checkpoints
+        if hasattr(daily_plan, 'work_activities') and daily_plan.work_activities:
+            for activity in daily_plan.work_activities:
+                activity_event_id = f"work_activity:{activity.activity}_{activity.planned_time}"
+                try:
+                    act_hour, act_minute = map(int, activity.planned_time.split(":"))
+                    act_minutes = act_hour * 60 + act_minute
+                    if (abs(current_minutes - act_minutes) <= 5 and
+                            activity_event_id not in self._processed_events[agent_id]):
+                        self._processed_events[agent_id].add(activity_event_id)
+                        return True, f"work_activity:{activity.activity}"
+                except (ValueError, TypeError):
+                    pass
+
         return False, ""
 
     def reset_for_new_day(self, agent_id: str) -> None:
@@ -475,6 +489,9 @@ class LLMOccupantManager:
         # Store API timeout from config (default 30 seconds per OpenAI best practices)
         self._api_timeout = llm_config.get("api_timeout_seconds", 30.0)
 
+        # Enable prompt logging for debugging (logs full prompts and retrieved memories)
+        self._log_prompts = llm_config.get("log_prompts", False)
+
         # Validate API connection (fail early, no fallback)
         self._validate_api_connection()
 
@@ -497,6 +514,7 @@ class LLMOccupantManager:
 
         # Initialize per-agent decision log files
         self._decision_log_paths: Dict[str, str] = {}
+        self._prompt_log_paths: Dict[str, str] = {}
         for agent_id in self._agent_ids:
             log_path = self._agent_paths[agent_id]["decision_log"]
             self._decision_log_paths[agent_id] = log_path
@@ -505,6 +523,17 @@ class LLMOccupantManager:
                 f.write(f"# Run: {run_start.strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write("# Format: timestamp | action_type | parameters | rationale\n")
                 f.write("-" * 80 + "\n")
+
+            # Initialize prompt log paths (always create path, write only if enabled)
+            agent_dir = Path(self._agent_paths[agent_id]["decision_log"]).parent
+            prompt_log_path = str(agent_dir / "prompts.log")
+            self._prompt_log_paths[agent_id] = prompt_log_path
+            if self._log_prompts:
+                with open(prompt_log_path, 'w') as f:
+                    f.write(f"# LLM Agent Prompt Log - {agent_id}\n")
+                    f.write(f"# Run: {run_start.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write("# Contains full prompts and retrieved memories for debugging\n")
+                    f.write("=" * 80 + "\n")
 
         # Initialize sub-managers
         self.equipment = EquipmentManager(config)
@@ -793,7 +822,7 @@ class LLMOccupantManager:
                     now=now,
                     importance=5.0,  # Meetings are moderately important
                 )
-                print(f"[MEMORY] {agent_id}: Added meeting to memory - {title}")
+                print(f"[SCHEDULE] {agent_id}: Meeting recorded - '{title}' at {time_str}")
 
         # Build planning prompt with cognitive context
         prompt = format_planning_prompt(
@@ -890,9 +919,9 @@ class LLMOccupantManager:
         }
         result = agent.update_daily_plan(updates, reason=event, now=now)
         if result.get("updated"):
-            print(f"[PLAN] {agent_id} plan updated due to: {event}")
+            print(f"[SCHEDULE] {agent_id}: Plan adjusted - {event}")
             if result.get("skipped_past_events"):
-                print(f"[PLAN] {agent_id} skipped past events: {result['skipped_past_events']}")
+                print(f"[SCHEDULE] {agent_id}: (skipped past events: {result['skipped_past_events']})")
 
     def _check_plan_update_triggers(
         self,
@@ -938,7 +967,7 @@ class LLMOccupantManager:
         if current_location == "meeting_room":
             meeting_context = get_meeting_context(agent_id, self.calendar, now)
             if not meeting_context.get("current_meeting"):
-                triggers.append("schedule_conflict: In meeting room but no active meeting scheduled")
+                triggers.append("location_check: Your meeting has ended - consider returning to your desk")
 
         return triggers
 
@@ -1770,6 +1799,9 @@ Select your desk for today and specify which equipment to turn on.
             checkpoint_reason=checkpoint_reason,
         )
 
+        # 9.5. Log prompt and memories for debugging (if enabled)
+        self._log_prompt(agent_id, now, prompt, checkpoint_reason, retrieved)
+
         # 10. Call LLM via async Runner.run with retry (OpenAI best practice)
         # max_turns=5 is sufficient for step decisions (minimal tool use)
         step_agent = self._step_agents[agent_id]
@@ -1878,7 +1910,7 @@ Select your desk for today and specify which equipment to turn on.
                 now=now,
                 importance=3.0,  # Low-medium importance for routine movement
             )
-            print(f"[MEMORY] {agent_id}: {location_desc}")
+            print(f"[LOCATION] {agent_id}: {location_desc}")
 
         # 12.25. Process pending conversations
         pending_convs = self.adapter.get_pending_conversations()
@@ -1900,9 +1932,9 @@ Select your desk for today and specify which equipment to turn on.
             reason = step_decision.plan_update.reasoning
             result = agent.update_daily_plan(updates, reason=reason, now=now)
             if result.get("updated"):
-                print(f"[PLAN] {agent_id} updated plan: {reason}")
+                print(f"[SCHEDULE] {agent_id}: Plan adjusted - {reason}")
                 if result.get("skipped_past_events"):
-                    print(f"[PLAN] {agent_id} skipped past events: {result['skipped_past_events']}")
+                    print(f"[SCHEDULE] {agent_id}: (skipped past events: {result['skipped_past_events']})")
 
         # 13. Record decision to memory (using StepDecisions for structured reasoning)
         await record_decision_to_memory(agent, step_decision, now)
@@ -2026,7 +2058,7 @@ Select your desk for today and specify which equipment to turn on.
                             now=now,
                             importance=2.0,  # Low importance for minor changes
                         )
-                print(f"[THERMO] {agent.agent_id} adjusting thermostat without consultation (no conflict detected)")
+                print(f"[CTRL] {agent.agent_id}: Adjusted thermostat (colleagues have similar preferences - no consultation needed)")
                 return decision
 
         # Build proposed action description
@@ -2183,13 +2215,18 @@ Select your desk for today and specify which equipment to turn on.
             return None
 
         try:
+            # Get list of valid colleagues in the office for anti-hallucination
+            valid_colleagues = list(self._agents.keys())
+
             result = await agent_conversation(
                 init_agent=initiator,
                 target_agent=target,
                 now=now,
                 calendar=self.calendar,
+                valid_colleagues=valid_colleagues,
             )
             self._log_conversation(initiator_id, target_id, topic, result, now)
+            self._log_conversation_to_shared_file(result, now)
             return result
         except Exception as e:
             print(f"[CONV] Conversation failed: {e}")
@@ -2221,7 +2258,7 @@ Select your desk for today and specify which equipment to turn on.
                     f.write(f"  Summary: {result.summary}\n")
                 f.write("  ---\n")
                 for utt in result.utterances:
-                    speaker_name = utt.speaker.split('_')[0].capitalize() if '_' in utt.speaker else utt.speaker
+                    speaker_name = utt.speaker_id.split('_')[0].capitalize() if '_' in utt.speaker_id else utt.speaker_id
                     f.write(f"  {speaker_name}: {utt.utterance[:100]}{'...' if len(utt.utterance) > 100 else ''}\n")
 
         except IOError as e:
@@ -2280,6 +2317,58 @@ Select your desk for today and specify which equipment to turn on.
         except Exception as e:
             print(f"[LLM] {agent_id} decision failed: {e}")
             raise RuntimeError(f"Agent decision failed for {agent_id}: {e}")
+
+    def _log_prompt(
+        self,
+        agent_id: str,
+        now: datetime,
+        prompt: str,
+        checkpoint_reason: str,
+        retrieved_memories: Optional[Dict[str, List[MemoryNode]]] = None,
+    ) -> None:
+        """
+        Log full prompt and retrieved memories for debugging.
+
+        Saves to: results/agents/{date}/{time}/{agent_id}/prompts.log
+
+        Args:
+            agent_id: Agent ID
+            now: Current simulation datetime
+            prompt: Full prompt sent to LLM
+            checkpoint_reason: Why decision was triggered
+            retrieved_memories: Dict of focal_point -> list of MemoryNode
+        """
+        if not self._log_prompts:
+            return
+
+        log_path = self._prompt_log_paths.get(agent_id)
+        if not log_path:
+            return
+
+        try:
+            with open(log_path, 'a') as f:
+                f.write(f"\n{'=' * 80}\n")
+                f.write(f"[{now.strftime('%Y-%m-%d %H:%M')}] checkpoint: {checkpoint_reason}\n")
+                f.write(f"{'=' * 80}\n")
+
+                # Log retrieved memories
+                if retrieved_memories:
+                    f.write("\n--- RETRIEVED MEMORIES ---\n")
+                    for focal_pt, memories in retrieved_memories.items():
+                        f.write(f"\nFocal point: '{focal_pt}'\n")
+                        for mem in memories[:5]:  # Limit to top 5 per focal point
+                            if hasattr(mem, 'description'):
+                                f.write(f"  - {mem.description[:200]}\n")
+                            else:
+                                f.write(f"  - {str(mem)[:200]}\n")
+
+                # Log full prompt
+                f.write("\n--- FULL PROMPT ---\n")
+                f.write(prompt)
+                f.write("\n--- END PROMPT ---\n\n")
+
+        except IOError as e:
+            print(f"Warning: Failed to log prompt for {agent_id}: {e}")
 
     def _log_decision(
         self,
@@ -2359,7 +2448,7 @@ Select your desk for today and specify which equipment to turn on.
         except IOError as e:
             print(f"Warning: Failed to log decision for {agent_id}: {e}")
 
-    def _log_conversation(
+    def _log_conversation_to_shared_file(
         self,
         conversation: ConversationResult,
         now: datetime,

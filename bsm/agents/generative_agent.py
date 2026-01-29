@@ -456,6 +456,11 @@ Works weekends: {self.scratch.get('works_weekends', False)}
         if "meetings" in updates:
             filtered_meetings = []
             for meeting in updates.get("meetings", []):
+                # Skip non-dictionary meetings (LLM sometimes returns strings)
+                if not isinstance(meeting, dict):
+                    skipped_past_events.append(f"Invalid meeting format (expected dict, got {type(meeting).__name__})")
+                    continue
+
                 meeting_start = meeting.get("start_datetime_iso", "")
                 try:
                     # Parse meeting start time

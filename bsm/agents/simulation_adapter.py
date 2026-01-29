@@ -543,7 +543,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
             # Location-specific equipment (what's available where you are)
             "location_equipment": self.get_equipment_at_location(
-                self.get_agent_location(occupant_id)
+                self.get_agent_location(occupant_id), agent_id=occupant_id
             ),
         }
 
@@ -588,11 +588,11 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 if direction == "warmer":
                     # Agent feels cold, wants higher heating setpoint
                     desired_setpoint = self._base_heating_setpoint_c + float(amount)
-                    print(f"[THERMO] {occupant_id} feels cold, requesting warmer (+{amount}C)")
+                    logger.info(f"[CTRL] {occupant_id}: Adjusting thermostat warmer (+{amount}C) -> target {desired_setpoint:.1f}C")
                 elif direction == "cooler":
                     # Agent feels hot, wants lower cooling setpoint (represented as lower heating equivalent)
                     desired_setpoint = self._base_heating_setpoint_c - float(amount)
-                    print(f"[THERMO] {occupant_id} feels hot, requesting cooler (-{amount}C)")
+                    logger.info(f"[CTRL] {occupant_id}: Adjusting thermostat cooler (-{amount}C) -> target {desired_setpoint:.1f}C")
                 else:
                     desired_setpoint = self._base_heating_setpoint_c
                 self._thermostat_votes.append((occupant_id, desired_setpoint))
@@ -619,6 +619,32 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 self._desk_chosen_today[occupant_id] = True
 
         elif action_type == "equipment_set":
+            # Validate equipment is at agent's location or their desk
+            equipment_name = params.get("equipment_name")
+            if equipment_name:
+                current_location = self.get_agent_location(occupant_id)
+                # Pass agent_id to resolve desk_equipment reference
+                location_equipment = self.get_equipment_at_location(
+                    current_location, agent_id=occupant_id
+                )
+                valid_names = [eq["name"] for eq in location_equipment]
+
+                # Also include desk equipment directly if not already included
+                agent_desk = self.desks.get_desk_for_occupant(occupant_id) if current_desk else None
+                if agent_desk:
+                    desk_equipment = self.get_equipment_at_location(agent_desk)
+                    for eq in desk_equipment:
+                        if eq["name"] not in valid_names:
+                            valid_names.append(eq["name"])
+
+                # Check if equipment is valid for this agent
+                if equipment_name not in valid_names:
+                    logger.warning(
+                        f"[ACTION] {occupant_id}: Cannot control '{equipment_name}' from {current_location} "
+                        f"(available: {valid_names[:5]}...)"
+                    )
+                    return
+
             self.equipment.apply_equipment_action(params, occupant_id)
 
         elif action_type == "attend_meeting":
@@ -924,12 +950,15 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             if loc == location and self._present_occupants.get(agent_id, False)
         ]
 
-    def get_equipment_at_location(self, location: str) -> List[Dict[str, Any]]:
+    def get_equipment_at_location(
+        self, location: str, agent_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Get equipment available at a specific location.
 
         Args:
             location: Location name (desk_area, break_area, meeting_room, etc.)
+            agent_id: Optional agent ID to resolve desk equipment for
 
         Returns:
             List of equipment dicts with name, type, is_on, in_use_by
@@ -953,7 +982,21 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         equipment_access = location_info.get("equipment_access", [])
         for eq_ref in equipment_access:
             if eq_ref == "desk_equipment":
-                # Skip desk equipment, handled separately
+                # Resolve desk_equipment to actual equipment for this agent's desk
+                if agent_id:
+                    agent_desk_name = self.desks.get_desk_for_occupant(agent_id)
+                    if agent_desk_name:
+                        desk_obj = self.desks.get_desk(agent_desk_name)
+                        desk_equipment = desk_obj.equipment_ids if desk_obj else []
+                        for eq_name in desk_equipment:
+                            eq_info = self.equipment.get_equipment_state_by_name(eq_name)
+                            if eq_info:
+                                result.append({
+                                    "name": eq_name,
+                                    "type": eq_info.get("type", eq_name),
+                                    "is_on": eq_info.get("is_on", False),
+                                    "in_use_by": eq_info.get("assigned_to"),
+                                })
                 continue
             eq_info = self.equipment.get_equipment_state_by_name(eq_ref)
             if eq_info:

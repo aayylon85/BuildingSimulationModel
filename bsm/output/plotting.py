@@ -61,7 +61,7 @@ def plot_simulation_results(
         fig1.savefig(fig1_path, dpi=300, bbox_inches='tight')
         saved_figures.append(fig1_path)
         print(f"Saved figure: {fig1_path}")
-    plt.show()
+    plt.close(fig1)
 
     # --- Plot 2: Energy Flows ---
     fig2, (ax2a, ax2b) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
@@ -121,7 +121,7 @@ def plot_simulation_results(
         fig2.savefig(fig2_path, dpi=300, bbox_inches='tight')
         saved_figures.append(fig2_path)
         print(f"Saved figure: {fig2_path}")
-    plt.show()
+    plt.close(fig2)
 
     # --- Plot 3: Agent Activity (LLM mode only) ---
     if use_llm_agents:
@@ -170,7 +170,7 @@ def plot_simulation_results(
             fig3.savefig(fig3_path, dpi=300, bbox_inches='tight')
             saved_figures.append(fig3_path)
             print(f"Saved figure: {fig3_path}")
-        plt.show()
+        plt.close(fig3)
 
     # --- Plot 4: Summary Dashboard ---
     fig4, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -232,7 +232,7 @@ def plot_simulation_results(
         fig4.savefig(fig4_path, dpi=300, bbox_inches='tight')
         saved_figures.append(fig4_path)
         print(f"Saved figure: {fig4_path}")
-    plt.show()
+    plt.close(fig4)
 
     if saved_figures:
         print(f"\nAll figures saved to: {save_dir}")

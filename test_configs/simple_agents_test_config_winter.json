@@ -1,5 +1,5 @@
 {
-  "_comment": "Baseline Configuration WITHOUT LLM Agents - Time-governed equipment, lighting, and setpoints for 09:00-19:00 occupied office",
+  "_comment": "Test Configuration for Rule-Based (Simple) Occupant Agents - 1-day simulation with identical building to LLM config",
   "_unit_conventions": {
     "temperature": "degrees Celsius (C)",
     "length": "meters (m)",
@@ -12,7 +12,7 @@
   "simulation_settings": {
     "dt_minutes": 1,
     "duration_days": 3,
-    "start_date": "2025-06-10",
+    "start_date": "2025-01-10",
     "stabilization_days": 25,
     "hvac_coupling_mode": "auto",
     "hvac_max_power_rate_w_s": 50000.0,
@@ -153,8 +153,8 @@
   },
 
   "schedules": {
-    "_comment": "Office occupied 09:00-19:00 with 3 occupants. Equipment/lighting tracked separately.",
-    "occupied_hours": [9, 19],
+    "_comment": "Office occupied 07:00-19:00 with 3 occupants. Equipment/lighting tracked separately.",
+    "occupied_hours": [7, 19],
     "occupied_heating_setpoint_c": 21.0,
     "unoccupied_heating_setpoint_c": 15.0,
     "occupied_cooling_setpoint_c": 24.0,
@@ -165,104 +165,61 @@
   },
 
   "equipment_schedules": {
-    "_comment": "Scheduled equipment usage for baseline mode (fixed times)",
-    "photocopier_usage_times": [10.0, 14.0],
+    "_comment": "Scheduled equipment usage for simple agents mode (occupant-based with randomness)",
+    "photocopier_uses_per_day": 3,
     "photocopier_duration_minutes": 5,
-    "kettle_usage_times": [9.0, 11.0, 15.0],
+    "kettle_uses_per_day": 4,
     "kettle_duration_minutes": 3,
-    "coffee_machine_hours": [9, 17],
-    "microwave_lunch_hour": 12,
-    "meeting_hours": [[10, 11], [14, 15]]
+    "coffee_uses_per_day": 6,
+    "coffee_duration_minutes": 5,
+    "microwave_uses_per_day": 3,
+    "microwave_duration_minutes": 4,
+    "meetings_per_day": 2,
+    "meeting_duration_minutes": 60
   },
 
   "occupancy": {
-    "_comment": "Heat gains included in schedules above - no individual occupant definitions needed for baseline",
+    "_comment": "Rule-based occupants with simple thermostat and window voting behavior",
     "heat_gain_per_occupant_w": 120.0,
     "check_interval_minutes": 60,
     "thermostat_adjustment_c": 1.0,
-    "occupants": []
+    "occupants": [
+      {
+        "name": "Alice",
+        "work_start_hr": 8,
+        "work_end_hr": 17,
+        "window_preference": "opener",
+        "window_temp_c": 23.0,
+        "thermostat_preference": "changer",
+        "thermostat_temp_c": 21.0,
+        "_comment": "Morning person, environmentally conscious, prefers 21C"
+      },
+      {
+        "name": "Bob",
+        "work_start_hr": 9,
+        "work_end_hr": 18,
+        "window_preference": "neutral",
+        "window_temp_c": 19.0,
+        "thermostat_preference": "changer",
+        "thermostat_temp_c": 19.0,
+        "_comment": "Runs warm, prefers cooler temperatures around 19C"
+      },
+      {
+        "name": "Charlie",
+        "work_start_hr": 10,
+        "work_end_hr": 19,
+        "window_preference": "neutral",
+        "window_temp_c": 22.0,
+        "thermostat_preference": "changer",
+        "thermostat_temp_c": 22.0,
+        "_comment": "Gets cold easily, prefers warmer temperatures around 22C"
+      }
+    ]
   },
 
   "llm_agents": {
-    "_comment": "LLM agents DISABLED for baseline comparison",
-    "enabled": false,
-    "api_timeout_seconds": 30,
-    "agent_model": "gpt-5.2",
-    "embed_model": "text-embedding-3-large",
-    "decision_interval_minutes": 60,
-    "daily_planning_hour": 0,
-    "memory_settings": {
-      "action_half_life_days": 14.0,
-      "top_k_retrieval": 6
-    },
-    "agent_source": {
-      "_comment": "Agent initialization: 'fresh' copies from base_types_folder, 'continue' uses previous run",
-      "mode": "fresh",
-      "base_types_folder": "agent_base_types",
-      "continue_from_run": null
-    },
-    "agents": [
-      {
-        "id": "alice_001",
-        "base_type": "alice_office_worker",
-        "name": "Alice",
-        "personality_summary": "Methodical and punctual. Values routine but adapts when needed. Environmentally conscious.",
-        "typical_schedule": {
-          "arrival_range": "08:30-09:15",
-          "departure_range": "17:00-17:30",
-          "notes": "Morning person, prefers consistent hours"
-        },
-        "core_memories": [
-          "I'm definitely a morning person - I like being at my desk by 8:45 to review my day before others arrive.",
-          "21°C is my comfort zone. When it gets too warm I sometimes open a window if the weather's nice.",
-          "I chose Desk_A specifically for the natural light from the south window.",
-          "I try to remember to turn off my equipment when I leave - small things add up for the environment.",
-          "I usually head home around 17:00. My commute is easier if I leave on time."
-        ],
-        "default_desk": "Desk_A",
-        "works_weekends": false
-      },
-      {
-        "id": "bob_002",
-        "base_type": "bob_office_worker",
-        "name": "Bob",
-        "personality_summary": "Routine-oriented and precise. Runs warm, prefers cooler environments. Likes direct task lighting.",
-        "typical_schedule": {
-          "arrival_range": "08:55-09:05",
-          "departure_range": "17:55-18:05",
-          "notes": "Very punctual, like clockwork"
-        },
-        "core_memories": [
-          "I run warm - I'm most comfortable around 19°C, which others find cold.",
-          "I'm a creature of habit. 09:00 arrival, 18:00 departure, like clockwork.",
-          "Desk_B is perfect - corner position, morning light, and I can crack the window if needed.",
-          "I use the photocopier a lot in the morning. Easier to batch my printing then.",
-          "I keep my desk light on even during the day - I like having direct task lighting."
-        ],
-        "default_desk": "Desk_B",
-        "works_weekends": false
-      },
-      {
-        "id": "charlie_003",
-        "base_type": "charlie_office_worker",
-        "name": "Charlie",
-        "personality_summary": "Flexible and social. Gets cold easily. Often organizes team activities and meetings.",
-        "typical_schedule": {
-          "arrival_range": "10:00-11:00",
-          "departure_range": "18:30-19:00",
-          "notes": "Not a morning person, flexible hours"
-        },
-        "core_memories": [
-          "I get cold easily - 22°C is comfortable for me, though others complain it's warm.",
-          "My hours are flexible. I'm not a morning person, so I drift in between 10:00-11:00.",
-          "I picked Desk_C because it's quiet and away from window drafts.",
-          "I organize a lot of the team meetings. It's easier when you're near the meeting room.",
-          "I usually leave around 18:30 or 19:00 since I start late anyway."
-        ],
-        "default_desk": "Desk_C",
-        "works_weekends": false
-      }
-    ]
+    "_comment": "LLM agents DISABLED - using rule-based occupants instead",
+    "enabled": false
   },
 
   "desks": {

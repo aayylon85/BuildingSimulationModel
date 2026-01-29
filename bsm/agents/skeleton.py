@@ -257,11 +257,11 @@ class BreakDecision(BaseModel):
 
 class MeetingEquipmentDecision(BaseModel):
     """Decision about equipment at meeting start/end (for meeting host)."""
-    action: Literal["request_change", "accept_current"] = Field(
-        description="Whether to request equipment changes or accept current state"
+    action: Literal["set_equipment", "accept_current"] = Field(
+        description="Whether to set meeting equipment or accept current state"
     )
     reasoning: str = Field(description="Why this meeting equipment decision was made")
-    equipment_requests: Optional[List[str]] = Field(
+    equipment_changes: Optional[List[str]] = Field(
         default=None,
         description="List of equipment changes, e.g., ['turn on projector', 'close blinds']"
     )
@@ -362,6 +362,22 @@ class BreakPlan(BaseModel):
     reasoning: str = Field(description="Why this break was planned based on habits and schedule")
 
 
+class WorkActivity(BaseModel):
+    """A planned work activity requiring specific equipment or location."""
+    activity: str = Field(description="What work to do: 'photocopying', 'printing', 'filing', etc.")
+    equipment_needed: Optional[str] = Field(
+        default=None,
+        description="Equipment required if any (e.g., 'photocopier', 'printer')"
+    )
+    location: str = Field(
+        default="shared_area",
+        description="Where this activity happens (e.g., 'shared_area', 'meeting_room')"
+    )
+    planned_time: str = Field(description="When to do this (HH:MM)")
+    duration_minutes: int = Field(default=10, description="Estimated duration in minutes")
+    reasoning: str = Field(default="", description="Why this activity is planned")
+
+
 class DailyPlan(BaseModel):
     occupant_id: str
     date_iso: str
@@ -390,6 +406,14 @@ class DailyPlan(BaseModel):
     comfort_preferences: str = Field(
         default="",
         description="Temperature and lighting preferences for the day"
+    )
+    work_activities: List[WorkActivity] = Field(
+        default_factory=list,
+        description="Planned work activities requiring equipment or movement (photocopying, filing, etc.)"
+    )
+    return_to_desk_after_break: bool = Field(
+        default=True,
+        description="Whether to automatically return to desk after breaks/lunch"
     )
     notes: str = ""
 

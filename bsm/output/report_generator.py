@@ -78,11 +78,9 @@ class SimulationReportGenerator:
         lines.append(f"| Heating | {energy.get('heating', 0):.2f} | {peak.get('heating', 0):.0f} |")
         lines.append(f"| Cooling | {energy.get('cooling', 0):.2f} | {peak.get('cooling', 0):.0f} |")
         lines.append(f"| **Total HVAC** | **{energy.get('total_hvac', 0):.2f}** | - |")
-
-        if sim_info.get('llm_agents_enabled'):
-            lines.append(f"| Equipment | {energy.get('equipment', 0):.2f} | {peak.get('equipment', 0):.0f} |")
-            lines.append(f"| Lighting | {energy.get('lighting', 0):.2f} | {peak.get('lighting', 0):.0f} |")
-
+        # Always show equipment and lighting (for all simulation modes)
+        lines.append(f"| Equipment | {energy.get('equipment', 0):.2f} | {peak.get('equipment', 0):.0f} |")
+        lines.append(f"| Lighting | {energy.get('lighting', 0):.2f} | {peak.get('lighting', 0):.0f} |")
         lines.append(f"| **Total** | **{energy.get('total', 0):.2f}** | **{peak.get('total', 0):.0f}** |")
         lines.append("")
 

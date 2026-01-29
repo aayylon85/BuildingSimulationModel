@@ -1119,6 +1119,9 @@ def get_decision_focal_points(
         focal_points.append(f"my relationship with {other_occupants[0]}")
         # Add focal point for agreements when others are present
         focal_points.append("agreements I made with colleagues about temperature or comfort")
+        # Add focal points for recent conversations to avoid repetition
+        focal_points.append("conversations I had today")
+        focal_points.append("topics I've already discussed with colleagues")
 
     # Time-aware focal points for lunch and breaks
     datetime_str = sim_state.get("datetime", "")
@@ -1393,9 +1396,11 @@ def format_colleague_context(
         Formatted string describing colleagues present
     """
     if not present_agent_ids:
-        return "No colleagues currently in the building."
+        return """COLLEAGUES: None currently in the building.
+You are ALONE in the office right now. Do NOT mention, reference, or interact with anyone."""
 
-    lines = ["Colleagues in the building:"]
+    lines = ["=== COLLEAGUES IN BUILDING ==="]
+    lines.append("The following people are the ONLY colleagues present:")
     for other_id in present_agent_ids:
         rel_info = agent.get_relationship_info(other_id)
         if rel_info:
@@ -1428,6 +1433,11 @@ def format_colleague_context(
             others = [a for a in agents if a != agent.agent_id]
             if others:
                 lines.append(f"  - {loc_name}: {', '.join(others)}")
+
+    # Add explicit constraint to prevent hallucination
+    lines.append("")
+    lines.append("These are the ONLY people you can interact with today.")
+    lines.append("Do NOT reference or mention any other names or colleagues.")
 
     return "\n".join(lines)
 
@@ -1940,69 +1950,158 @@ def format_step_prompt(
     if equipment_items and not any(equipment_items.values()):
         equipment_note = "\n>>> Note: Your equipment is ALL OFF. You need laptop and monitor ON to work."
 
+    # Get thermostat info for display
+    thermostat_info = sim_state.get('thermostat', {})
+    heating_setpoint = thermostat_info.get('heating_setpoint_c', 21)
+    cooling_setpoint = thermostat_info.get('cooling_setpoint_c', 24)
+
     prompt = f"""
-╔══════════════════════════════════════════════════════════════╗
-║  CURRENT TIME: {now.strftime('%H:%M')} on {context['day_of_week']}, {now.strftime('%Y-%m-%d')}
-║  CHECKPOINT: {checkpoint_display.upper()}
-╚══════════════════════════════════════════════════════════════╝
+<current_time>
+{now.strftime('%H:%M')} on {context['day_of_week']}, {now.strftime('%Y-%m-%d')}
+Checkpoint: {checkpoint_display}
+</current_time>
 
-=== WHO YOU ARE ===
+<identity>
 {context['identity']}
+</identity>
 
-=== CURRENT STATE ===
-Your status: {status_str}
-Indoor temperature: {sim_state.get('indoor_temp_c', 'N/A')}C
-Outdoor temperature: {sim_state.get('outdoor_temp_c', 'N/A')}C
-Weather: {sim_state.get('weather_description', 'N/A')}{clothing_section}
-Your desk: {sim_state.get('current_desk', 'N/A')}
-Window state: {sim_state.get('window_open_fraction', 0)}
-Thermostat setpoints:
-  Heating: {sim_state.get('thermostat', {}).get('heating_setpoint_c', 21)}C (activates when cold)
-  Cooling: {sim_state.get('thermostat', {}).get('cooling_setpoint_c', 24)}C (activates when hot)
+<current_state>
+<status>{status_str}</status>
+<temperature indoor="{sim_state.get('indoor_temp_c', 'N/A')}C" outdoor="{sim_state.get('outdoor_temp_c', 'N/A')}C" />
+<weather>{sim_state.get('weather_description', 'N/A')}</weather>{clothing_section}
+<desk>{sim_state.get('current_desk', 'N/A')}</desk>
+<thermostat heating="{heating_setpoint}C" cooling="{cooling_setpoint}C" />
+</current_state>
 
-=== LOCATION ===
+<location>
 {location_section}
+</location>
 
-=== YOUR EQUIPMENT STATUS ===
+<your_equipment>
 {equipment_section}{equipment_note}
+</your_equipment>
 
-=== LIGHTING ===
+<lighting>
 {lighting_section}
+</lighting>
 
-=== COLLEAGUES PRESENT ===
+<colleagues>
 {colleague_context}
 {colleague_status_section}
+</colleagues>
 
-=== YOUR SCHEDULE ===
+<schedule>
 {context['schedule']}
+</schedule>
 
-=== MEETING STATUS ===
+<meetings>
 {meeting_status_section}
+</meetings>
 
-=== PENDING INVITATIONS ===
+<pending_invitations>
 {invitations_section}
+</pending_invitations>
 
-=== RECENT AGREEMENTS ===
+<recent_agreements>
 {agreements_section}
+</recent_agreements>
 
-=== RELEVANT MEMORIES ===
+<relevant_memories purpose="context for your decisions">
 {context['relevant_memories']}{work_preferences_section}
+</relevant_memories>
 
-Based on who you are, your memories, the current state, and your schedule, decide what actions to take.
-If a meeting is in progress or starting soon, consider attending with 'attend_meeting'.
-If you have pending invitations, use 'respond_to_invitation' to accept or decline.
-Respect prior agreements with colleagues unless circumstances have changed significantly.
-If you want to go to lunch, use 'go_to_lunch' (stay in building) or 'go_out_for_lunch' (leave building).
-If you're at lunch or on break and ready to return, use 'return_from_lunch' or 'return_from_break'.
-For a short break (coffee, stretch), use 'take_break'.
+<direct_controls>
+You have DIRECT CONTROL over these systems - your changes take effect immediately:
 
-CONVERSATIONS:
-If colleagues are nearby, consider whether you want to talk to them naturally.
-- You might discuss the temperature if you're uncomfortable and want to see how others feel
-- You could chat about work, plans, or social topics
-- You don't need to consult others for minor thermostat adjustments - just make the change
-- If you're unsure if others would be affected, a quick conversation can help
-Use conversation.action="initiate" with a topic when you want to start a conversation.
+THERMOSTAT - Trust your comfort perception:
+- Set thermostat.action="adjust" with adjustment_direction and adjustment_amount
+- direction: "warmer" or "cooler"
+- amount: "small" (0.5C), "medium" (1.0C), or "large" (1.5C)
+- Your adjustment changes the setpoint instantly. You are not requesting - you are controlling.
+
+Consider these factors when deciding if you're comfortable:
+1. OUTSIDE WEATHER: If it's hot outside, cooler indoor temps (even 16-17C) may feel refreshing.
+   If it's cold outside, warmer indoor temps (up to 23-24C) may feel cozy.
+2. SEASON: In summer you may prefer cooler indoors; in winter, warmer.
+3. YOUR PREFERENCE: Trust how YOU feel based on your thermal memories.
+4. CURRENT CONDITIONS: Consider both indoor AND outdoor temperature.
+
+Key principle: Don't tolerate discomfort! If you feel too hot or too cold, adjust the thermostat.
+Let YOUR perception guide you, considering the weather context.
+
+EQUIPMENT:
+- You can turn ON/OFF any equipment at your current location or your assigned desk
+- Use equipment_decisions list with equipment_name and action (turn_on/turn_off/keep_current)
+- Changes happen immediately - you control these devices directly.
+
+LIGHTING:
+- Set lighting.action to turn_on, turn_off, adjust_brightness, or keep_current
+- Desk lights respond immediately to your control.
+</direct_controls>
+
+<constraint_spec>
+FORBIDDEN:
+- Controlling equipment that is not at your location or desk
+- Making more than one thermostat adjustment per hour without significant temperature change
+- Starting conversations during active meetings
+</constraint_spec>
+
+<action_guidance>
+Based on your identity, memories, and current state, decide what to do:
+
+MEETINGS:
+- Meeting starting/in progress: Use 'attend_meeting' to physically go there
+- Pending invitations: Use 'respond_to_invitation' to accept or decline
+
+BREAKS (follow this sequence):
+1. Use 'take_break' with location="break_area" and activity="tea" or "coffee"
+2. Once at break_area, USE THE EQUIPMENT:
+   - For tea: Use equipment_decisions to turn ON "kettle"
+   - For coffee: Use equipment_decisions to turn ON "coffee_machine"
+   - For heating food: Use equipment_decisions to turn ON "microwave"
+3. When done, use 'return_from_break' to go back to your desk
+You MUST actually turn on equipment to make tea/coffee!
+
+BREAK AWARENESS:
+- Consider your recent break history before taking another break
+- Typically people take a morning break and an afternoon break
+- Check your memories: "When did I last take a break?"
+- Balance your need for breaks with your work responsibilities
+
+LUNCH:
+- Use 'go_to_lunch' (stay at break_area) or 'go_out_for_lunch' (leave building)
+- If food needs heating, use the microwave in break_area
+- When done, use 'return_from_lunch' to return to your desk
+
+WORK ACTIVITIES (photocopying, filing, etc. in shared_area):
+1. Use 'move_to' with destination="shared_area"
+2. Use the equipment (photocopier, etc.)
+3. When done, use 'move_to' with destination="desk_area" to RETURN to work
+
+After completing any task or break away from your desk, return to desk_area.
+</action_guidance>
+
+<plan_update_guidance>
+UPDATE your plan (plan_update.action="update") if ANY of these apply:
+- Weather changed (now raining, you planned outdoor lunch)
+- Colleague invited you to lunch and you want to join
+- Meeting was cancelled or rescheduled
+- Feeling tired and want to adjust break timing
+- 2+ hours since making plan and circumstances changed
+
+Keep current ONLY if nothing significant has changed.
+If in doubt and something has changed, UPDATE your plan!
+</plan_update_guidance>
+
+<conversations>
+You can chat with colleagues naturally - topics might include:
+- Work projects, deadlines, upcoming meetings
+- Lunch or coffee plans
+- Weekend plans or hobbies
+- General office observations
+Use conversation.action="initiate" with a topic to start talking.
+Note: Minor thermostat adjustments don't need discussion - just make the change directly.
+</conversations>
 """
 
     # Add lunch context if it's lunch time
@@ -2216,6 +2315,26 @@ As part of your plan, decide what you'll wear today. Consider:
 - Any meetings you have (formality)
 - Your personal style and comfort preferences
 Provide a description of your outfit and its warmth level (very_light, light, medium, warm, very_warm).
+
+WORK ACTIVITIES:
+Plan any activities that require you to use specific equipment or move to a different location:
+- Photocopying documents (requires photocopier in shared_area)
+- Filing paperwork
+- Picking up prints
+- Any other tasks that take you away from your desk
+
+For each activity, specify:
+- What you're doing
+- What equipment you need (if any)
+- Where you need to go
+- When you plan to do it (HH:MM)
+- How long it will take (minutes)
+
+Example: "10:30 - Photocopy meeting handouts (photocopier in shared_area, 10 min)"
+
+RETURN TO DESK:
+Remember: after any break, lunch, or work activity away from your desk, you should return.
+Set return_to_desk_after_break=True (default) unless you have a specific reason not to.
 """.strip()
 
     return prompt
