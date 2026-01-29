@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 # Configuration
 EXPERIMENTS = [
     # (config_file, num_runs, description)
-    ("test_configs/llm_agent_test_config_winter.json", 3, "Winter (Jan 10)")
+    ("test_configs/llm_agent_test_config_winter.json", 3, "Winter (Jan 07)")
 ]
 
 
