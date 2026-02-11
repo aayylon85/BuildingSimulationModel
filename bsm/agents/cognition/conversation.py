@@ -15,14 +15,14 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from agents import Agent, Runner, ModelSettings
 from agents.agent_output import AgentOutputSchema
 
-from bsm.agents.skeleton import DEFAULT_AGENT_MODEL, SimContext, CalendarStore
+from bsm.agents.skeleton import DEFAULT_AGENT_MODEL, SimContext, CalendarStore, SocialCommitment
 from bsm.agents.cognition.modules import generate_relationship_summary, retrieve, get_importance
 from bsm.agents.memory.stream import MemoryNode
 
@@ -60,6 +60,31 @@ class UtteranceOutput(BaseModel):
     end_conversation: bool = Field(
         default=False,
         description="Set to true if this utterance naturally ends the conversation (goodbye, need to go, etc.)"
+    )
+
+
+class ConversationCommitmentOutput(BaseModel):
+    """Output schema for commitment extraction from conversations."""
+    activity: str = Field(description="What was agreed to do (coffee, walk, lunch, etc.)")
+    time: str = Field(
+        default="unspecified",
+        description="When (HH:MM) if specified, otherwise 'unspecified'"
+    )
+    location: Literal["break_area", "outside", "meeting_room", "unspecified"] = Field(
+        default="unspecified",
+        description="Where the activity will happen"
+    )
+
+
+class CommitmentsExtractionOutput(BaseModel):
+    """Output schema for extracting all commitments from a conversation."""
+    commitments: List[ConversationCommitmentOutput] = Field(
+        default_factory=list,
+        description="List of commitments made during the conversation (empty if none)"
+    )
+    reasoning: str = Field(
+        default="",
+        description="Brief explanation of what agreements were identified"
     )
 
 
@@ -413,6 +438,77 @@ def _extract_conversation_topics(utterances: List[ConversationUtterance]) -> Lis
     return topics if topics else ["general chat"]
 
 
+async def extract_conversation_commitments(
+    conversation: ConversationResult,
+    participant_ids: List[str],
+    model: str = DEFAULT_AGENT_MODEL,
+) -> List[ConversationCommitmentOutput]:
+    """
+    Use LLM to extract any commitments/agreements from a conversation.
+
+    Looks for agreements to do activities together like:
+    - "Let's grab coffee later"
+    - "Want to take a walk after lunch?"
+    - "Meet you in the break room at 3"
+
+    Args:
+        conversation: The completed conversation
+        participant_ids: IDs of participants
+        model: Model to use for extraction
+
+    Returns:
+        List of commitments extracted (empty if none found)
+    """
+    # Build conversation transcript
+    transcript_lines = []
+    for utt in conversation.utterances:
+        speaker_name = utt.speaker_id.split("_")[0].capitalize()
+        transcript_lines.append(f"{speaker_name}: {utt.utterance}")
+    transcript = "\n".join(transcript_lines)
+
+    participants_str = " and ".join(p.split("_")[0].capitalize() for p in participant_ids)
+
+    instructions = f"""You are analyzing a conversation between {participants_str} to extract any commitments or agreements they made.
+
+<task>
+Read the conversation and identify if the participants agreed to do any activity together.
+Look for:
+- Agreements to get coffee, tea, or drinks together
+- Plans to take a walk or go outside
+- Lunch plans together
+- Meeting in the break room
+- Any other joint activity they committed to
+</task>
+
+<conversation>
+{transcript}
+</conversation>
+
+<output_verbosity_spec>
+- Only extract CONCRETE agreements where both parties clearly agreed
+- Do NOT extract vague suggestions without acceptance
+- If no clear commitments were made, return an empty list
+- Reasoning: 1 sentence
+</output_verbosity_spec>"""
+
+    agent = Agent(
+        name="commitment_extractor",
+        instructions=instructions,
+        model=model,
+        model_settings=ModelSettings(reasoning_effort="low"),
+        output_type=AgentOutputSchema(CommitmentsExtractionOutput),
+    )
+
+    try:
+        result = await Runner.run(agent, "Extract any commitments from this conversation.")
+        if result.final_output and result.final_output.commitments:
+            return result.final_output.commitments
+    except Exception as e:
+        print(f"[CONV] Warning: Commitment extraction failed: {e}")
+
+    return []
+
+
 async def record_conversation_to_memory(
     agent: "GenerativeAgent",
     conversation: ConversationResult,
@@ -463,6 +559,27 @@ async def record_conversation_to_memory(
         familiarity_delta=0.05,  # Small increase per conversation
         sentiment_delta=0.0,     # Sentiment neutral for general conversations
     )
+
+    # Extract any commitments made during the conversation
+    participant_ids = [agent.agent_id, other_agent_id]
+    commitments = await extract_conversation_commitments(
+        conversation=conversation,
+        participant_ids=participant_ids,
+    )
+
+    # Add commitments to the agent's daily plan
+    if commitments and hasattr(agent, 'daily_plan') and agent.daily_plan:
+        for commitment in commitments:
+            social_commitment = SocialCommitment(
+                activity=commitment.activity,
+                time=commitment.time,
+                with_agents=[other_agent_id],
+                location=commitment.location,
+                source="conversation",
+                fulfilled=False,
+            )
+            agent.daily_plan.social_commitments.append(social_commitment)
+            print(f"[CONV] {agent.agent_id}: Added commitment - {commitment.activity} with {other_agent_id}")
 
 
 def sync_agent_conversation(

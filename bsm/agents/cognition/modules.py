@@ -10,7 +10,7 @@ Based on Stanford Generative Agents architecture, adapted for building simulatio
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -453,7 +453,7 @@ async def perceive(
 
     # Perceive indoor temperature as raw data - let agent reason about comfort
     temp = sim_state.get("indoor_temp_c", 21.0)
-    if not agent.recently_perceived("indoor_temp", now, within_minutes=15):
+    if not agent.recently_perceived("indoor_temp", now, within_minutes=60):
         potential_perceptions.append((
             5.0,  # Medium priority - factual observation
             f"The room temperature is {temp:.1f}C",
@@ -463,7 +463,7 @@ async def perceive(
     # Perceive other occupants present
     other_occupants = sim_state.get("other_occupants_present", [])
     for other_id in other_occupants:
-        if not agent.recently_perceived(other_id, now, within_minutes=30):
+        if not agent.recently_perceived(other_id, now, within_minutes=120):
             # Haven't noticed them recently - medium priority
             potential_perceptions.append((
                 5.0,
@@ -480,7 +480,7 @@ async def perceive(
     equipment_items = equipment_status.get("items", {})
     for equipment_name, is_on in equipment_items.items():
         # Only perceive equipment that's off and hasn't been recently noticed
-        if not is_on and not agent.recently_perceived(f"equipment_{equipment_name}", now, within_minutes=30):
+        if not is_on and not agent.recently_perceived(f"equipment_{equipment_name}", now, within_minutes=60):
             potential_perceptions.append((
                 3.0,  # Lower priority - let agent decide based on their needs
                 f"The {equipment_name} is currently off",
@@ -493,7 +493,7 @@ async def perceive(
     desk_light_on = lighting.get("desk_light_on", False)
 
     if natural_light in ["dim", "dark"] and not desk_light_on:
-        if not agent.recently_perceived("lighting_dim", now, within_minutes=30):
+        if not agent.recently_perceived("lighting_dim", now, within_minutes=60):
             potential_perceptions.append((
                 3.0,  # Lower priority - observational
                 f"The lighting is {natural_light} and the desk light is off",
@@ -505,7 +505,7 @@ async def perceive(
     outdoor_temp = sim_state.get("outdoor_temp_c", 10.0)
 
     # Outdoor temperature - separate from indoor for comparison
-    if not agent.recently_perceived("outdoor_temp", now, within_minutes=30):
+    if not agent.recently_perceived("outdoor_temp", now, within_minutes=60):
         potential_perceptions.append((
             4.0,  # Medium priority - useful context for comfort decisions
             f"Outside it is {outdoor_temp:.1f}C",
@@ -513,7 +513,7 @@ async def perceive(
         ))
 
     # Weather conditions
-    if weather_desc and not agent.recently_perceived("weather", now, within_minutes=60):
+    if weather_desc and not agent.recently_perceived("weather", now, within_minutes=180):
         potential_perceptions.append((
             3.5,
             f"The weather outside is {weather_desc}",
@@ -571,7 +571,7 @@ def retrieve(
     agent: "GenerativeAgent",
     focal_points: List[str],
     now: datetime,
-    n_count: int = 20,
+    n_count: int = 6,
     core_memory_count: int = 5,
 ) -> Dict[str, List[MemoryNode]]:
     """
@@ -621,6 +621,40 @@ def retrieve(
     return retrieved
 
 
+def deduplicate_retrieved_memories(
+    retrieved: Dict[str, List[MemoryNode]],
+    max_per_focal: int = 6,
+) -> Dict[str, List[MemoryNode]]:
+    """
+    Remove duplicate memories across focal points.
+
+    Keeps memory in the focal point where it appears first.
+    This prevents the same memory from appearing in multiple
+    sections of the decision prompt.
+
+    Args:
+        retrieved: Dict mapping focal points to lists of MemoryNodes
+        max_per_focal: Maximum unique memories per focal point
+
+    Returns:
+        Deduplicated dict with same structure
+    """
+    seen_ids: Set[int] = set()
+    deduplicated: Dict[str, List[MemoryNode]] = {}
+
+    for focal_pt, memories in retrieved.items():
+        unique = []
+        for mem in memories:
+            if mem.node_id not in seen_ids:
+                seen_ids.add(mem.node_id)
+                unique.append(mem)
+                if len(unique) >= max_per_focal:
+                    break
+        deduplicated[focal_pt] = unique
+
+    return deduplicated
+
+
 def build_decision_context(
     agent: "GenerativeAgent",
     sim_state: Dict[str, Any],
@@ -642,6 +676,9 @@ def build_decision_context(
     Returns:
         Context dict for prompt construction
     """
+    # Deduplicate memories across focal points to reduce prompt size
+    retrieved_memories = deduplicate_retrieved_memories(retrieved_memories)
+
     # Format memories into text
     memory_text_parts = []
     for focal_pt, memories in retrieved_memories.items():
@@ -1163,6 +1200,12 @@ def get_decision_focal_points(
         focal_points.append("when I usually return from lunch")
     if agent_status.get("on_break"):
         focal_points.append("how long I usually take breaks")
+
+    # Limit focal points to reduce memory retrieval overhead
+    # Keep first 2 base focal points + first 4 contextual ones
+    MAX_FOCAL_POINTS = 6
+    if len(focal_points) > MAX_FOCAL_POINTS:
+        focal_points = focal_points[:MAX_FOCAL_POINTS]
 
     return focal_points
 
@@ -1792,6 +1835,25 @@ def format_step_prompt(
     # Extract recent agreements from retrieved memories
     agreements_section = _extract_agreements_from_memories(retrieved_memories, now)
 
+    # Build social commitments section from daily plan
+    social_commitments_section = ""
+    if hasattr(agent, 'daily_plan') and agent.daily_plan and agent.daily_plan.social_commitments:
+        unfulfilled = [c for c in agent.daily_plan.social_commitments if not c.fulfilled]
+        if unfulfilled:
+            commitment_lines = ["You have committed to these activities with colleagues:"]
+            for c in unfulfilled:
+                with_names = ", ".join(a.split("_")[0].capitalize() for a in c.with_agents)
+                line = f"  - {c.time}: {c.activity} with {with_names}"
+                if c.location != "unspecified":
+                    line += f" at {c.location}"
+                commitment_lines.append(line)
+            commitment_lines.append(">>> HONOR YOUR COMMITMENTS - use take_break or go_out_for_break to fulfill these!")
+            social_commitments_section = "\n".join(commitment_lines)
+        else:
+            social_commitments_section = "No pending social commitments."
+    else:
+        social_commitments_section = "No social commitments."
+
     # Format equipment status readably - separate by category for clarity
     equipment_status = sim_state.get("equipment_status", {})
     equipment_items = equipment_status.get("items", {})
@@ -2005,6 +2067,10 @@ Checkpoint: {checkpoint_display}
 <recent_agreements>
 {agreements_section}
 </recent_agreements>
+
+<social_commitments>
+{social_commitments_section}
+</social_commitments>
 
 <relevant_memories purpose="context for your decisions">
 {context['relevant_memories']}{work_preferences_section}

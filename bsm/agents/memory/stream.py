@@ -953,7 +953,16 @@ class MemoryStream:
 
             # 1. Recency: exponential decay based on time since last access
             hours_since_access = max(0, (now_ts - node.last_accessed) / 3600)
-            recency = recency_decay ** hours_since_access
+
+            # Faster decay for ephemeral/mundane observations (Option A: pattern matching)
+            EPHEMERAL_PATTERNS = ["is in the office", "temperature is", "Outside it is", "weather is"]
+            is_ephemeral = any(pat in node.description for pat in EPHEMERAL_PATTERNS)
+
+            if is_ephemeral:
+                ephemeral_decay = 0.7071  # sqrt(0.5) → 2-hour half-life
+                recency = ephemeral_decay ** hours_since_access
+            else:
+                recency = recency_decay ** hours_since_access
 
             # Legacy: Core memories don't decay (for backwards compatibility)
             if node.node_type == "core":
@@ -978,9 +987,16 @@ class MemoryStream:
         scores.sort(key=lambda x: x[0], reverse=True)
         top_nodes = [node for _, node in scores[:n_count]]
 
-        # Update last_accessed for retrieved nodes
+        # Update last_accessed only if not recently retrieved (3-hour cooldown)
+        # This prevents feedback loop where frequently retrieved memories
+        # stay perpetually "fresh" while still allowing important memories
+        # to be refreshed when actively used across decision cycles
+        RETRIEVAL_COOLDOWN_HOURS = 3
+        cooldown_seconds = RETRIEVAL_COOLDOWN_HOURS * 3600
+
         for node in top_nodes:
-            node.last_accessed = now_ts
+            if (now_ts - node.last_accessed) > cooldown_seconds:
+                node.last_accessed = now_ts
 
         # Combine: core memories first, then memory stream results
         result_nodes.extend(top_nodes)
