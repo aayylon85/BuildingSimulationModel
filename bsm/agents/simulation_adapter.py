@@ -149,6 +149,14 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
                 },
                 confidence=0.8,
             ))
+        elif decision.break_decision.action == "go_out_for_break":
+            actions.append(OccupantAction(
+                action_type="go_out_for_break",
+                parameters={
+                    "activity": decision.break_decision.activity or "fresh_air",
+                },
+                confidence=0.8,
+            ))
         elif decision.break_decision.action == "return_from_lunch":
             actions.append(OccupantAction(
                 action_type="return_from_lunch",
@@ -725,9 +733,17 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             self.set_agent_status(occupant_id, "at_desk", False)
             self.set_agent_location(occupant_id, "break_area")
 
+        elif action_type == "go_out_for_break":
+            # Leave building for a short break (walk, coffee run, fresh air)
+            self.set_agent_status(occupant_id, "on_break", True)
+            self.set_agent_status(occupant_id, "at_desk", False)
+            self.set_agent_status(occupant_id, "out_of_office", True)
+            self.set_agent_location(occupant_id, "outside")
+
         elif action_type == "return_from_break":
             self.set_agent_status(occupant_id, "on_break", False)
             self.set_agent_status(occupant_id, "at_desk", True)
+            self.set_agent_status(occupant_id, "out_of_office", False)  # Clear in case was outside
             self.set_agent_location(occupant_id, "desk_area")
 
         elif action_type == "use_appliance":

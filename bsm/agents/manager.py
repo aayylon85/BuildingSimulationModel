@@ -1912,6 +1912,30 @@ Select your desk for today and specify which equipment to turn on.
             )
             print(f"[LOCATION] {agent_id}: {location_desc}")
 
+            # Special memory for returning from outside the building
+            if previous_location == "outside" and new_location != "outside":
+                # Determine what activity they were doing
+                return_action = next(
+                    (a for a in decision.actions if a.action_type in ("return_from_lunch", "return_from_break")),
+                    None
+                )
+                if return_action:
+                    activity = return_action.parameters.get("activity", "break")
+                    if return_action.action_type == "return_from_lunch":
+                        outside_desc = f"I went outside for lunch. It was refreshing to step out of the office."
+                    else:
+                        outside_desc = f"I went outside for a {activity}. The fresh air was nice."
+
+                    agent.memory_stream.add_event(
+                        description=outside_desc,
+                        subject=agent_id,
+                        predicate="returned from",
+                        obj="outside activity",
+                        now=now,
+                        importance=4.0,  # Slightly higher importance for notable activities
+                    )
+                    print(f"[OUTSIDE] {agent_id}: {outside_desc}")
+
         # 12.25. Process pending conversations
         pending_convs = self.adapter.get_pending_conversations()
         for conv in pending_convs:
@@ -1923,7 +1947,7 @@ Select your desk for today and specify which equipment to turn on.
         for action in decision.actions:
             if action.action_type in ("go_to_lunch", "go_out_for_lunch"):
                 self._checkpoint_manager._lunch_started[agent_id] = now
-            elif action.action_type == "take_break":
+            elif action.action_type in ("take_break", "go_out_for_break"):
                 self._checkpoint_manager._break_started[agent_id] = now
 
         # 12.5. Process plan updates directly from StepDecisions
@@ -2212,6 +2236,12 @@ Select your desk for today and specify which equipment to turn on.
         target_loc = self.adapter.get_agent_location(target_id)
         if initiator_loc != target_loc:
             print(f"[CONV] {initiator_id} can't talk to {target_id} - different locations ({initiator_loc} vs {target_loc})")
+            return None
+
+        # Block conversations when either agent is outside the building
+        # We don't simulate what happens outside, so no conversations there
+        if initiator_loc == "outside" or target_loc == "outside":
+            print(f"[CONV] {initiator_id} can't converse - one or both agents outside building")
             return None
 
         try:

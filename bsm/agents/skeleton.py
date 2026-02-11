@@ -241,17 +241,17 @@ class ConversationDecision(BaseModel):
 
 class BreakDecision(BaseModel):
     """Decision about taking a break or returning from break/lunch."""
-    action: Literal["take_break", "continue_working", "return_from_lunch", "return_from_break"] = Field(
-        description="Whether to take a break, continue working, or return from break/lunch"
+    action: Literal["take_break", "go_out_for_break", "continue_working", "return_from_lunch", "return_from_break"] = Field(
+        description="Whether to take a break (inside or outside), continue working, or return from break/lunch"
     )
     reasoning: str = Field(description="Why this break decision was made")
-    break_type: Optional[Literal["at_desk", "break_area"]] = Field(
+    break_type: Optional[Literal["at_desk", "break_area", "outside"]] = Field(
         default=None,
-        description="Where to take the break (only for take_break action)"
+        description="Where to take the break (only for take_break/go_out_for_break actions)"
     )
     activity: Optional[str] = Field(
         default=None,
-        description="Break activity: tea, coffee, snack, stretch, walk, etc."
+        description="Break activity: tea, coffee, snack, stretch, walk, fresh_air, etc."
     )
 
 
@@ -378,6 +378,19 @@ class WorkActivity(BaseModel):
     reasoning: str = Field(default="", description="Why this activity is planned")
 
 
+class SocialCommitment(BaseModel):
+    """A commitment made with a colleague during conversation."""
+    activity: str = Field(description="What was agreed: 'coffee', 'walk', 'lunch together', etc.")
+    time: str = Field(description="When (HH:MM) if specified, or 'unspecified'")
+    with_agents: List[str] = Field(description="Agent IDs who agreed to this activity")
+    location: Literal["break_area", "outside", "meeting_room", "unspecified"] = Field(
+        default="unspecified",
+        description="Where the activity will happen"
+    )
+    source: str = Field(default="conversation", description="How this commitment was created")
+    fulfilled: bool = Field(default=False, description="Whether this commitment has been honored")
+
+
 class DailyPlan(BaseModel):
     occupant_id: str
     date_iso: str
@@ -416,6 +429,10 @@ class DailyPlan(BaseModel):
         description="Whether to automatically return to desk after breaks/lunch"
     )
     notes: str = ""
+    social_commitments: List[SocialCommitment] = Field(
+        default_factory=list,
+        description="Commitments made with colleagues to do activities together"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1486,11 +1503,28 @@ def build_step_agent(occupant_id: str, model: str = DEFAULT_AGENT_MODEL) -> Agen
     instructions = f"""
 You are a simulated building occupant agent (ID: {occupant_id}).
 
-You are making a decision at a CHECKPOINT. The checkpoint reason is shown in your prompt
-(e.g., "hourly", "meeting starting", "lunch time", "break time"). Consider this reason
-when deciding what actions to take.
+<task_context>
+You are making a decision at a CHECKPOINT. Consider the checkpoint reason
+(hourly, meeting_start, lunch_time, etc.) when deciding actions.
+</task_context>
 
-AVAILABLE ACTIONS:
+<output_verbosity_spec>
+- Reasoning fields: 1-2 sentences max per decision category
+- If action is "maintain_current" or "keep_current": can be just 2-5 words
+- Only explain actions you're taking, not actions you're NOT taking
+</output_verbosity_spec>
+
+<scope_discipline>
+- You are simulating a realistic office worker going about their day
+- Respond primarily to what's happening at this checkpoint moment
+- Prefer stability: if comfortable, maintain current state
+- Only act on genuine discomfort or clear needs - avoid constant adjustments
+- Honor your personality and habits
+- If circumstances haven't changed, your decisions shouldn't either
+- Focus on the checkpoint reason rather than hypothetical scenarios
+</scope_discipline>
+
+<available_actions>
 
 Comfort Controls:
 - no_op: do nothing (use when comfortable and no immediate needs)
@@ -1519,13 +1553,16 @@ Meetings:
 Lunch & Breaks:
 - go_to_lunch: have lunch in the break room (stay in building)
 - go_out_for_lunch: leave building for lunch (cafe, restaurant, walk)
-- return_from_lunch: return to work after lunch
-- take_break: take a short break (parameters: location - "at_desk" or "break_area")
-- return_from_break: return to work after break
+- return_from_lunch: return to work after lunch (REQUIRED after going out)
+- take_break: take a short break inside (parameters: location - "at_desk" or "break_area")
+- go_out_for_break: leave building for a short break (walk, fresh air, coffee run)
+- return_from_break: return to work after break (REQUIRED after going outside)
 
 Social:
 - initiate_conversation: start a conversation with a colleague (parameters: agent_id, topic)
+</available_actions>
 
+<decision_guidance>
 THERMOSTAT - Focus on how you FEEL:
 - Check the actual indoor temperature and notice how you feel (too hot, too cold, comfortable)
 - If you feel TOO HOT: Request direction="cooler" - this LOWERS the cooling setpoint to get more cooling
@@ -1554,9 +1591,19 @@ KITCHEN EQUIPMENT (in break_area):
 
 BREAKS - Follow your daily plan and preferences:
 - At break checkpoints, consider taking a break based on your planned schedule
-- Choose location based on your preferences: at_desk (quick) or break_area (social, make tea/coffee)
+- You have THREE options:
+  1. "take_break" with location="at_desk": Quick break at your desk
+  2. "take_break" with location="break_area": Go to kitchen (make tea/coffee, social)
+  3. "go_out_for_break": Leave the building for fresh air, walk, or coffee run
+- IMPORTANT: If you go outside (go_out_for_break), you MUST use "return_from_break" to come back
 - Your core memories about tea/coffee preferences should guide break behavior
-- Remember how you like your tea or coffee!
+- Consider social commitments - if you agreed to take a break with a colleague, honor it!
+
+SOCIAL COMMITMENTS:
+- If you made agreements with colleagues during conversations (e.g., "let's grab coffee at 10"),
+  these will be shown in <social_commitments> section of your prompt
+- Honor your commitments! If you agreed to an activity with someone, follow through
+- Use the appropriate action (take_break, go_out_for_break) to fulfill social commitments
 
 LUNCH - Follow your daily plan:
 - At lunch checkpoint, take lunch according to your plan
@@ -1596,37 +1643,39 @@ LOCATIONS:
 - meeting_room: Enclosed room for meetings (has projector, conference phone)
 - break_area: Kitchen/break room (has kettle, coffee machine, microwave, fridge)
 - shared_area: Common area (has photocopier)
+</decision_guidance>
 
-DECISION GUIDELINES:
-1. Consider the CHECKPOINT REASON - it tells you why you're making a decision now
-2. Act according to your personality, preferences, and memories
-3. ALWAYS provide a decision, even if it's to maintain current state
-4. Prefer minimal actions when comfortable and no immediate needs
-5. Consider other occupants for shared controls (thermostat, windows)
-6. Your relevant memories are retrieved and shown in the prompt
+<decision_priorities>
+CRITICAL (address first):
+1. Meeting attendance (if checkpoint is meeting_start/end)
+2. Lunch/break transitions (if checkpoint is lunch_time/break_time)
+3. Equipment needed for work (laptop, monitor must be ON)
 
-OUTPUT REQUIREMENTS:
-You MUST return a structured decision for EVERY category with reasoning:
-- thermostat: "adjust" or "maintain_current" (with reasoning about how you feel)
-- lighting: "turn_on", "turn_off", "adjust_brightness", or "keep_current" (with reasoning)
-- equipment_decisions: A LIST of decisions, one for EACH piece of equipment
-  - Each entry: {{"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "..."}}
-  - Actions: "turn_on", "turn_off", or "keep_current"
-  - DO NOT combine equipment names - create separate entries for laptop, monitor, etc.
-- location: "move" or "stay" (with reasoning)
-- conversation: "initiate" or "none" (with reasoning)
-- plan_update: "update" or "keep_current" (with reasoning)
+ROUTINE (only if comfortable with critical):
+4. Comfort adjustments (only if genuinely uncomfortable)
+5. Conversations (only if appropriate and time permits)
+6. Plan updates (only if circumstances significantly changed)
+</decision_priorities>
 
-EQUIPMENT DECISIONS EXAMPLE:
-```json
-"equipment_decisions": [
-  {{"equipment_name": "laptop_A", "action": "turn_on", "reasoning": "Need laptop for work"}},
-  {{"equipment_name": "monitor_A", "action": "turn_on", "reasoning": "Need monitor for work"}}
-]
-```
+<stop_conditions>
+Return your decision when:
+- All required decision categories have a value
+- You have addressed the checkpoint reason
+- DO NOT continue elaborating beyond the structured output
+</stop_conditions>
 
-Every decision MUST include reasoning explaining WHY you chose that action.
-Your output MUST be valid JSON matching the StepDecisions schema.
+<output_requirements>
+Return a structured decision for EVERY category:
+- thermostat: "adjust" or "maintain_current"
+- lighting: "turn_on", "turn_off", "adjust_brightness", or "keep_current"
+- equipment_decisions: A LIST with one entry per equipment item
+- break_decision: "take_break", "go_out_for_break", "continue_working", "return_from_*"
+- location: "move" or "stay"
+- conversation: "initiate" or "none"
+- plan_update: "update" or "keep_current"
+
+Each decision MUST include brief reasoning (1-2 sentences max).
+</output_requirements>
 """.strip()
 
     return Agent(
