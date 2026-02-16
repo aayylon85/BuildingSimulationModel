@@ -28,6 +28,7 @@ from bsm.agents.skeleton import (
     StepDecisions,
     DeskSelectionDecision,
     SimContext,
+    SocialCommitment,
     build_step_agent,
     build_arrival_agent,
     build_day_planner_agent,
@@ -54,6 +55,7 @@ from bsm.agents.cognition.conversation import (
     consultation_conversation,
     agent_conversation,
     record_agreement_to_memory,
+    record_conversation_to_memory,
     ConsultationOutcome,
     ConversationResult,
 )
@@ -160,10 +162,10 @@ class DecisionCheckpointManager:
             - "meeting_start:{title}": Meeting is starting
             - "meeting_end:{title}": Meeting is ending
             - "lunch_time": Time for planned lunch
-            - "lunch_return": Time to return from lunch (30-60 min after start)
-            - "morning_break": Time for morning break
-            - "afternoon_break": Time for afternoon break
-            - "break_return": Time to return from break (10-20 min after start)
+            - "return_from_lunch": Time to return from lunch (30-60 min after start)
+            - "take_break:morning": Time for morning break
+            - "take_break:afternoon": Time for afternoon break
+            - "return_from_break": Time to return from break (10-20 min after start)
             - "": No checkpoint needed
         """
         if agent_id not in self._processed_events:
@@ -180,14 +182,14 @@ class DecisionCheckpointManager:
             minutes = (current_time - self._lunch_started[agent_id]).total_seconds() / 60
             if 30 <= minutes <= 60:
                 del self._lunch_started[agent_id]
-                return True, "lunch_return"
+                return True, "return_from_lunch"
 
         # Check break return checkpoint (10-20 min after start)
         if agent_id in self._break_started:
             minutes = (current_time - self._break_started[agent_id]).total_seconds() / 60
             if 10 <= minutes <= 20:
                 del self._break_started[agent_id]
-                return True, "break_return"
+                return True, "return_from_break"
 
         # If no daily plan, only use hourly checkpoints
         if not daily_plan:
@@ -208,6 +210,14 @@ class DecisionCheckpointManager:
                 end_minutes = end_dt.hour * 60 + end_dt.minute
             except (ValueError, TypeError):
                 continue
+
+            # Meeting prep checkpoint (6-10 minutes before start)
+            prep_event_id = f"meeting_prep:{meeting_id}"
+            time_to_start = start_minutes - current_minutes
+            if (6 <= time_to_start <= 10 and
+                    prep_event_id not in self._processed_events[agent_id]):
+                self._processed_events[agent_id].add(prep_event_id)
+                return True, f"meeting_prep:{meeting.title}"
 
             # Meeting start checkpoint (within 5 minutes of start)
             start_event_id = f"meeting_start:{meeting_id}"
@@ -238,27 +248,27 @@ class DecisionCheckpointManager:
 
         # Check morning break checkpoint
         if daily_plan.morning_break:
-            break_event_id = f"morning_break:{daily_plan.morning_break.preferred_time}"
+            break_event_id = f"take_break:morning:{daily_plan.morning_break.preferred_time}"
             try:
                 break_hour, break_minute = map(int, daily_plan.morning_break.preferred_time.split(":"))
                 break_minutes = break_hour * 60 + break_minute
                 if (abs(current_minutes - break_minutes) <= 5 and
                         break_event_id not in self._processed_events[agent_id]):
                     self._processed_events[agent_id].add(break_event_id)
-                    return True, "morning_break"
+                    return True, "take_break:morning"
             except (ValueError, TypeError):
                 pass
 
         # Check afternoon break checkpoint
         if daily_plan.afternoon_break:
-            break_event_id = f"afternoon_break:{daily_plan.afternoon_break.preferred_time}"
+            break_event_id = f"take_break:afternoon:{daily_plan.afternoon_break.preferred_time}"
             try:
                 break_hour, break_minute = map(int, daily_plan.afternoon_break.preferred_time.split(":"))
                 break_minutes = break_hour * 60 + break_minute
                 if (abs(current_minutes - break_minutes) <= 5 and
                         break_event_id not in self._processed_events[agent_id]):
                     self._processed_events[agent_id].add(break_event_id)
-                    return True, "afternoon_break"
+                    return True, "take_break:afternoon"
             except (ValueError, TypeError):
                 pass
 
@@ -275,6 +285,39 @@ class DecisionCheckpointManager:
                         return True, f"work_activity:{activity.activity}"
                 except (ValueError, TypeError):
                     pass
+
+        # Check social commitment checkpoints (from conversations)
+        if hasattr(daily_plan, 'social_commitments') and daily_plan.social_commitments:
+            for commitment in daily_plan.social_commitments:
+                if commitment.fulfilled:
+                    continue
+                if commitment.time == "unspecified":
+                    continue
+                try:
+                    comm_hour, comm_minute = map(int, commitment.time.split(":"))
+                    comm_minutes = comm_hour * 60 + comm_minute
+                    commitment_event_id = f"commitment:{commitment.activity}_{commitment.time}"
+                    # Check if within 5 minutes of commitment time
+                    if (abs(current_minutes - comm_minutes) <= 5 and
+                            commitment_event_id not in self._processed_events[agent_id]):
+                        self._processed_events[agent_id].add(commitment_event_id)
+                        return True, f"commitment:{commitment.activity}"
+                except (ValueError, TypeError):
+                    pass
+
+        # Check departure preparation checkpoint (10-20 min before departure)
+        if daily_plan.actual_departure_time:
+            try:
+                dep_hour, dep_minute = map(int, daily_plan.actual_departure_time.split(":"))
+                dep_minutes = dep_hour * 60 + dep_minute
+                departure_event_id = f"departure_prep:{daily_plan.actual_departure_time}"
+                time_to_departure = dep_minutes - current_minutes
+                if (10 <= time_to_departure <= 20 and
+                        departure_event_id not in self._processed_events[agent_id]):
+                    self._processed_events[agent_id].add(departure_event_id)
+                    return True, "departure_prep"
+            except (ValueError, TypeError):
+                pass
 
         return False, ""
 
@@ -611,6 +654,10 @@ class LLMOccupantManager:
 
         run_dir = self._agent_paths.get("run_dir", base_dir)
         self._actions_log_path = self._agent_paths.get("shared", {}).get("action_log")
+
+        # UI demo writer (optional, set via set_ui_writer())
+        self._ui_writer = None
+
         print(f"[LLM] Initialized {len(self._agent_ids)} LLM occupant agents")
         print(f"[LLM] Agent data directory: {run_dir}")
 
@@ -705,6 +752,7 @@ class LLMOccupantManager:
         Persist a meeting from DailyPlan to the calendar database.
 
         Creates a calendar event and sends invitations to invitees.
+        Checks for duplicates to prevent race condition issues from parallel meeting creation.
         """
         try:
             # Only create if there are invitees or it's a real meeting
@@ -714,6 +762,18 @@ class LLMOccupantManager:
             # Parse meeting times
             start = datetime.fromisoformat(meeting.start_datetime_iso)
             end = datetime.fromisoformat(meeting.end_datetime_iso)
+
+            # Check for duplicate meetings before creating
+            # This prevents issues from parallel meeting creation in Phase 1
+            day_start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
+            existing_events = self.calendar.list_events("shared", day_start, day_end)
+            for existing in existing_events:
+                if (existing.get("title") == meeting.title and
+                    existing.get("start_datetime_iso") == meeting.start_datetime_iso):
+                    # Meeting already exists - skip creating duplicate
+                    print(f"    Skipping duplicate meeting '{meeting.title}' at {meeting.start_datetime_iso}")
+                    return
 
             # Create the event
             event_id = self.calendar.create_event(
@@ -743,6 +803,45 @@ class LLMOccupantManager:
     def get_agent_ids(self) -> List[str]:
         """Get list of configured agent IDs."""
         return self._agent_ids.copy()
+
+    def set_ui_writer(self, ui_writer) -> None:
+        """
+        Set the UI demo writer for logging actions and conversations.
+
+        Args:
+            ui_writer: UIDemoWriter instance from bsm.output.ui_demo_writer
+        """
+        self._ui_writer = ui_writer
+
+    def get_all_occupant_states(self) -> List[Dict[str, Any]]:
+        """
+        Get current state of all occupants for UI output.
+
+        Returns:
+            List of dicts with agent_id, agent_name, is_in_office, location,
+            current_desk, at_desk, on_break, at_lunch for each agent.
+        """
+        states = []
+        for agent_id in self._agent_ids:
+            agent = self._agents.get(agent_id)
+            is_present = self.adapter.is_occupant_present(agent_id)
+            location = self.adapter.get_agent_location(agent_id) if is_present else "outside"
+            status = self.adapter.get_agent_status(agent_id)
+
+            # Get specific desk assignment from desk manager
+            current_desk = self.desks.get_desk_for_occupant(agent_id) if is_present else None
+
+            states.append({
+                "agent_id": agent_id,
+                "agent_name": agent.first_name if agent else agent_id.split("_")[0].capitalize(),
+                "is_in_office": is_present,
+                "location": location,
+                "current_desk": current_desk,
+                "at_desk": status.get("at_desk", False),
+                "on_break": status.get("on_break", False),
+                "at_lunch": status.get("at_lunch", False),
+            })
+        return states
 
     def get_agent_config(self, agent_id: str) -> Optional[dict]:
         """Get configuration for a specific agent."""
@@ -814,13 +913,15 @@ class LLMOccupantManager:
                         meeting_desc += f" with {', '.join(other_attendees)}"
 
                 # Add to memory with meeting-related keywords
+                # Use LLM to assess importance (meetings vary in importance)
+                meeting_importance = await get_importance(agent, meeting_desc, 5.0, use_llm=True)
                 agent.memory_stream.add_event(
                     description=meeting_desc,
                     subject="I",
                     predicate="have meeting",
                     obj=title,
                     now=now,
-                    importance=5.0,  # Meetings are moderately important
+                    importance=meeting_importance,
                 )
                 print(f"[SCHEDULE] {agent_id}: Meeting recorded - '{title}' at {time_str}")
 
@@ -1418,6 +1519,7 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         Uses checkpoint-based logic:
         - Hourly checkpoints (every 60 minutes)
         - Event-triggered checkpoints (meeting start/end, lunch, breaks)
+        - Social commitment checkpoints (from conversations)
 
         Also falls back to decision_interval_minutes if no checkpoint triggered
         but enough time has passed.
@@ -1427,6 +1529,30 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         """
         # Get agent's daily plan if available
         daily_plan = self._daily_plans.get(agent_id)
+
+        # Sync social commitments from agent's stored dict (conversations add them there)
+        # The checkpoint manager needs these to trigger commitment checkpoints
+        if daily_plan:
+            agent = self._agents.get(agent_id)
+            if agent:
+                agent_daily_plan = agent.get_daily_plan()
+                if agent_daily_plan and isinstance(agent_daily_plan, dict):
+                    stored_commitments = agent_daily_plan.get("social_commitments", [])
+                    if stored_commitments:
+                        # Convert dicts to SocialCommitment objects and merge
+                        for c_dict in stored_commitments:
+                            try:
+                                commitment = SocialCommitment(**c_dict)
+                                # Check if this commitment already exists
+                                existing = any(
+                                    sc.activity == commitment.activity and
+                                    sc.time == commitment.time
+                                    for sc in daily_plan.social_commitments
+                                )
+                                if not existing:
+                                    daily_plan.social_commitments.append(commitment)
+                            except Exception:
+                                pass  # Skip invalid commitment dicts
 
         # Check for checkpoint triggers (hourly + events)
         should_checkpoint, reason = self._checkpoint_manager.should_checkpoint(
@@ -1523,8 +1649,11 @@ Do NOT use calendar tools - just output your final DailyPlan now.
             was_present = self.adapter.is_occupant_present(agent_id)
 
             if is_working and not was_present:
-                # Agent is arriving
-                self._handle_arrival(agent_id, now)
+                # Only handle initial morning arrival, not returning from outside break/lunch
+                # Use _desk_chosen_today as indicator that agent has already arrived
+                has_arrived_today = self.adapter._desk_chosen_today.get(agent_id, False)
+                if not has_arrived_today:
+                    self._handle_arrival(agent_id, now)
             elif not is_working and was_present:
                 # Agent is departing
                 self._handle_departure(agent_id, now)
@@ -1696,6 +1825,12 @@ Select your desk for today and specify which equipment to turn on.
     def _handle_departure(self, agent_id: str, now: datetime) -> None:
         """Handle an agent departing from work."""
         print(f"[LLM] {agent_id} departing at {now.strftime('%H:%M')}")
+
+        # Clean up checkpoint timers to prevent stale timers accumulating
+        if agent_id in self._checkpoint_manager._lunch_started:
+            del self._checkpoint_manager._lunch_started[agent_id]
+        if agent_id in self._checkpoint_manager._break_started:
+            del self._checkpoint_manager._break_started[agent_id]
 
         # Handle departure (turns off equipment, releases desk)
         self.adapter.set_occupant_present(agent_id, False)
@@ -1902,13 +2037,15 @@ Select your desk for today and specify which equipment to turn on.
 
             # Record location change to agent memory
             location_desc = f"I moved from {previous_location or 'unknown'} to {new_location}{move_reason}"
+            # Use LLM to assess importance
+            location_importance = await get_importance(agent, location_desc, 3.0, use_llm=True)
             agent.memory_stream.add_event(
                 description=location_desc,
                 subject=agent_id,
                 predicate="moved to",
                 obj=new_location,
                 now=now,
-                importance=3.0,  # Low-medium importance for routine movement
+                importance=location_importance,
             )
             print(f"[LOCATION] {agent_id}: {location_desc}")
 
@@ -1926,13 +2063,15 @@ Select your desk for today and specify which equipment to turn on.
                     else:
                         outside_desc = f"I went outside for a {activity}. The fresh air was nice."
 
+                    # Use LLM to assess importance
+                    outside_importance = await get_importance(agent, outside_desc, 4.0, use_llm=True)
                     agent.memory_stream.add_event(
                         description=outside_desc,
                         subject=agent_id,
                         predicate="returned from",
                         obj="outside activity",
                         now=now,
-                        importance=4.0,  # Slightly higher importance for notable activities
+                        importance=outside_importance,
                     )
                     print(f"[OUTSIDE] {agent_id}: {outside_desc}")
 
@@ -1947,18 +2086,27 @@ Select your desk for today and specify which equipment to turn on.
         for action in decision.actions:
             if action.action_type in ("go_to_lunch", "go_out_for_lunch"):
                 self._checkpoint_manager._lunch_started[agent_id] = now
+                # Check for commitment fulfillment
+                self._check_commitment_fulfillment(agent_id, "lunch", now)
             elif action.action_type in ("take_break", "go_out_for_break"):
                 self._checkpoint_manager._break_started[agent_id] = now
+                # Check for commitment fulfillment
+                activity = action.parameters.get("activity", "break")
+                self._check_commitment_fulfillment(agent_id, activity, now)
 
-        # 12.5. Process plan updates directly from StepDecisions
-        if step_decision.plan_update.action == "update" and step_decision.plan_update.updates:
-            updates = step_decision.plan_update.updates
-            reason = step_decision.plan_update.reasoning
-            result = agent.update_daily_plan(updates, reason=reason, now=now)
-            if result.get("updated"):
-                print(f"[SCHEDULE] {agent_id}: Plan adjusted - {reason}")
-                if result.get("skipped_past_events"):
-                    print(f"[SCHEDULE] {agent_id}: (skipped past events: {result['skipped_past_events']})")
+        # 12.5. Process plan updates via action path (from adapter's pending list)
+        pending_plan_updates = self.adapter.get_pending_plan_updates()
+        for plan_update in pending_plan_updates:
+            target_agent_id = plan_update.get("occupant_id", agent_id)
+            target_agent = self._agents.get(target_agent_id)
+            if target_agent:
+                updates = plan_update.get("updates", {})
+                reason = plan_update.get("reason", "Plan adjustment")
+                result = target_agent.update_daily_plan(updates, reason=reason, now=now)
+                if result.get("updated"):
+                    print(f"[SCHEDULE] {target_agent_id}: Plan adjusted - {reason}")
+                    if result.get("skipped_past_events"):
+                        print(f"[SCHEDULE] {target_agent_id}: (skipped past events: {result['skipped_past_events']})")
 
         # 13. Record decision to memory (using StepDecisions for structured reasoning)
         await record_decision_to_memory(agent, step_decision, now)
@@ -2074,13 +2222,15 @@ Select your desk for today and specify which equipment to turn on.
                 for other_agent in present_agents[1:]:
                     if other_agent.memory_stream:
                         notification = f"{agent.first_name} adjusted the thermostat to {proposed_setpoint:.1f}°C"
+                        # Use LLM to assess importance
+                        notify_importance = await get_importance(other_agent, notification, 2.0, use_llm=True)
                         other_agent.memory_stream.add_event(
                             description=notification,
                             subject=agent.first_name,
                             predicate="adjusted",
                             obj="thermostat",
                             now=now,
-                            importance=2.0,  # Low importance for minor changes
+                            importance=notify_importance,
                         )
                 print(f"[CTRL] {agent.agent_id}: Adjusted thermostat (colleagues have similar preferences - no consultation needed)")
                 return decision
@@ -2254,7 +2404,33 @@ Select your desk for today and specify which equipment to turn on.
                 now=now,
                 calendar=self.calendar,
                 valid_colleagues=valid_colleagues,
+                topic=topic,
             )
+
+            # Handle declined conversations differently
+            if result and result.declined:
+                # Log the declined conversation but don't record to memory as a full conversation
+                print(f"[CONV] {target_id} declined conversation with {initiator_id}: {result.decline_reason}")
+                self._log_conversation(initiator_id, target_id, topic, result, now)
+                return result
+
+            # Record successful conversation to memory for BOTH parties
+            # This ensures both agents remember the conversation, get relationship updates,
+            # and have any commitments extracted and added to their daily plans
+            if result:
+                await record_conversation_to_memory(
+                    agent=initiator,
+                    conversation=result,
+                    other_agent_id=target_id,
+                    now=now,
+                )
+                await record_conversation_to_memory(
+                    agent=target,
+                    conversation=result,
+                    other_agent_id=initiator_id,
+                    now=now,
+                )
+
             self._log_conversation(initiator_id, target_id, topic, result, now)
             self._log_conversation_to_shared_file(result, now)
             return result
@@ -2483,7 +2659,7 @@ Select your desk for today and specify which equipment to turn on.
         conversation: ConversationResult,
         now: datetime,
     ) -> None:
-        """Log conversation to shared conversations.log file."""
+        """Log conversation to shared conversations.log file and UI demo output."""
         try:
             log_path = self._agent_paths.get("shared", {}).get("conversation_log")
             if not log_path:
@@ -2503,13 +2679,118 @@ Select your desk for today and specify which equipment to turn on.
         except IOError as e:
             print(f"Warning: Failed to log conversation: {e}")
 
+        # Write to UI demo output if enabled
+        if self._ui_writer:
+            # Create conversation ID from timestamp and participants
+            p1 = conversation.participants[0] if conversation.participants else "unknown"
+            p2 = conversation.participants[1] if len(conversation.participants) > 1 else "unknown"
+            conv_id = f"conv_{now.strftime('%Y%m%d_%H%M%S')}_{p1}_{p2}"
+
+            self._ui_writer.write_conversation(
+                conversation_id=conv_id,
+                conversation_data={
+                    "start_time": now.isoformat(),
+                    "participants": conversation.participants,
+                    "initiated_by": conversation.initiated_by,
+                    "topics": conversation.topics_discussed,
+                    "dialogue": [
+                        {
+                            "speaker": utt.speaker_id,
+                            "speaker_name": utt.speaker_id.split("_")[0].capitalize(),
+                            "utterance": utt.utterance,
+                        }
+                        for utt in conversation.utterances
+                    ],
+                    "duration_minutes": conversation.duration_minutes,
+                    "summary": conversation.summary,
+                }
+            )
+
+    def _check_commitment_fulfillment(
+        self,
+        agent_id: str,
+        activity: str,
+        now: datetime,
+    ) -> None:
+        """
+        Check if this break/lunch action fulfills a social commitment.
+
+        Looks for matching unfulfilled commitments and checks if the other
+        party is also at the same location. If so, marks the commitment
+        as fulfilled for both agents.
+        """
+        agent = self._agents.get(agent_id)
+        if not agent:
+            return
+
+        daily_plan = agent.get_daily_plan()
+        if not daily_plan:
+            return
+
+        if not hasattr(daily_plan, 'social_commitments') or not daily_plan.social_commitments:
+            return
+
+        current_location = self.adapter.get_agent_location(agent_id)
+        current_minutes = now.hour * 60 + now.minute
+
+        for commitment in daily_plan.social_commitments:
+            if commitment.fulfilled:
+                continue
+
+            # Check if this activity matches the commitment
+            activity_lower = activity.lower()
+            commitment_activity = commitment.activity.lower()
+            if not (activity_lower in commitment_activity or commitment_activity in activity_lower):
+                continue
+
+            # Check if time is within 15 minutes of commitment time
+            if commitment.time != "unspecified":
+                try:
+                    comm_hour, comm_minute = map(int, commitment.time.split(":"))
+                    comm_minutes = comm_hour * 60 + comm_minute
+                    if abs(current_minutes - comm_minutes) > 15:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            # Check if other agents in the commitment are at the same location
+            other_agents_present = True
+            for other_id in commitment.with_agents:
+                if other_id == agent_id:
+                    continue
+                other_location = self.adapter.get_agent_location(other_id)
+                if other_location != current_location:
+                    other_agents_present = False
+                    break
+
+            if other_agents_present:
+                # Mark commitment as fulfilled
+                commitment.fulfilled = True
+                print(f"[COMMITMENT] {agent_id}: Fulfilled '{commitment.activity}' with {commitment.with_agents}")
+
+                # Also mark as fulfilled for the other agents
+                for other_id in commitment.with_agents:
+                    if other_id == agent_id:
+                        continue
+                    other_agent = self._agents.get(other_id)
+                    if other_agent:
+                        other_daily_plan = other_agent.get_daily_plan()
+                        if other_daily_plan and hasattr(other_daily_plan, 'social_commitments'):
+                            for other_commitment in other_daily_plan.social_commitments:
+                                if (not other_commitment.fulfilled and
+                                    other_commitment.activity.lower() == commitment.activity.lower() and
+                                    agent_id in other_commitment.with_agents):
+                                    other_commitment.fulfilled = True
+                                    print(f"[COMMITMENT] {other_id}: Fulfilled '{other_commitment.activity}' with {agent_id}")
+                                    break
+
     def _log_action(
         self,
         agent_id: str,
         decision: OccupantStepDecision,
         now: datetime,
     ) -> None:
-        """Log action to shared actions.log file."""
+        """Log action to shared actions.log file and UI demo output."""
         try:
             log_path = self._agent_paths.get("shared", {}).get("action_log")
             if not log_path:
@@ -2524,6 +2805,22 @@ Select your desk for today and specify which equipment to turn on.
                     f.write(f"{now.strftime('%Y-%m-%d %H:%M')} | {agent_id:12} | {action.action_type:20} | {reason}\n")
         except IOError as e:
             print(f"Warning: Failed to log action for {agent_id}: {e}")
+
+        # Write to UI demo output if enabled
+        if self._ui_writer:
+            agent = self._agents.get(agent_id)
+            agent_name = agent.first_name if agent else agent_id.split("_")[0].capitalize()
+            for action in decision.actions:
+                self._ui_writer.write_agent_action(
+                    agent_id=agent_id,
+                    action_data={
+                        "timestamp": now.isoformat(),
+                        "action_type": action.action_type,
+                        "details": action.parameters or {},
+                        "reason": decision.brief_rationale or "",
+                    },
+                    agent_name=agent_name,
+                )
 
     def get_window_state(self) -> float:
         """Return current window open fraction (0-1)."""

@@ -49,6 +49,14 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
     """
     actions: List[OccupantAction] = []
 
+    # Validation logging - ensure structured output is complete
+    if not decision.equipment_decisions:
+        logger.debug(f"[VALIDATE] {decision.occupant_id}: equipment_decisions is empty")
+    if decision.break_decision.action == "not_applicable":
+        logger.debug(f"[VALIDATE] {decision.occupant_id}: break_decision is not_applicable")
+    if decision.meeting_equipment.action == "not_applicable":
+        logger.debug(f"[VALIDATE] {decision.occupant_id}: meeting_equipment is not_applicable")
+
     # Thermostat
     if decision.thermostat.action == "adjust":
         direction = decision.thermostat.adjustment_direction
@@ -129,17 +137,20 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
 
     # Plan update
     if decision.plan_update.action == "update" and decision.plan_update.updates:
-        actions.append(OccupantAction(
-            action_type="update_daily_plan",
-            parameters={
-                "updates": decision.plan_update.updates,
-                "reason": decision.plan_update.reasoning,
-            },
-            confidence=0.8,
-        ))
+        # Convert PlanUpdates Pydantic model to dict for storage
+        updates_dict = decision.plan_update.updates.model_dump(exclude_none=True)
+        if updates_dict:  # Only add action if there are actual updates
+            actions.append(OccupantAction(
+                action_type="update_daily_plan",
+                parameters={
+                    "updates": updates_dict,
+                    "reason": decision.plan_update.reasoning,
+                },
+                confidence=0.8,
+            ))
 
-    # Break decision (if present)
-    if decision.break_decision:
+    # Break decision (always present; check action for actual break requests)
+    if decision.break_decision.action not in ("not_applicable", "continue_working"):
         if decision.break_decision.action == "take_break":
             actions.append(OccupantAction(
                 action_type="take_break",
@@ -149,6 +160,29 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
                 },
                 confidence=0.8,
             ))
+            # Auto-add appliance use for tea/coffee breaks
+            # Equipment is auto-added regardless of location since agent will move to break_area
+            activity = (decision.break_decision.activity or "").lower()
+            # Check if agent already included equipment decisions for these appliances
+            existing_equipment = {
+                eq.equipment_name.lower()
+                for eq in decision.equipment_decisions
+                if eq.action == "turn_on"
+            }
+            if activity == "tea" and "kettle" not in existing_equipment:
+                print(f"  [AUTO] Adding kettle for {decision.occupant_id}'s tea break")
+                actions.append(OccupantAction(
+                    action_type="use_appliance",
+                    parameters={"appliance_name": "kettle"},
+                    confidence=0.8,
+                ))
+            elif activity == "coffee" and "coffee_machine" not in existing_equipment:
+                print(f"  [AUTO] Adding coffee_machine for {decision.occupant_id}'s coffee break")
+                actions.append(OccupantAction(
+                    action_type="use_appliance",
+                    parameters={"appliance_name": "coffee_machine"},
+                    confidence=0.8,
+                ))
         elif decision.break_decision.action == "go_out_for_break":
             actions.append(OccupantAction(
                 action_type="go_out_for_break",
@@ -169,6 +203,44 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
                 parameters={},
                 confidence=0.8,
             ))
+        # "continue_working" and "not_applicable" don't generate actions
+
+    # Meeting equipment (for meeting host)
+    if decision.meeting_equipment.action == "set_equipment":
+        if decision.meeting_equipment.equipment_changes:
+            for change in decision.meeting_equipment.equipment_changes:
+                change_lower = change.lower()
+                # Parse equipment change strings
+                if "projector" in change_lower:
+                    on_state = "on" in change_lower and "off" not in change_lower
+                    actions.append(OccupantAction(
+                        action_type="equipment_set",
+                        parameters={"equipment_name": "projector", "on": on_state},
+                        confidence=0.8,
+                    ))
+                elif "conference_phone" in change_lower or "phone" in change_lower:
+                    on_state = "on" in change_lower and "off" not in change_lower
+                    actions.append(OccupantAction(
+                        action_type="equipment_set",
+                        parameters={"equipment_name": "conference_phone", "on": on_state},
+                        confidence=0.8,
+                    ))
+                elif "blinds" in change_lower or "shade" in change_lower:
+                    # Map blinds commands to equipment actions
+                    close_state = "close" in change_lower
+                    actions.append(OccupantAction(
+                        action_type="blinds_set",
+                        parameters={"closed": close_state},
+                        confidence=0.8,
+                    ))
+                elif "whiteboard" in change_lower:
+                    on_state = "on" in change_lower and "off" not in change_lower
+                    actions.append(OccupantAction(
+                        action_type="equipment_set",
+                        parameters={"equipment_name": "whiteboard_light", "on": on_state},
+                        confidence=0.8,
+                    ))
+    # "accept_current" and "not_applicable" don't generate actions
 
     # If no actions, add explicit no_op
     if not actions:
@@ -835,9 +907,14 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         if occupant_id in self._agent_locations:
             del self._agent_locations[occupant_id]
 
-        # Clear agent status on departure (safety net for at_lunch, on_break, etc.)
-        if occupant_id in self._agent_status:
-            del self._agent_status[occupant_id]
+        # Reset agent status to departed state (instead of deleting)
+        # This ensures at_desk=False when is_in_office=False
+        self._agent_status[occupant_id] = {
+            "at_desk": False,      # Not at desk - they left
+            "at_lunch": False,
+            "on_break": False,
+            "out_of_office": True,  # They are out of the office
+        }
 
     def resolve_votes(self) -> Tuple[float, float]:
         """
@@ -886,8 +963,31 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             self._handle_occupant_departure(occupant_id)
 
     def is_occupant_present(self, occupant_id: str) -> bool:
-        """Check if occupant is present."""
-        return self._present_occupants.get(occupant_id, False)
+        """
+        Check if occupant is present in the building.
+
+        Consolidates three presence tracking mechanisms for consistency:
+        1. _present_occupants dict (primary - set on arrive/depart)
+        2. _agent_locations dict (secondary - "outside" means not present)
+        3. _agent_status dict (secondary - "out_of_office" means not present)
+
+        Returns True only if all mechanisms agree the agent is present.
+        """
+        # Primary check: _present_occupants
+        if not self._present_occupants.get(occupant_id, False):
+            return False
+
+        # Secondary: Check if agent is outside the building
+        location = self._agent_locations.get(occupant_id)
+        if location == "outside":
+            return False
+
+        # Secondary: Check out_of_office status flag
+        status = self._agent_status.get(occupant_id, {})
+        if status.get("out_of_office", False):
+            return False
+
+        return True
 
     def _get_default_agent_status(self) -> Dict[str, bool]:
         """Get default agent status (at desk, not on break/lunch)."""

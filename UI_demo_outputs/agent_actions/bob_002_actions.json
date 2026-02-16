@@ -1,0 +1,101 @@
+{
+  "agent_id": "bob_002",
+  "agent_name": "Bob",
+  "actions": [
+    {
+      "timestamp": "2025-06-10T09:00:00+00:00",
+      "action_type": "lights_set",
+      "details": {
+        "action": "turn_on",
+        "target": "desk_light",
+        "on": true,
+        "brightness": null
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T09:01:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: work_activity:Admin/email triage and day planning block"
+    },
+    {
+      "timestamp": "2025-06-10T09:50:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "meeting_room"
+      },
+      "reason": "Checkpoint: meeting_prep:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T09:55:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: meeting_start:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T10:00:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T10:25:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: meeting_end:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T11:00:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T11:55:00+00:00",
+      "action_type": "thermostat_adjust",
+      "details": {
+        "direction": "cooler",
+        "amount": 1.0,
+        "setpoint_delta_c": -1.0,
+        "_proposed_setpoint_c": 20.0
+      },
+      "reason": "Checkpoint: lunch_time"
+    },
+    {
+      "timestamp": "2025-06-10T12:00:00+00:00",
+      "action_type": "update_daily_plan",
+      "details": {
+        "updates": {
+          "lunch_plan": {
+            "location": "break_area",
+            "time": "12:00"
+          }
+        },
+        "reason": "It\u2019s 12:00 and lunch is due; scheduling lunch now to match routine."
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T13:00:00+00:00",
+      "action_type": "thermostat_adjust",
+      "details": {
+        "direction": "cooler",
+        "amount": 1.0,
+        "setpoint_delta_c": -1.0,
+        "_proposed_setpoint_c": 19.0
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T13:15:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "shared_area"
+      },
+      "reason": "Checkpoint: work_activity:Print/collect requirements pack for afternoon review"
+    }
+  ]
+}

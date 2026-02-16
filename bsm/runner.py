@@ -165,6 +165,21 @@ def run_simulation_from_config(config_path):
                     occupant_objects.append(Occupant(occ_data))
             print(f"Initialized {len(occupant_objects)} rule-based occupants.")
 
+        # --- 6b. Initialize UI Demo Writer (optional) ---
+        ui_writer = None
+        if config.get('ui_demo_output', {}).get('enabled', False):
+            try:
+                from bsm.output.ui_demo_writer import UIDemoWriter
+                output_dir = config.get('ui_demo_output', {}).get('output_dir', 'UI_demo_outputs')
+                ui_writer = UIDemoWriter(output_dir=output_dir)
+                print(f"UI demo output enabled. Writing to: {output_dir}/")
+            except ImportError as e:
+                print(f"Warning: UI demo writer unavailable: {e}", file=sys.stderr)
+
+        # Pass UI writer to LLM manager if both are enabled
+        if ui_writer and use_llm_agents and llm_manager is not None:
+            llm_manager.set_ui_writer(ui_writer)
+
         # --- 7. Run Warm-up ---
         stabilization_days = sim_settings.get('stabilization_days', 3)
         print(f"Starting dynamic stabilization warm-up ({stabilization_days} days)...")
@@ -381,10 +396,33 @@ def run_simulation_from_config(config_path):
             solar_gains[t] = step_results['q_solar_gains']
             window_state_profile[t] = current_window_fraction
 
+            # --- (E) Write to UI demo output (if enabled) ---
+            if ui_writer and use_llm_agents and llm_manager is not None:
+                sim_datetime = get_simulation_datetime(config, time_hours[t])
+                ui_writer.write_timestep({
+                    "simulation_time": sim_datetime.isoformat(),
+                    "external_temp_c": current_weather['air_temp_c'],
+                    "building_temp_c": step_results['T_air_new'],
+                    "total_power_w": abs(hvac_energy[t]) + equipment_power_profile[t] + lighting_power_profile[t],
+                    "hvac_power_w": hvac_energy[t],
+                    "equipment_power_w": equipment_power_profile[t],
+                    "lighting_power_w": lighting_power_profile[t],
+                    "equipment_state": llm_manager.equipment.get_equipment_state(),
+                    "lighting_state": llm_manager.lighting.get_detailed_lighting_state(),
+                    "occupant_states": llm_manager.get_all_occupant_states(),
+                })
+
         if use_llm_agents:
             print(f"Simulation complete. Total LLM decision rounds: {llm_decision_count}")
         else:
             print("Simulation complete.")
+
+        # Finalize UI demo output
+        if ui_writer:
+            ui_writer.finalize()
+            stats = ui_writer.get_stats()
+            print(f"UI demo output: {stats['timesteps']} timesteps, "
+                  f"{stats['action_files']} agent files, {stats['conversation_files']} conversations")
 
         # --- 9. Process and Display Results ---
         total_heating_kwh = np.sum(hvac_energy[hvac_energy > 0]) * dt_sec / (3600 * 1000)

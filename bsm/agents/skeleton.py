@@ -140,7 +140,8 @@ ActionType = Literal[
     "go_to_lunch",           # Leave desk for lunch (in building cafeteria/kitchen)
     "go_out_for_lunch",      # Leave building for lunch (cafe, restaurant, etc.)
     "return_from_lunch",     # Come back from lunch
-    "take_break",            # Short break (coffee, stretch, walk)
+    "take_break",            # Short break (coffee, stretch, walk) - stay in building
+    "go_out_for_break",      # Leave building for break (walk, fresh air, coffee run)
     "return_from_break",     # Come back from short break
     # Navigation
     "move_to",               # Move to a different location (parameters: location)
@@ -241,8 +242,8 @@ class ConversationDecision(BaseModel):
 
 class BreakDecision(BaseModel):
     """Decision about taking a break or returning from break/lunch."""
-    action: Literal["take_break", "go_out_for_break", "continue_working", "return_from_lunch", "return_from_break"] = Field(
-        description="Whether to take a break (inside or outside), continue working, or return from break/lunch"
+    action: Literal["take_break", "go_out_for_break", "continue_working", "return_from_lunch", "return_from_break", "not_applicable"] = Field(
+        description="Whether to take a break (inside or outside), continue working, return from break/lunch, or 'not_applicable' if break decision not relevant for this checkpoint"
     )
     reasoning: str = Field(description="Why this break decision was made")
     break_type: Optional[Literal["at_desk", "break_area", "outside"]] = Field(
@@ -257,13 +258,43 @@ class BreakDecision(BaseModel):
 
 class MeetingEquipmentDecision(BaseModel):
     """Decision about equipment at meeting start/end (for meeting host)."""
-    action: Literal["set_equipment", "accept_current"] = Field(
-        description="Whether to set meeting equipment or accept current state"
+    action: Literal["set_equipment", "accept_current", "not_applicable"] = Field(
+        description="Whether to set meeting equipment, accept current state, or 'not_applicable' if not at meeting boundary or not the host"
     )
     reasoning: str = Field(description="Why this meeting equipment decision was made")
     equipment_changes: Optional[List[str]] = Field(
         default=None,
         description="List of equipment changes, e.g., ['turn on projector', 'close blinds']"
+    )
+
+
+class LunchPlanUpdate(BaseModel):
+    """Partial update to lunch plan - only include fields you want to change."""
+    location: Optional[Literal["at_desk", "break_area", "go_out"]] = Field(
+        default=None, description="New lunch location if changing"
+    )
+    time: Optional[str] = Field(default=None, description="New lunch time (HH:MM) if changing")
+
+
+class BreakPlanUpdate(BaseModel):
+    """Partial update to break plan - only include fields you want to change."""
+    location: Optional[Literal["at_desk", "break_area"]] = Field(
+        default=None, description="New break location if changing"
+    )
+    activity: Optional[str] = Field(default=None, description="New activity if changing")
+    preferred_time: Optional[str] = Field(default=None, description="New time (HH:MM) if changing")
+
+
+class PlanUpdates(BaseModel):
+    """Structured updates to the daily plan. Only include sections you want to change."""
+    lunch_plan: Optional[LunchPlanUpdate] = Field(
+        default=None, description="Updates to lunch plan"
+    )
+    morning_break: Optional[BreakPlanUpdate] = Field(
+        default=None, description="Updates to morning break"
+    )
+    afternoon_break: Optional[BreakPlanUpdate] = Field(
+        default=None, description="Updates to afternoon break"
     )
 
 
@@ -273,9 +304,9 @@ class PlanUpdateDecision(BaseModel):
         description="Whether to update the daily plan or keep current"
     )
     reasoning: str = Field(description="Why plan update is or isn't needed")
-    updates: Optional[Dict[str, Any]] = Field(
+    updates: Optional[PlanUpdates] = Field(
         default=None,
-        description="Updates to apply: e.g., {'lunch_plan': {'location': 'go_out', 'time': '13:00'}, 'afternoon_break': {...}}"
+        description="Structured updates to apply. Only include sections you want to change."
     )
 
 
@@ -292,8 +323,8 @@ class StepDecisions(BaseModel):
     )
     location: LocationDecision
     conversation: ConversationDecision
-    break_decision: Optional[BreakDecision] = Field(default=None, description="Only during break-eligible times")
-    meeting_equipment: Optional[MeetingEquipmentDecision] = Field(default=None, description="Only at meeting boundaries for host")
+    break_decision: BreakDecision = Field(description="Break/lunch decision - use 'not_applicable' or 'continue_working' when not taking a break")
+    meeting_equipment: MeetingEquipmentDecision = Field(description="Meeting equipment decision - use 'not_applicable' when not at meeting boundary or not the host")
     plan_update: PlanUpdateDecision = Field(description="Whether to update daily plan based on current circumstances")
 
 
@@ -1665,16 +1696,25 @@ Return your decision when:
 </stop_conditions>
 
 <output_requirements>
-Return a structured decision for EVERY category:
+IMPORTANT: Return a complete structured decision for ALL categories. Every field is REQUIRED.
+
+Required decisions:
 - thermostat: "adjust" or "maintain_current"
 - lighting: "turn_on", "turn_off", "adjust_brightness", or "keep_current"
-- equipment_decisions: A LIST with one entry per equipment item
-- break_decision: "take_break", "go_out_for_break", "continue_working", "return_from_*"
+- equipment_decisions: A LIST with one entry per equipment item (can be empty if no equipment nearby)
 - location: "move" or "stay"
 - conversation: "initiate" or "none"
 - plan_update: "update" or "keep_current"
+- break_decision: "take_break", "go_out_for_break", "continue_working", "return_from_lunch", "return_from_break", or "not_applicable"
+  * Use "not_applicable" if this checkpoint is NOT about breaks/lunch
+  * Use "continue_working" if it's a break-eligible time but you choose not to take a break
+- meeting_equipment: "set_equipment", "accept_current", or "not_applicable"
+  * Use "not_applicable" if you're NOT at a meeting boundary or NOT the meeting host
+  * Use "accept_current" if equipment is already set up correctly
+  * Use "set_equipment" with equipment_changes list to adjust projector, phone, blinds, etc.
 
 Each decision MUST include brief reasoning (1-2 sentences max).
+DO NOT omit any decision category - all fields must be present in your response.
 </output_requirements>
 """.strip()
 
@@ -1687,7 +1727,7 @@ Each decision MUST include brief reasoning (1-2 sentences max).
             get_current_datetime,
             list_shared_calendar,
         ],
-        output_type=AgentOutputSchema(StepDecisions, strict_json_schema=False),
+        output_type=AgentOutputSchema(StepDecisions, strict_json_schema=True),
     )
 
 
@@ -1735,7 +1775,7 @@ OUTPUT:
         model=model,
         model_settings=ModelSettings(reasoning_effort="low"),  # Simple desk selection
         tools=[],  # No tools needed - state is provided in prompt
-        output_type=AgentOutputSchema(DeskSelectionDecision, strict_json_schema=False),
+        output_type=AgentOutputSchema(DeskSelectionDecision, strict_json_schema=True),
     )
 
 
@@ -1818,5 +1858,5 @@ Your preferences, habits, and context are in the prompt. Output your DailyPlan w
             invite_agents_to_meeting,
             list_known_agents,
         ],
-        output_type=AgentOutputSchema(DailyPlan, strict_json_schema=False),
+        output_type=AgentOutputSchema(DailyPlan, strict_json_schema=True),
     )

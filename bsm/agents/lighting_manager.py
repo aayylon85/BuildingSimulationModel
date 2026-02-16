@@ -292,6 +292,11 @@ class LightingManager:
         }
         or
         {
+            "target": "zone_main",  # light name from LightingDecision.target_device
+            "on": true/false
+        }
+        or
+        {
             "location": "Desk_A",  # turn on/off lights at location
             "on": true/false
         }
@@ -300,6 +305,21 @@ class LightingManager:
             "desk_light": true/false  # control occupant's own desk light
         }
         """
+        # Handle "target" parameter (from LightingDecision.target_device)
+        target = action_params.get("target")
+        if target:
+            on_state = action_params.get("on", False)
+            # Try to find the light by name
+            if target in self._lights:
+                return self.set_light_state(target, on_state)
+            # Try desk light pattern (e.g., "desk_light" → "desk_light_A")
+            if target == "desk_light" and occupant_desk:
+                desk_suffix = occupant_desk.split("_")[-1] if "_" in occupant_desk else occupant_desk
+                desk_light_name = f"desk_light_{desk_suffix}"
+                if desk_light_name in self._lights:
+                    return self.set_light_state(desk_light_name, on_state)
+            return False
+
         # Specific light by name
         light_name = action_params.get("light_name")
         if light_name:

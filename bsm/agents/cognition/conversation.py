@@ -1,98 +1,119 @@
 """
-converse.py
-
 Conversation system for generative agents.
+
 Implements multi-turn dialogue between agents based on Stanford's generative_agents pattern.
 
 Key features:
 - Turn-based conversation with natural ending detection
 - Relationship-aware context
-- Memory storage for conversations
+- Commitment extraction from conversations
+- Conflict checking for social commitments
+
+Note: For consultation about shared-space decisions (thermostat, windows),
+use the consultation module instead.
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
-
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import List, Optional, TYPE_CHECKING
 
 from agents import Agent, Runner, ModelSettings
 from agents.agent_output import AgentOutputSchema
 
 from bsm.agents.skeleton import DEFAULT_AGENT_MODEL, SimContext, CalendarStore, SocialCommitment
-from bsm.agents.cognition.modules import generate_relationship_summary, retrieve, get_importance
-from bsm.agents.memory.stream import MemoryNode
+from bsm.agents.cognition.schemas import (
+    ConversationUtterance,
+    ConversationResult,
+    UtteranceOutput,
+    ConversationCommitmentOutput,
+    CommitmentsExtractionOutput,
+    DeclineDecisionOutput,
+)
+from bsm.agents.cognition.social import generate_relationship_summary
+from bsm.agents.cognition.retrieval import retrieve
+
+
+# ---------------------------------------------------------------------------
+# Decline Check
+# ---------------------------------------------------------------------------
+
+def _build_decline_check_agent(target_id: str, initiator_id: str) -> Agent:
+    """Build an agent to check if the target wants to engage in conversation."""
+    instructions = f"""You are {target_id}, and {initiator_id} wants to start a conversation with you.
+
+Consider:
+- Are you currently busy with urgent work?
+- Are you in the middle of something important?
+- Do you have a meeting starting very soon?
+- Are you in a social mood right now?
+
+Most of the time, you should ACCEPT conversations with colleagues - it's part of normal office social dynamics.
+Only DECLINE if you have a genuine reason (rushing to a meeting, in the middle of something urgent, etc.).
+
+Decide whether to accept or decline, and briefly explain why."""
+
+    return Agent(
+        name=f"decline_check_{target_id}",
+        instructions=instructions,
+        model=DEFAULT_AGENT_MODEL,
+        model_settings=ModelSettings(reasoning_effort="low"),
+        output_type=AgentOutputSchema(DeclineDecisionOutput),
+    )
+
+
+async def _check_target_willingness(
+    target_agent: "GenerativeAgent",
+    initiator_id: str,
+    topic: Optional[str],
+    now: datetime,
+) -> DeclineDecisionOutput:
+    """
+    Check if the target agent wants to participate in a conversation.
+
+    Args:
+        target_agent: Agent being asked to converse
+        initiator_id: ID of the agent initiating
+        topic: Optional topic of conversation
+        now: Current datetime
+
+    Returns:
+        DeclineDecisionOutput with accept/decline decision and reason
+    """
+    # Get target's current context
+    agent_status = target_agent.scratch.get("current_status", {})
+    in_meeting = agent_status.get("in_meeting", False)
+    on_break = agent_status.get("on_break", False)
+
+    # Build context prompt
+    context_parts = [f"{initiator_id} wants to talk with you."]
+    if topic:
+        context_parts.append(f"Topic: {topic}")
+    if in_meeting:
+        context_parts.append("You are currently in a meeting.")
+    if on_break:
+        context_parts.append("You are currently on break.")
+
+    prompt = "\n".join(context_parts) + "\nDo you want to have this conversation?"
+
+    try:
+        check_agent = _build_decline_check_agent(target_agent.agent_id, initiator_id)
+        result = await Runner.run(check_agent, prompt)
+        return result.final_output
+    except Exception as e:
+        print(f"[CONVERSE] Decline check failed: {e}, defaulting to accept")
+        return DeclineDecisionOutput(action="accept", reason="Default acceptance")
 
 if TYPE_CHECKING:
     from bsm.agents.generative_agent import GenerativeAgent
 
 
 # ---------------------------------------------------------------------------
-# Conversation Data Structures
-# ---------------------------------------------------------------------------
-
-class ConversationUtterance(BaseModel):
-    """A single utterance in a conversation."""
-    speaker_id: str
-    utterance: str
-    end_conversation: bool = Field(
-        default=False,
-        description="True if this utterance naturally ends the conversation"
-    )
-
-
-class ConversationResult(BaseModel):
-    """Result of a complete conversation between two agents."""
-    participants: List[str]
-    utterances: List[ConversationUtterance]
-    summary: str
-    duration_minutes: int
-    topics_discussed: List[str] = Field(default_factory=list)
-    initiated_by: str
-
-
-class UtteranceOutput(BaseModel):
-    """Output schema for the conversation agent."""
-    utterance: str = Field(description="What you say in the conversation")
-    end_conversation: bool = Field(
-        default=False,
-        description="Set to true if this utterance naturally ends the conversation (goodbye, need to go, etc.)"
-    )
-
-
-class ConversationCommitmentOutput(BaseModel):
-    """Output schema for commitment extraction from conversations."""
-    activity: str = Field(description="What was agreed to do (coffee, walk, lunch, etc.)")
-    time: str = Field(
-        default="unspecified",
-        description="When (HH:MM) if specified, otherwise 'unspecified'"
-    )
-    location: Literal["break_area", "outside", "meeting_room", "unspecified"] = Field(
-        default="unspecified",
-        description="Where the activity will happen"
-    )
-
-
-class CommitmentsExtractionOutput(BaseModel):
-    """Output schema for extracting all commitments from a conversation."""
-    commitments: List[ConversationCommitmentOutput] = Field(
-        default_factory=list,
-        description="List of commitments made during the conversation (empty if none)"
-    )
-    reasoning: str = Field(
-        default="",
-        description="Brief explanation of what agreements were identified"
-    )
-
-
-# ---------------------------------------------------------------------------
 # Conversation Agent Builder
 # ---------------------------------------------------------------------------
 
-def build_conversation_agent(
+def _build_conversation_agent(
     speaker_id: str,
     listener_id: str,
     valid_colleagues: Optional[List[str]] = None
@@ -168,14 +189,55 @@ Output your utterance directly.
         name=f"convo_{speaker_id}_{listener_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="medium"),  # Dialogue requires cognitive reasoning
+        model_settings=ModelSettings(reasoning_effort="medium"),
         tools=[],
         output_type=AgentOutputSchema(UtteranceOutput, strict_json_schema=False),
     )
 
 
 # ---------------------------------------------------------------------------
-# Conversation Functions
+# Seasonal Context Helper
+# ---------------------------------------------------------------------------
+
+def _get_season_guidance(date: datetime) -> str:
+    """
+    Generate seasonal guidance for conversations.
+
+    Helps agents calibrate their temperature/weather comments to be
+    appropriate for the current season.
+
+    Args:
+        date: Current date
+
+    Returns:
+        Guidance text about seasonal temperature expectations
+    """
+    month = date.month
+
+    if 6 <= month <= 8:  # Summer
+        return (
+            "It's summer. Temperatures of 15-25°C are pleasant and normal. "
+            "Don't describe weather as 'freezing' or 'chilly' unless it's actually unusual for summer."
+        )
+    elif month in (12, 1, 2):  # Winter
+        return (
+            "It's winter. Temperatures of 0-10°C are typical. "
+            "Temperatures above 10°C are mild for winter."
+        )
+    elif 3 <= month <= 5:  # Spring
+        return (
+            "It's spring. Temperatures can vary, with 10-18°C being typical. "
+            "Expect some variability day to day."
+        )
+    else:  # Autumn
+        return (
+            "It's autumn. Temperatures of 10-18°C are typical. "
+            "Expect gradually cooling weather."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Context Building
 # ---------------------------------------------------------------------------
 
 def _build_conversation_context(
@@ -217,6 +279,7 @@ def _build_conversation_context(
         f"what I know about {listener.first_name}",
         f"shared experiences with {listener.first_name}",
         "recent interesting things at work",
+        "current weather and how it feels outside",  # Weather context for appropriate comments
     ]
     retrieved = retrieve(speaker, focal_points, now, n_count=6)
 
@@ -244,13 +307,21 @@ def _build_conversation_context(
 {history_text}
 </conversation_so_far>
 
-<current_time>{now.strftime('%H:%M on %A')}</current_time>
+<current_time>{now.strftime('%H:%M on %A, %B %d')}</current_time>
+
+<seasonal_context>
+{_get_season_guidance(now)}
+</seasonal_context>
 
 Generate your natural response to continue the conversation. Reference your memories or shared experiences when relevant.
 """.strip()
 
     return context
 
+
+# ---------------------------------------------------------------------------
+# Utterance Generation
+# ---------------------------------------------------------------------------
 
 async def generate_one_utterance(
     speaker: "GenerativeAgent",
@@ -278,7 +349,7 @@ async def generate_one_utterance(
     context = _build_conversation_context(speaker, listener, conversation_history, now)
 
     # Build agent with valid colleagues for anti-hallucination
-    convo_agent = build_conversation_agent(
+    convo_agent = _build_conversation_agent(
         speaker.agent_id, listener.agent_id, valid_colleagues=valid_colleagues
     )
 
@@ -302,6 +373,10 @@ async def generate_one_utterance(
     )
 
 
+# ---------------------------------------------------------------------------
+# Main Conversation Function
+# ---------------------------------------------------------------------------
+
 async def agent_conversation(
     init_agent: "GenerativeAgent",
     target_agent: "GenerativeAgent",
@@ -309,6 +384,7 @@ async def agent_conversation(
     max_turns: int = 8,
     calendar: Optional[CalendarStore] = None,
     valid_colleagues: Optional[List[str]] = None,
+    topic: Optional[str] = None,
 ) -> ConversationResult:
     """
     Conduct a multi-turn conversation between two agents.
@@ -322,10 +398,32 @@ async def agent_conversation(
         max_turns: Maximum number of exchanges (default 8)
         calendar: Optional calendar store for context
         valid_colleagues: List of valid colleague IDs in the office (for anti-hallucination)
+        topic: Optional topic of the conversation
 
     Returns:
         ConversationResult with all utterances and summary
     """
+    # Check if target agent wants to participate
+    decline_decision = await _check_target_willingness(
+        target_agent=target_agent,
+        initiator_id=init_agent.agent_id,
+        topic=topic,
+        now=now,
+    )
+
+    if decline_decision.action == "decline":
+        print(f"[CONVERSE] {target_agent.agent_id} declined conversation: {decline_decision.reason}")
+        return ConversationResult(
+            participants=[init_agent.agent_id, target_agent.agent_id],
+            utterances=[],
+            summary=f"{target_agent.first_name} declined to talk: {decline_decision.reason}",
+            duration_minutes=0,
+            topics_discussed=[],
+            initiated_by=init_agent.agent_id,
+            declined=True,
+            decline_reason=decline_decision.reason,
+        )
+
     utterances: List[ConversationUtterance] = []
     speaker = init_agent
     listener = target_agent
@@ -438,6 +536,10 @@ def _extract_conversation_topics(utterances: List[ConversationUtterance]) -> Lis
     return topics if topics else ["general chat"]
 
 
+# ---------------------------------------------------------------------------
+# Commitment Extraction
+# ---------------------------------------------------------------------------
+
 async def extract_conversation_commitments(
     conversation: ConversationResult,
     participant_ids: List[str],
@@ -509,78 +611,82 @@ Look for:
     return []
 
 
-async def record_conversation_to_memory(
-    agent: "GenerativeAgent",
-    conversation: ConversationResult,
-    other_agent_id: str,
-    now: datetime,
-) -> None:
-    """
-    Record a conversation to an agent's memory stream.
+# ---------------------------------------------------------------------------
+# Commitment Conflict Checking
+# ---------------------------------------------------------------------------
 
-    Creates a 'chat' type memory node with conversation summary.
-    Also marks the conversation end for post-conversation reflection (Stanford-style).
+def check_commitment_conflicts(
+    agent: "GenerativeAgent",
+    new_commitment: SocialCommitment,
+    now: datetime,
+) -> List[str]:
+    """
+    Check if a new commitment conflicts with existing ones or meetings.
 
     Args:
-        agent: Agent whose memory to update
-        conversation: The conversation result
-        other_agent_id: ID of the other participant
+        agent: The agent making the commitment
+        new_commitment: The proposed commitment
         now: Current datetime
+
+    Returns:
+        List of conflict descriptions (empty if no conflicts)
     """
-    if not agent.memory_stream:
-        return
+    conflicts = []
 
-    # Build description
-    other_first_name = other_agent_id.split("_")[0].capitalize()
-    topics_str = ", ".join(conversation.topics_discussed) if conversation.topics_discussed else "general topics"
+    daily_plan = agent.get_daily_plan() if hasattr(agent, 'get_daily_plan') else None
+    if not daily_plan:
+        return conflicts
 
-    description = (
-        f"Had a conversation with {other_first_name} about {topics_str}. "
-        f"{conversation.summary}"
-    )
+    # Skip if time is unspecified
+    if new_commitment.time == "unspecified":
+        return conflicts
 
-    # Use LLM to assess importance of this conversation
-    importance = await get_importance(agent, description, 5.0, use_llm=True)
+    # Parse new commitment time
+    try:
+        new_hour, new_minute = map(int, new_commitment.time.split(":"))
+        new_minutes = new_hour * 60 + new_minute
+    except (ValueError, TypeError):
+        return conflicts
 
-    # Add as chat memory
-    agent.memory_stream.add_chat(
-        description=description,
-        other_agent=other_agent_id,
-        now=now,
-        importance=importance,
-    )
+    # Check against existing commitments (within 15 minutes)
+    if hasattr(daily_plan, 'social_commitments') and daily_plan.social_commitments:
+        for existing in daily_plan.social_commitments:
+            if existing.fulfilled:
+                continue
+            if existing.time == "unspecified":
+                continue
+            try:
+                existing_hour, existing_minute = map(int, existing.time.split(":"))
+                existing_minutes = existing_hour * 60 + existing_minute
+                if abs(new_minutes - existing_minutes) < 15:
+                    with_names = ", ".join(a.split("_")[0].capitalize() for a in existing.with_agents)
+                    conflicts.append(
+                        f"Already committed to '{existing.activity}' with {with_names} at {existing.time}"
+                    )
+            except (ValueError, TypeError):
+                pass
 
-    # Mark for post-conversation reflection (Stanford-style)
-    agent.mark_conversation_end(other_agent_id, now)
+    # Check against meetings
+    if hasattr(daily_plan, 'meetings') and daily_plan.meetings:
+        for meeting in daily_plan.meetings:
+            try:
+                start_dt = datetime.fromisoformat(meeting.start_datetime_iso)
+                end_dt = datetime.fromisoformat(meeting.end_datetime_iso)
+                start_minutes = start_dt.hour * 60 + start_dt.minute
+                end_minutes = end_dt.hour * 60 + end_dt.minute
 
-    # Update relationship: familiarity increases with each conversation
-    agent.update_relationship(
-        other_agent_id=other_agent_id,
-        familiarity_delta=0.05,  # Small increase per conversation
-        sentiment_delta=0.0,     # Sentiment neutral for general conversations
-    )
+                # Check if commitment time falls within meeting
+                if start_minutes <= new_minutes <= end_minutes:
+                    conflicts.append(f"Conflicts with meeting '{meeting.title}' ({meeting.start_datetime_iso[:16]})")
+            except (ValueError, TypeError):
+                pass
 
-    # Extract any commitments made during the conversation
-    participant_ids = [agent.agent_id, other_agent_id]
-    commitments = await extract_conversation_commitments(
-        conversation=conversation,
-        participant_ids=participant_ids,
-    )
+    return conflicts
 
-    # Add commitments to the agent's daily plan
-    if commitments and hasattr(agent, 'daily_plan') and agent.daily_plan:
-        for commitment in commitments:
-            social_commitment = SocialCommitment(
-                activity=commitment.activity,
-                time=commitment.time,
-                with_agents=[other_agent_id],
-                location=commitment.location,
-                source="conversation",
-                fulfilled=False,
-            )
-            agent.daily_plan.social_commitments.append(social_commitment)
-            print(f"[CONV] {agent.agent_id}: Added commitment - {commitment.activity} with {other_agent_id}")
 
+# ---------------------------------------------------------------------------
+# Synchronous Wrapper
+# ---------------------------------------------------------------------------
 
 def sync_agent_conversation(
     init_agent: "GenerativeAgent",
@@ -612,587 +718,27 @@ def sync_agent_conversation(
 
 
 # ---------------------------------------------------------------------------
-# Consultation System for Shared Space Decisions
+# Public API
 # ---------------------------------------------------------------------------
 
-class ConsultationOutcome(BaseModel):
-    """Result of a consultation about a shared-space action."""
-    proposed_action: str = Field(description="What was originally proposed (e.g., 'set thermostat to 19°C')")
-    agreed_action: Optional[str] = Field(default=None, description="The agreed-upon action (may differ from proposed)")
-    consensus_reached: bool = Field(default=False, description="Whether all participants agreed")
-    final_setpoint_c: Optional[float] = Field(default=None, description="Agreed thermostat setpoint if applicable")
-    final_window_state: Optional[bool] = Field(default=None, description="Agreed window state if applicable (True=open)")
-    summary: str = Field(description="Brief summary of the consultation outcome")
-    participants: List[str] = Field(default_factory=list, description="IDs of agents who participated")
-
-
-class ConsultationUtteranceOutput(BaseModel):
-    """Output schema for consultation conversation agent."""
-    utterance: str = Field(description="What you say in the consultation")
-    end_consultation: bool = Field(
-        default=False,
-        description="Set to true when agreement is reached or clear disagreement"
-    )
-    proposed_compromise: Optional[float] = Field(
-        default=None,
-        description="If proposing a compromise temperature, specify the value in °C"
-    )
-
-
-class ConsensusAssessment(BaseModel):
-    """Output schema for LLM-based consensus assessment."""
-    consensus_reached: bool = Field(description="Whether all participants agreed to the change")
-    agreed_temperature_c: Optional[float] = Field(
-        default=None,
-        description="The agreed-upon temperature in Celsius, if any"
-    )
-    summary: str = Field(description="Brief summary of the consultation outcome")
-    confidence: float = Field(
-        ge=0.0, le=1.0,
-        description="Confidence level (0-1) in the assessment"
-    )
-
-
-def build_consensus_assessor_agent() -> Agent[SimContext]:
-    """
-    Build an agent for assessing consensus from consultation conversations.
-
-    Uses LLM to analyze conversation and determine if agreement was reached.
-    """
-    instructions = """Analyze this consultation conversation and determine:
-1. Did ALL participants agree to a temperature change?
-2. If yes, what specific temperature was agreed upon?
-3. Summarize the outcome.
-
-Be strict: silence or vague responses do NOT count as agreement.
-Look for explicit acceptance like:
-- "okay, let's do 21 degrees"
-- "I agree to 20.5"
-- "that works for me"
-- "fine, let's try 22"
-
-Look for explicit disagreement like:
-- "no way"
-- "I don't agree"
-- "too cold/hot for me"
-- "I refuse"
-
-If the outcome is ambiguous or unclear, set consensus_reached to false."""
-
-    return Agent(
-        name="consensus_assessor",
-        instructions=instructions,
-        model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="medium"),  # Consensus assessment requires cognitive reasoning
-        output_type=AgentOutputSchema(ConsensusAssessment),
-    )
-
-
-async def assess_consensus_with_llm(
-    utterances: List[ConversationUtterance],
-    proposed_action: str,
-    proposed_temp: Optional[float] = None,
-) -> ConsensusAssessment:
-    """
-    Use LLM to assess whether consensus was reached in a consultation conversation.
-
-    Args:
-        utterances: List of conversation utterances
-        proposed_action: The originally proposed action
-        proposed_temp: The originally proposed temperature (if any)
-
-    Returns:
-        ConsensusAssessment with the LLM's analysis
-    """
-    conversation_text = f"Proposed action: {proposed_action}\n\n"
-    conversation_text += "Conversation:\n"
-    conversation_text += "\n".join(f"{u.speaker_id}: {u.utterance}" for u in utterances)
-
-    agent = build_consensus_assessor_agent()
-    result = await Runner.run(agent, conversation_text)
-    return result.final_output
-
-
-def simple_vote_on_temperature(
-    initiator_comfort_c: float,
-    proposed_temp: float,
-    other_agent_comforts: List[float],
-    current_temp: float,
-) -> tuple[bool, str]:
-    """
-    Simple majority vote on a temperature change (no conversation needed).
-
-    Args:
-        initiator_comfort_c: Initiator's comfort temperature preference
-        proposed_temp: The proposed temperature change
-        other_agent_comforts: List of other agents' comfort preferences
-        current_temp: Current indoor temperature
-
-    Returns:
-        Tuple of (consensus_reached, summary)
-    """
-    votes_for = 1  # Initiator votes yes
-    votes_against = 0
-
-    for their_comfort in other_agent_comforts:
-        # Vote yes if proposed temp is closer to their preference than current
-        if abs(proposed_temp - their_comfort) <= abs(current_temp - their_comfort):
-            votes_for += 1
-        else:
-            votes_against += 1
-
-    total = votes_for + votes_against
-    consensus = votes_for > votes_against
-    summary = f"Vote: {votes_for}/{total} for proposed temperature"
-
-    return consensus, summary
-
-
-def build_consultation_agent(speaker_id: str, is_initiator: bool) -> Agent[SimContext]:
-    """
-    Build an agent for consultation about shared-space changes.
-
-    Args:
-        speaker_id: ID of the agent speaking
-        is_initiator: Whether this agent initiated the consultation
-
-    Returns:
-        Agent configured for consultation utterance generation
-    """
-    role = "proposing a temperature adjustment" if is_initiator else "being asked about a temperature change"
-
-    instructions = f"""
-You are {speaker_id}, {role} to the office thermostat.
-
-<context>
-This is a quick check-in with colleagues about comfort, not a formal negotiation.
-Most temperature discussions are resolved quickly - people are generally flexible.
-</context>
-
-<guidelines>
-- Keep responses brief and casual (1-2 sentences max)
-- It's fine to quickly agree if you're comfortable or close to comfortable
-- A difference of 0.5-1°C is usually not worth arguing about
-- Express your preference naturally: "Yeah, that works for me" or "Could we maybe try X instead?"
-- Set end_consultation=true when:
-  - Quick agreement reached (most common outcome)
-  - You decide current temp is fine
-  - Brief disagreement acknowledged
-- Use proposed_compromise only if suggesting a specific temperature
-- Consultations should be 2-4 exchanges, not lengthy debates
-</guidelines>
-
-Output your response naturally.
-""".strip()
-
-    return Agent(
-        name=f"consultation_{speaker_id}",
-        instructions=instructions,
-        model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="medium"),  # Consultation requires cognitive reasoning
-        tools=[],
-        output_type=AgentOutputSchema(ConsultationUtteranceOutput, strict_json_schema=False),
-    )
-
-
-def _build_consultation_context(
-    speaker: "GenerativeAgent",
-    listeners: List["GenerativeAgent"],
-    proposed_action: str,
-    current_temp_c: float,
-    conversation_history: List[ConversationUtterance],
-    now: datetime,
-    is_initiator: bool,
-) -> str:
-    """
-    Build context for generating a consultation utterance.
-
-    Args:
-        speaker: Agent who will speak next
-        listeners: Other agents in the consultation
-        proposed_action: The proposed change being discussed
-        current_temp_c: Current zone temperature
-        conversation_history: Utterances so far
-        now: Current datetime
-        is_initiator: Whether speaker initiated the consultation
-
-    Returns:
-        Formatted context string
-    """
-    # Speaker's comfort preferences
-    identity = speaker.get_identity_stable_set()
-
-    # Other participants' names
-    other_names = ", ".join(l.first_name for l in listeners)
-
-    # Retrieve memories about thermal comfort and the other participants
-    focal_points = [
-        "my temperature preferences",
-        "how I feel about the office temperature",
-    ]
-    # Add memories about each listener
-    for listener in listeners:
-        focal_points.append(f"what I know about {listener.first_name}")
-
-    retrieved = retrieve(speaker, focal_points, now, n_count=5)
-
-    # Format memories
-    memory_lines = []
-    for fp, nodes in retrieved.items():
-        if nodes:
-            for node in nodes[:2]:  # Top 2 per focal point
-                memory_lines.append(f"- {node.description}")
-    memories_text = "\n".join(memory_lines) if memory_lines else "No specific memories about this topic."
-
-    # Format conversation history
-    if conversation_history:
-        history_lines = []
-        for utt in conversation_history[-6:]:
-            name = utt.speaker_id.split("_")[0].capitalize()
-            history_lines.append(f"{name}: \"{utt.utterance}\"")
-        history_text = "\n".join(history_lines)
-    else:
-        history_text = "(Consultation just started)"
-
-    role_text = f"You proposed: {proposed_action}" if is_initiator else f"Someone proposed: {proposed_action}"
-
-    context = f"""
-<identity>
-{identity}
-</identity>
-
-<consultation_request>
-{role_text}
-Current zone temperature: {current_temp_c:.1f}°C
-Other participants: {other_names}
-</consultation_request>
-
-<relevant_memories purpose="your past experiences with temperature and these colleagues">
-{memories_text}
-</relevant_memories>
-
-<discussion_so_far>
-{history_text}
-</discussion_so_far>
-
-<current_time>{now.strftime('%H:%M')}</current_time>
-
-<guidance>
-Respond naturally to continue the consultation. You're discussing comfort, not negotiating a contract.
-- Keep responses brief and conversational (1-2 sentences)
-- It's fine to quickly agree if the proposal seems reasonable
-- Express your actual comfort preference, but be flexible
-- A small compromise (0.5-1°C) is usually acceptable to everyone
-</guidance>
-""".strip()
-
-    return context
-
-
-async def generate_consultation_utterance(
-    speaker: "GenerativeAgent",
-    listeners: List["GenerativeAgent"],
-    proposed_action: str,
-    current_temp_c: float,
-    conversation_history: List[ConversationUtterance],
-    now: datetime,
-    is_initiator: bool,
-    calendar: Optional[CalendarStore] = None,
-) -> tuple[ConversationUtterance, Optional[float]]:
-    """
-    Generate a single utterance in a consultation.
-
-    Returns:
-        Tuple of (utterance, proposed_compromise_value or None)
-    """
-    context = _build_consultation_context(
-        speaker, listeners, proposed_action, current_temp_c,
-        conversation_history, now, is_initiator
-    )
-
-    agent = build_consultation_agent(speaker.agent_id, is_initiator)
-
-    sim_context = SimContext(
-        occupant_id=speaker.agent_id,
-        now=now,
-        calendar=calendar,
-        simulation=None,
-        memory=None,
-    )
-
-    result = await Runner.run(agent, context, context=sim_context)
-    output: ConsultationUtteranceOutput = result.final_output
-
-    utterance = ConversationUtterance(
-        speaker_id=speaker.agent_id,
-        utterance=output.utterance,
-        end_conversation=output.end_consultation,
-    )
-
-    return utterance, output.proposed_compromise
-
-
-async def consultation_conversation(
-    initiator: "GenerativeAgent",
-    proposed_action: str,
-    proposed_setpoint_c: Optional[float],
-    current_temp_c: float,
-    present_agents: List["GenerativeAgent"],
-    now: datetime,
-    max_turns: int = 6,
-    calendar: Optional[CalendarStore] = None,
-    consultation_mode: str = "llm",
-) -> ConsultationOutcome:
-    """
-    Conduct a consultation about a proposed shared-space change.
-
-    This is used when an agent wants to adjust the thermostat or windows
-    and other occupants are present.
-
-    Args:
-        initiator: Agent proposing the change
-        proposed_action: Description of proposed action (e.g., "set thermostat to 19°C")
-        proposed_setpoint_c: Proposed temperature if applicable
-        current_temp_c: Current zone temperature
-        present_agents: All present agents (including initiator)
-        now: Current simulation datetime
-        max_turns: Maximum exchanges before forcing decision
-        calendar: Optional calendar store
-        consultation_mode: "llm" for LLM assessment, "vote" for simple majority,
-                          "keyword" for legacy keyword-based detection
-
-    Returns:
-        ConsultationOutcome with the agreed action
-    """
-    # Filter out initiator from listeners
-    listeners = [a for a in present_agents if a.agent_id != initiator.agent_id]
-
-    if not listeners:
-        # No one else present, just proceed with original action
-        return ConsultationOutcome(
-            proposed_action=proposed_action,
-            agreed_action=proposed_action,
-            consensus_reached=True,
-            final_setpoint_c=proposed_setpoint_c,
-            summary="No consultation needed - no other occupants present",
-            participants=[initiator.agent_id],
-        )
-
-    participants = [initiator.agent_id] + [l.agent_id for l in listeners]
-    utterances: List[ConversationUtterance] = []
-    latest_compromise: Optional[float] = proposed_setpoint_c
-
-    print(f"[CONSULTATION] {initiator.first_name} consulting about: {proposed_action}")
-    print(f"  Present: {', '.join(a.first_name for a in present_agents)}")
-
-    # Initiator starts
-    speaker = initiator
-    speaker_is_initiator = True
-    listener_idx = 0
-
-    for turn in range(max_turns * 2):
-        # Generate utterance
-        utt, compromise = await generate_consultation_utterance(
-            speaker=speaker,
-            listeners=listeners if speaker == initiator else [initiator],
-            proposed_action=proposed_action,
-            current_temp_c=current_temp_c,
-            conversation_history=utterances,
-            now=now,
-            is_initiator=speaker_is_initiator,
-            calendar=calendar,
-        )
-        utterances.append(utt)
-
-        if compromise is not None:
-            latest_compromise = compromise
-
-        print(f"  [{speaker.first_name}]: \"{utt.utterance}\"")
-
-        # Check for end
-        if utt.end_conversation:
-            print(f"[CONSULTATION] Consultation ended after {len(utterances)} exchanges")
-            break
-
-        # Rotate speakers (initiator <-> listeners in round-robin)
-        if speaker == initiator:
-            speaker = listeners[listener_idx % len(listeners)]
-            speaker_is_initiator = False
-        else:
-            listener_idx += 1
-            speaker = initiator
-            speaker_is_initiator = True
-
-    # Determine outcome based on conversation and consultation_mode
-    consensus = False
-    agreed_action = None
-    summary = ""
-
-    if consultation_mode == "llm" and utterances:
-        # Use LLM to assess consensus
-        try:
-            assessment = await assess_consensus_with_llm(
-                utterances=utterances,
-                proposed_action=proposed_action,
-                proposed_temp=proposed_setpoint_c,
-            )
-            consensus = assessment.consensus_reached
-            if consensus:
-                final_temp = assessment.agreed_temperature_c or latest_compromise or proposed_setpoint_c
-                agreed_action = f"set thermostat to {final_temp:.1f}°C"
-                latest_compromise = final_temp
-            summary = assessment.summary
-            print(f"[CONSULTATION] LLM assessment: consensus={consensus}, temp={assessment.agreed_temperature_c}")
-        except Exception as e:
-            print(f"[CONSULTATION] LLM assessment failed, falling back to keyword: {e}")
-            consultation_mode = "keyword"  # Fallback
-
-    if consultation_mode == "vote" and proposed_setpoint_c is not None:
-        # Use simple majority vote (no conversation needed, but still works post-conversation)
-        initiator_comfort = initiator.scratch.get("thermal_comfort_c", 21.0)
-        other_comforts = [a.scratch.get("thermal_comfort_c", 21.0) for a in listeners]
-        consensus, summary = simple_vote_on_temperature(
-            initiator_comfort_c=initiator_comfort,
-            proposed_temp=proposed_setpoint_c,
-            other_agent_comforts=other_comforts,
-            current_temp=current_temp_c,
-        )
-        if consensus:
-            agreed_action = proposed_action
-            latest_compromise = proposed_setpoint_c
-        print(f"[CONSULTATION] Vote result: {summary}")
-
-    if consultation_mode == "keyword":
-        # Legacy keyword-based detection
-        consensus = len(utterances) > 1 and utterances[-1].end_conversation
-
-        # Expanded agreement detection with more comprehensive word lists
-        last_utterances_text = " ".join(u.utterance.lower() for u in utterances[-4:])
-
-        # Expanded agreement words/phrases
-        agreement_words = [
-            "okay", "ok", "fine", "agree", "agreed", "sure", "alright", "yes",
-            "good", "great", "perfect", "excellent", "wonderful",
-            "sounds good", "sounds great", "sounds fine", "that works",
-            "works for me", "let's do", "let's go with", "i can do",
-            "i'm okay with", "i'm fine with", "i can live with",
-            "im okay with", "im fine with",
-            "compromise", "deal", "fair enough", "reasonable", "acceptable",
-            "degrees is fine", "degrees works", "degrees is good",
-            "that temperature", "we can try",
-        ]
-        disagreement_words = [
-            "no way", "absolutely not", "won't accept", "refuse", "disagree",
-            "can't accept", "cannot accept", "too cold", "too hot", "too warm",
-            "not comfortable", "uncomfortable with",
-        ]
-
-        has_agreement = any(w in last_utterances_text for w in agreement_words)
-        has_disagreement = any(w in last_utterances_text for w in disagreement_words)
-
-        # Also check if there's a temperature mentioned in an agreeing context
-        agreed_temp_from_text = None
-        if has_agreement:
-            for u in reversed(utterances[-4:]):
-                text = u.utterance.lower()
-                if any(w in text for w in agreement_words):
-                    temp_match = re.search(r'(\d{1,2}(?:\.\d)?)\s*(?:°|degrees?|c\b|celsius)?', text)
-                    if temp_match:
-                        try:
-                            agreed_temp_from_text = float(temp_match.group(1))
-                            break
-                        except ValueError:
-                            pass
-
-        if has_agreement and not has_disagreement:
-            consensus = True
-            final_temp = agreed_temp_from_text or latest_compromise or proposed_setpoint_c
-            agreed_action = f"set thermostat to {final_temp:.1f}°C"
-            summary = f"Agreed to {agreed_action} after consultation"
-            latest_compromise = final_temp
-        elif has_disagreement:
-            consensus = False
-            agreed_action = None
-            latest_compromise = None
-            summary = "Could not reach agreement on the proposed change"
-        else:
-            if latest_compromise and latest_compromise != proposed_setpoint_c:
-                consensus = True
-                agreed_action = f"set thermostat to {latest_compromise:.1f}°C"
-                summary = f"Compromised on {latest_compromise:.1f}°C"
-            elif utterances and utterances[-1].end_conversation and len(utterances) >= 2:
-                consensus = True
-                agreed_action = proposed_action
-                latest_compromise = proposed_setpoint_c
-                summary = f"Agreed to {proposed_action} (implicit consent)"
-            else:
-                consensus = False
-                agreed_action = None
-                summary = "Consultation ended without clear agreement"
-
-    return ConsultationOutcome(
-        proposed_action=proposed_action,
-        agreed_action=agreed_action,
-        consensus_reached=consensus,
-        final_setpoint_c=latest_compromise if consensus else None,
-        summary=summary,
-        participants=participants,
-    )
-
-
-async def record_agreement_to_memory(
-    agents: List["GenerativeAgent"],
-    outcome: ConsultationOutcome,
-    now: datetime,
-) -> None:
-    """
-    Record a consultation agreement to ALL participating agents' memories.
-
-    This ensures all agents remember the agreement and can respect it
-    in future decisions.
-
-    Args:
-        agents: List of all participating agents
-        outcome: The consultation outcome
-        now: Current datetime
-    """
-    if not outcome.consensus_reached or not outcome.agreed_action:
-        # Only record actual agreements
-        return
-
-    for agent in agents:
-        if not agent.memory_stream:
-            continue
-
-        # Build description from agent's perspective
-        other_names = [
-            a.first_name for a in agents
-            if a.agent_id != agent.agent_id
-        ]
-        others_str = " and ".join(other_names) if other_names else "colleagues"
-
-        description = f"Agreed with {others_str}: {outcome.summary}"
-
-        # Use LLM to assess importance of this agreement
-        importance = await get_importance(agent, description, 7.0, use_llm=True)
-
-        # Record as high-importance event (should influence future decisions)
-        agent.memory_stream.add_event(
-            description=description,
-            subject="we",
-            predicate="agreed",
-            obj=outcome.agreed_action,
-            now=now,
-            importance=importance,
-        )
-
-        # Update relationships: agreement improves familiarity and sentiment
-        for other_agent in agents:
-            if other_agent.agent_id != agent.agent_id:
-                agent.update_relationship(
-                    other_agent_id=other_agent.agent_id,
-                    familiarity_delta=0.03,  # Small familiarity boost
-                    sentiment_delta=0.05,    # Positive sentiment from agreement
-                )
-
-        print(f"  [MEMORY] Recorded agreement for {agent.first_name}")
+__all__ = [
+    # Main conversation function
+    "agent_conversation",
+    "sync_agent_conversation",
+    # Commitment utilities (used by memory_ops)
+    "extract_conversation_commitments",
+    "check_commitment_conflicts",
+    # Backward compatibility - re-export schemas
+    "ConversationUtterance",
+    "ConversationResult",
+    # Backward compatibility - re-export from other modules
+    "consultation_conversation",
+    "record_conversation_to_memory",
+    "record_agreement_to_memory",
+    "ConsultationOutcome",
+]
+
+# Backward compatibility re-exports
+from bsm.agents.cognition.schemas import ConversationUtterance, ConversationResult, ConsultationOutcome
+from bsm.agents.cognition.consultation import consultation_conversation
+from bsm.agents.cognition.memory_ops import record_conversation_to_memory, record_agreement_to_memory

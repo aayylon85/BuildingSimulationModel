@@ -68,6 +68,7 @@ class Equipment:
     heat_gain_fraction: float = 1.0  # Fraction of power that becomes zone heat
     auto_off_minutes: Optional[int] = None  # Auto-off duration for kitchen appliances
     turned_on_at: Optional[datetime] = None  # When equipment was turned on
+    always_on: bool = False  # Equipment that should never be turned off (e.g., fridge)
 
     def get_current_power(self) -> float:
         """Return current power consumption based on state."""
@@ -92,7 +93,9 @@ class Equipment:
             self.turned_on_at = current_time
 
     def turn_off(self) -> None:
-        """Turn equipment off."""
+        """Turn equipment off (unless always_on is True)."""
+        if self.always_on:
+            return  # Don't turn off always-on equipment like fridge
         self.is_on = False
         self.assigned_to = None
         self.turned_on_at = None
@@ -305,6 +308,7 @@ class EquipmentManager:
             location="break_area",
             is_on=True,  # Fridge is always on
             heat_gain_fraction=heat_gain_defaults.get("fridge", 1.0),
+            always_on=True,  # Fridge should never be turned off
         )
 
     def get_equipment(self, name: str) -> Optional[Equipment]:
@@ -475,9 +479,12 @@ class EquipmentManager:
         return [eq.name for eq in self._equipment.values() if eq.is_on]
 
     def reset_all(self) -> None:
-        """Turn off all equipment (e.g., at end of day)."""
+        """Turn off all equipment (e.g., at end of day).
+
+        Note: Equipment with always_on=True (like fridge) will not be turned off.
+        """
         for eq in self._equipment.values():
-            eq.turn_off()
+            eq.turn_off()  # turn_off() respects always_on flag
 
     def check_all_auto_off(self, current_time: datetime) -> List[str]:
         """

@@ -11,7 +11,7 @@
 
   "simulation_settings": {
     "dt_minutes": 1,
-    "duration_days": 3,
+    "duration_days": 1,
     "start_date": "2025-06-10",
     "stabilization_days": 25,
     "hvac_coupling_mode": "auto",
@@ -19,6 +19,11 @@
     "enable_opaque_solar_absorption": true,
     "interior_radiation_method": "area_weighted",
     "use_adaptive_timestepping": true
+  },
+
+  "ui_demo_output": {
+    "enabled": true,
+    "output_dir": "UI_demo_outputs"
   },
 
   "location": {

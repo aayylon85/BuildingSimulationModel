@@ -1,0 +1,208 @@
+{
+  "agent_id": "alice_001",
+  "agent_name": "Alice",
+  "actions": [
+    {
+      "timestamp": "2025-06-10T08:40:00+00:00",
+      "action_type": "lights_set",
+      "details": {
+        "action": "turn_on",
+        "target": "desk_light",
+        "on": true,
+        "brightness": null
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T09:35:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "shared_area"
+      },
+      "reason": "Checkpoint: work_activity:Print and assemble agenda/notes for Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T09:40:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "photocopier",
+        "on": true
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T09:50:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: meeting_prep:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T09:55:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "photocopier",
+        "on": false
+      },
+      "reason": "Checkpoint: meeting_start:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T09:55:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "meeting_room"
+      },
+      "reason": "Checkpoint: meeting_start:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T09:55:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "projector",
+        "on": false
+      },
+      "reason": "Checkpoint: meeting_start:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T09:55:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "conference_phone",
+        "on": false
+      },
+      "reason": "Checkpoint: meeting_start:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T10:25:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: meeting_end:Project sync"
+    },
+    {
+      "timestamp": "2025-06-10T10:30:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "meeting_room"
+      },
+      "reason": "Checkpoint: work_activity:Type up meeting notes and send action items (Project sync)"
+    },
+    {
+      "timestamp": "2025-06-10T10:30:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "conference_phone",
+        "on": true
+      },
+      "reason": "Checkpoint: work_activity:Type up meeting notes and send action items (Project sync)"
+    },
+    {
+      "timestamp": "2025-06-10T10:30:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "projector",
+        "on": false
+      },
+      "reason": "Checkpoint: work_activity:Type up meeting notes and send action items (Project sync)"
+    },
+    {
+      "timestamp": "2025-06-10T10:40:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "conference_phone",
+        "on": false
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T10:40:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T10:45:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "break_area"
+      },
+      "reason": "Checkpoint: take_break:morning"
+    },
+    {
+      "timestamp": "2025-06-10T10:45:00+00:00",
+      "action_type": "take_break",
+      "details": {
+        "location": "break_area",
+        "activity": "tea"
+      },
+      "reason": "Checkpoint: take_break:morning"
+    },
+    {
+      "timestamp": "2025-06-10T10:45:00+00:00",
+      "action_type": "use_appliance",
+      "details": {
+        "appliance_name": "kettle"
+      },
+      "reason": "Checkpoint: take_break:morning"
+    },
+    {
+      "timestamp": "2025-06-10T10:55:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: return_from_break"
+    },
+    {
+      "timestamp": "2025-06-10T10:55:00+00:00",
+      "action_type": "return_from_break",
+      "details": {},
+      "reason": "Checkpoint: return_from_break"
+    },
+    {
+      "timestamp": "2025-06-10T11:40:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T12:25:00+00:00",
+      "action_type": "update_daily_plan",
+      "details": {
+        "updates": {
+          "lunch_plan": {
+            "location": "at_desk",
+            "time": "12:25"
+          }
+        },
+        "reason": "Switching lunch to at-desk now to match my usual routine and save time before the 14:00 meeting."
+      },
+      "reason": "Checkpoint: lunch_time"
+    },
+    {
+      "timestamp": "2025-06-10T12:40:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "charlie_003",
+        "topic": "Confirm we\u2019re still meeting in the lobby at 12:45 to walk to the sandwich place."
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T12:40:00+00:00",
+      "action_type": "update_daily_plan",
+      "details": {
+        "updates": {
+          "lunch_plan": {
+            "location": "go_out",
+            "time": "12:45"
+          }
+        },
+        "reason": "I have a specific plan to go out for lunch at 12:45 with Charlie, which differs from my usual at-desk lunch routine."
+      },
+      "reason": "Checkpoint: hourly"
+    }
+  ]
+}

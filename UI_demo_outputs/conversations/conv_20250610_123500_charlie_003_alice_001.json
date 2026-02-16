@@ -1,0 +1,37 @@
+{
+  "conversation_id": "conv_20250610_123500_charlie_003_alice_001",
+  "start_time": "2025-06-10T12:35:00+00:00",
+  "participants": [
+    "charlie_003",
+    "alice_001"
+  ],
+  "initiated_by": "charlie_003",
+  "topics": [
+    "work",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Hey Alice\u2014want to take a quick lunch break together around 12:45? We could just do something easy nearby and get a bit of a reset."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, that sounds good\u201412:45 works for me. Want to just do a quick walk to the nearby sandwich place and eat there so it\u2019s an actual reset instead of desk-lunch again?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u2014let\u2019s do the sandwich place and actually sit down for once. I\u2019ll wrap up this last bit and meet you by the elevator at 12:45?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Sounds good\u2014I'll finish up a couple things and head over. See you by the elevator at 12:45."
+    }
+  ],
+  "duration_minutes": 2,
+  "summary": "Charlie and Alice had a short conversation."
+}
