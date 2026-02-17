@@ -496,7 +496,7 @@ async def consultation_conversation(
             for u in reversed(utterances[-4:]):
                 text = u.utterance.lower()
                 if any(w in text for w in agreement_words):
-                    temp_match = re.search(r'(\d{1,2}(?:\.\d)?)\s*(?:°|degrees?|c\b|celsius)?', text)
+                    temp_match = re.search(r'(\d{1,2}(?:\.\d{1,2})?)\s*(?:°|degrees?|c\b|celsius)?', text)
                     if temp_match:
                         try:
                             agreed_temp_from_text = float(temp_match.group(1))

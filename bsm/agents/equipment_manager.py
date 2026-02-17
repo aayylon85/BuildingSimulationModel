@@ -48,10 +48,17 @@ DEFAULT_HEAT_GAIN_FRACTIONS = {
 
 
 # Auto-off durations for kitchen appliances (in minutes)
+# These are based on typical real-world usage patterns:
+# - Kettle: 2 min - Electric kettles boil in ~90 seconds, brief overrun for safety
+# - Coffee machine: 10 min - Brew cycle (~4 min) + keep-warm period
+# - Microwave: 5 min - Typical reheating duration with margin for larger portions
+#
+# These durations are intentionally short to simulate realistic appliance behavior
+# where appliances auto-off after completing their primary function.
 KITCHEN_AUTO_OFF_MINUTES = {
-    "kettle": 2,           # Kettle boils then auto-off (was 5)
-    "coffee_machine": 10,  # Coffee brews then auto-off
-    "microwave": 5,        # Microwave cycle then auto-off (was 3)
+    "kettle": 2,
+    "coffee_machine": 10,
+    "microwave": 5,
 }
 
 

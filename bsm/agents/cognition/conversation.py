@@ -16,11 +16,14 @@ use the consultation module instead.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import List, Optional, TYPE_CHECKING
 
 from agents import Agent, Runner, ModelSettings
 from agents.agent_output import AgentOutputSchema
+
+logger = logging.getLogger(__name__)
 
 from bsm.agents.skeleton import DEFAULT_AGENT_MODEL, SimContext, CalendarStore, SocialCommitment
 from bsm.agents.cognition.schemas import (
@@ -102,7 +105,7 @@ async def _check_target_willingness(
         result = await Runner.run(check_agent, prompt)
         return result.final_output
     except Exception as e:
-        print(f"[CONVERSE] Decline check failed: {e}, defaulting to accept")
+        logger.warning(f"Decline check failed: {e}, defaulting to accept")
         return DeclineDecisionOutput(action="accept", reason="Default acceptance")
 
 if TYPE_CHECKING:
@@ -146,6 +149,15 @@ Only discuss the colleague you are currently talking to ({listener_id}).
     instructions = f"""
 You are {speaker_id}, having a natural workplace conversation with {listener_id}.
 {colleague_constraint}
+<schedule_awareness>
+BEFORE suggesting specific times for coffee, lunch, walks, or other activities:
+1. CHECK your schedule in the <your_schedule> section of the context
+2. Do NOT suggest times that overlap with your meetings
+3. If you have a meeting soon, mention it: "I have a meeting at 10, but maybe after that?"
+4. If unsure of a good time, ask about availability: "Want to grab coffee later?"
+   rather than proposing a specific time you might not be free for
+</schedule_awareness>
+
 <recent_conversation_check>
 BEFORE choosing a topic, recall recent conversations with this person.
 Do NOT repeat topics already discussed today (coffee, lunch plans, weekend, etc.)
@@ -179,7 +191,7 @@ Temperature/thermostat should rarely come up unless you're genuinely uncomfortab
   - Someone mentions needing to get back to work
 - Conversations typically last 3-6 exchanges total
 - Don't drag conversations out or repeat yourself
-- If suggesting a break/lunch together, make a CONCRETE plan (time, where to go)
+- If suggesting a break/lunch together, check your schedule first, then make a CONCRETE plan
 </guidelines>
 
 Output your utterance directly.
@@ -237,6 +249,95 @@ def _get_season_guidance(date: datetime) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Schedule Awareness for Conversations (F.3)
+# ---------------------------------------------------------------------------
+
+def _format_schedule_for_conversation(speaker: "GenerativeAgent", now: datetime) -> str:
+    """
+    Format speaker's schedule for conversation context.
+
+    This helps agents be aware of their meetings and existing commitments
+    when proposing times for social activities during conversations.
+
+    Args:
+        speaker: The agent who is speaking
+        now: Current datetime
+
+    Returns:
+        Formatted schedule section for the conversation context
+    """
+    daily_plan = speaker.get_daily_plan()
+    if not daily_plan:
+        return ""
+
+    lines = ["<your_schedule>"]
+    lines.append("Your commitments today (check before proposing times):")
+
+    has_items = False
+
+    # Get meetings - handle both dict and object forms
+    meetings = []
+    if isinstance(daily_plan, dict):
+        meetings = daily_plan.get("meetings", [])
+    elif hasattr(daily_plan, "meetings"):
+        meetings = daily_plan.meetings or []
+
+    for meeting in meetings:
+        try:
+            if isinstance(meeting, dict):
+                start = meeting.get("start_datetime_iso", "")
+                end = meeting.get("end_datetime_iso", "")
+                title = meeting.get("title", "Meeting")
+            else:
+                start = meeting.start_datetime_iso
+                end = meeting.end_datetime_iso
+                title = meeting.title
+
+            start_dt = datetime.fromisoformat(start)
+            end_dt = datetime.fromisoformat(end)
+
+            # Only show today's meetings
+            if start_dt.date() == now.date():
+                lines.append(f"  - {start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}: {title}")
+                has_items = True
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+    # Get existing commitments - handle both dict and object forms
+    commitments = []
+    if isinstance(daily_plan, dict):
+        commitments = daily_plan.get("social_commitments", [])
+    elif hasattr(daily_plan, "social_commitments"):
+        commitments = daily_plan.social_commitments or []
+
+    for comm in commitments:
+        try:
+            if isinstance(comm, dict):
+                time = comm.get("time", "")
+                activity = comm.get("activity", "")
+                fulfilled = comm.get("fulfilled", False)
+            else:
+                time = getattr(comm, "time", "")
+                activity = getattr(comm, "activity", "")
+                fulfilled = getattr(comm, "fulfilled", False)
+
+            if not fulfilled and time and time != "needs_confirmation":
+                lines.append(f"  - {time}: {activity} (already planned)")
+                has_items = True
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+    if not has_items:
+        lines.append("  (No meetings or commitments scheduled)")
+
+    lines.append("")
+    lines.append("⚠️ Do NOT suggest times that overlap with your meetings!")
+    lines.append("</your_schedule>")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Context Building
 # ---------------------------------------------------------------------------
 
@@ -290,10 +391,15 @@ def _build_conversation_context(
             memory_lines.append(f"- {node.description}")
     memories_text = "\n".join(memory_lines) if memory_lines else "No specific memories."
 
+    # F.3: Add schedule awareness so agent knows their busy times
+    schedule_section = _format_schedule_for_conversation(speaker, now)
+
     context = f"""
 <identity>
 {identity}
 </identity>
+
+{schedule_section}
 
 <relationship_with_colleague>
 {relationship}
@@ -412,7 +518,7 @@ async def agent_conversation(
     )
 
     if decline_decision.action == "decline":
-        print(f"[CONVERSE] {target_agent.agent_id} declined conversation: {decline_decision.reason}")
+        logger.info(f"{target_agent.agent_id} declined conversation: {decline_decision.reason}")
         return ConversationResult(
             participants=[init_agent.agent_id, target_agent.agent_id],
             utterances=[],
@@ -428,7 +534,7 @@ async def agent_conversation(
     speaker = init_agent
     listener = target_agent
 
-    print(f"[CONVERSE] Starting conversation: {init_agent.agent_id} -> {target_agent.agent_id}")
+    logger.info(f"Starting conversation: {init_agent.agent_id} -> {target_agent.agent_id}")
 
     for turn in range(max_turns * 2):  # *2 because each turn is one speaker
         # Generate utterance
@@ -442,12 +548,12 @@ async def agent_conversation(
         )
         utterances.append(utterance)
 
-        print(f"  [{speaker.first_name}]: \"{utterance.utterance[:60]}...\""
-              if len(utterance.utterance) > 60 else f"  [{speaker.first_name}]: \"{utterance.utterance}\"")
+        utterance_preview = utterance.utterance[:60] + "..." if len(utterance.utterance) > 60 else utterance.utterance
+        logger.debug(f"  [{speaker.first_name}]: \"{utterance_preview}\"")
 
         # Check if conversation should end
         if utterance.end_conversation:
-            print(f"[CONVERSE] Conversation ended naturally after {len(utterances)} utterances")
+            logger.info(f"Conversation ended naturally after {len(utterances)} utterances")
             break
 
         # Swap speaker and listener
@@ -568,29 +674,72 @@ async def extract_conversation_commitments(
         transcript_lines.append(f"{speaker_name}: {utt.utterance}")
     transcript = "\n".join(transcript_lines)
 
+    logger.debug(f"Extracting from {len(conversation.utterances)} utterances")
+    logger.debug(f"Transcript preview: {transcript[:300]}...")
+
     participants_str = " and ".join(p.split("_")[0].capitalize() for p in participant_ids)
 
-    instructions = f"""You are analyzing a conversation between {participants_str} to extract any commitments or agreements they made.
+    instructions = f"""You are analyzing a conversation between {participants_str} to extract any commitments or agreements to do activities together.
 
 <task>
 Read the conversation and identify if the participants agreed to do any activity together.
-Look for:
-- Agreements to get coffee, tea, or drinks together
-- Plans to take a walk or go outside
-- Lunch plans together
-- Meeting in the break room
-- Any other joint activity they committed to
+Extract commitments in TWO tiers:
 </task>
+
+<tier_1_specific>
+For commitments with SPECIFIC times:
+- activity: SHORT description (max 4 words) - "coffee", "lunch", "walk", or combined like "coffee break with walk"
+- time: HH:MM format (e.g., "10:30", "12:00", "14:15")
+- location: break_area, outside, or meeting_room (use FINAL destination for combined activities)
+</tier_1_specific>
+
+<tier_2_loose>
+For agreements WITHOUT specific times (both parties agreed but no exact time):
+- activity: What they agreed to do (max 4 words)
+- time: Use "needs_confirmation" (exactly this string)
+- location: Best guess - break_area for coffee/tea, outside for walk/lunch out, meeting_room for work discussions
+
+Examples that should use "needs_confirmation":
+- "Want to grab coffee later?" "Sure, sounds good!" → time: "needs_confirmation"
+- "Let's do lunch sometime" "Great idea!" → time: "needs_confirmation"
+- "We should take a walk after lunch" "I'd like that" → time: "needs_confirmation"
+</tier_2_loose>
+
+<compound_activities>
+IMPORTANT: If participants agree to MULTIPLE activities as part of ONE break or outing
+(e.g., "coffee and a walk", "grab coffee then do a lap outside", "lunch then a stroll"):
+
+1. Extract as a SINGLE commitment, NOT multiple separate ones
+2. activity: Combine with qualifier - "coffee break with walk", "lunch with outdoor walk"
+3. time: The START time of the combined activity
+4. location: Where they END UP (e.g., "outside" if walking outside after coffee)
+
+CORRECT Examples:
+- "Want to grab coffee at 3:30 and do a lap outside?"
+  → ONE commitment: activity="coffee break with walk", time="15:30", location="outside"
+
+- "Let's meet at the break room, grab coffees to-go, then walk outside"
+  → ONE commitment: activity="coffee break with walk", time from context, location="outside"
+
+WRONG (do not do this):
+- TWO separate commitments: {{activity: "coffee"}} + {{activity: "walk"}}
+
+The key insight: if activities are discussed as part of the SAME outing/break, they are ONE commitment.
+</compound_activities>
+
+<do_not_extract>
+- Only one person suggested something without clear agreement from the other
+- Hypothetical or conditional plans ("If I have time...", "Maybe we could...")
+- Past activities they already did
+</do_not_extract>
 
 <conversation>
 {transcript}
 </conversation>
 
 <output_verbosity_spec>
-- Only extract CONCRETE agreements where both parties clearly agreed
-- Do NOT extract vague suggestions without acceptance
-- If no clear commitments were made, return an empty list
-- Reasoning: 1 sentence
+- Reasoning: 1 sentence explaining what agreements were found
+- Return empty list ONLY if no agreement was reached at all
 </output_verbosity_spec>"""
 
     agent = Agent(
@@ -603,10 +752,17 @@ Look for:
 
     try:
         result = await Runner.run(agent, "Extract any commitments from this conversation.")
-        if result.final_output and result.final_output.commitments:
-            return result.final_output.commitments
+        if result.final_output:
+            commitments = result.final_output.commitments or []
+            logger.debug(f"Extraction returned {len(commitments)} commitments")
+            for c in commitments:
+                logger.debug(f"  - activity='{c.activity}' time='{c.time}' location='{c.location}'")
+            if commitments:
+                return commitments
+        else:
+            logger.debug("Extraction returned no output (final_output is None)")
     except Exception as e:
-        print(f"[CONV] Warning: Commitment extraction failed: {e}")
+        logger.error(f"Commitment extraction failed: {e}", exc_info=True)
 
     return []
 
@@ -637,8 +793,9 @@ def check_commitment_conflicts(
     if not daily_plan:
         return conflicts
 
-    # Skip if time is unspecified
-    if new_commitment.time == "unspecified":
+    # Skip if time is unspecified/needs confirmation (extraction uses "needs_confirmation")
+    unspecified_times = {"unspecified", "needs_confirmation", ""}
+    if new_commitment.time in unspecified_times:
         return conflicts
 
     # Parse new commitment time
@@ -653,7 +810,7 @@ def check_commitment_conflicts(
         for existing in daily_plan.social_commitments:
             if existing.fulfilled:
                 continue
-            if existing.time == "unspecified":
+            if existing.time in unspecified_times:
                 continue
             try:
                 existing_hour, existing_minute = map(int, existing.time.split(":"))

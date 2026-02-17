@@ -1,0 +1,53 @@
+{
+  "conversation_id": "conv_20250610_122000_charlie_003_alice_001",
+  "start_time": "2025-06-10T12:20:00+00:00",
+  "participants": [
+    "charlie_003",
+    "alice_001"
+  ],
+  "initiated_by": "charlie_003",
+  "topics": [
+    "work",
+    "weather",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Hey Alice\u2014fancy doing lunch together in a bit? I\u2019m free now until my 2pm meeting, so we could go whenever works for you."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "I\u2019m up for lunch. I\u2019ve got my usual quick lunch-at-my-desk thing around 12:30, but I can step out right after\u2014want to grab something around 12:45 and maybe do a short walk if it\u2019s nice out?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "12:45 works perfectly for me. Let\u2019s head out then\u2014grab something quick and do a short walk after if it\u2019s nice."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Perfect\u2014I'll wrap up a couple things and meet you by the break room at 12:45. If it\u2019s sunny, we can do our usual quick loop after we grab food."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Sounds good\u2014I'll just finish up one thing and I\u2019ll meet you by the break room at 12:45. Fingers crossed it\u2019s sunny so we can do that quick loop after."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Nice\u2014I'll be there. I\u2019m hoping it\u2019s sunny too; that quick loop after lunch is a good reset before the afternoon stuff."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Same\u2014getting out for that quick loop always helps me reset. I\u2019ll see you by the break room at 12:45; I\u2019m just going to finish this last bit before we head out."
+    }
+  ],
+  "duration_minutes": 3,
+  "summary": "Charlie and Alice had a conversation."
+}

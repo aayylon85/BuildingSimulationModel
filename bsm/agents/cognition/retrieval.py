@@ -93,6 +93,18 @@ DECISION_CATEGORIES = {
         "lunch preference",
         "meal time",
     ],
+    # M.1: Commitment focal points for relationship-aware memory retrieval
+    "commitment": [
+        "promises I made",
+        "colleague counting on me",
+        "someone waiting for me",
+        "plans with coworker",
+        "coffee with colleague",
+        "lunch with colleague",
+        "letting someone down",
+        "keeping my word",
+        "reliability",
+    ],
 }
 
 

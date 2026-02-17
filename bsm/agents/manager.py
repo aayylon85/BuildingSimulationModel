@@ -40,7 +40,6 @@ from bsm.agents.cognition.modules import (
     perceive,
     retrieve,
     reflect,
-    reflect_on_conversation,
     get_decision_focal_points,
     get_planning_focal_points,
     get_meeting_context,
@@ -141,12 +140,15 @@ class DecisionCheckpointManager:
         # Track when agents started lunch/break for return checkpoints
         self._lunch_started: Dict[str, datetime] = {}
         self._break_started: Dict[str, datetime] = {}
+        # F.4: Track when meeting_end checkpoints fire (actual meeting end times)
+        self._meeting_ended_at: Dict[str, Dict[str, datetime]] = {}  # agent_id -> {meeting_id -> datetime}
 
     def should_checkpoint(
         self,
         agent_id: str,
         current_time: datetime,
         daily_plan: Optional[DailyPlan],
+        agent_status: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str]:
         """
         Determine if agent should make decisions now.
@@ -155,6 +157,8 @@ class DecisionCheckpointManager:
             agent_id: The agent ID
             current_time: Current simulation datetime
             daily_plan: The agent's daily plan (if available)
+            agent_status: Current agent status dict with location, in_meeting, etc.
+                         Used to protect meetings from non-essential checkpoints.
 
         Returns:
             Tuple of (should_decide, reason) where reason is one of:
@@ -166,10 +170,14 @@ class DecisionCheckpointManager:
             - "take_break:morning": Time for morning break
             - "take_break:afternoon": Time for afternoon break
             - "return_from_break": Time to return from break (10-20 min after start)
+            - "commitment:{activity}": Time for a social commitment
             - "": No checkpoint needed
         """
         if agent_id not in self._processed_events:
             self._processed_events[agent_id] = set()
+
+        # F.1: Date prefix for event IDs - prevents accumulation across days
+        date_prefix = current_time.date().isoformat()
 
         # Check hourly checkpoint first
         last_check = self._last_hourly_check.get(agent_id)
@@ -198,6 +206,45 @@ class DecisionCheckpointManager:
         current_time_str = current_time.strftime("%H:%M")
         current_minutes = current_time.hour * 60 + current_time.minute
 
+        # ================================================================
+        # MEETING PROTECTION: Determine if agent is currently in a meeting
+        # During meetings, we block non-essential checkpoints (breaks, lunch,
+        # commitments, work activities) to prevent agents from leaving meetings.
+        # ================================================================
+        in_meeting = False
+
+        # Check if current time falls within any meeting's time window
+        for meeting in daily_plan.meetings:
+            try:
+                start_dt = datetime.fromisoformat(meeting.start_datetime_iso)
+                end_dt = datetime.fromisoformat(meeting.end_datetime_iso)
+                start_minutes = start_dt.hour * 60 + start_dt.minute
+                end_minutes = end_dt.hour * 60 + end_dt.minute
+
+                # F.4: Check if this meeting has actually ended (meeting_end checkpoint fired)
+                meeting_id = f"{meeting.title}_{meeting.start_datetime_iso}"
+                agent_meetings = self._meeting_ended_at.get(agent_id, {})
+                if meeting_id in agent_meetings:
+                    # Meeting has ended - use actual end time
+                    actual_end = agent_meetings[meeting_id]
+                    if current_time >= actual_end:
+                        continue  # Meeting is over, don't count as in_meeting
+
+                # If current time is between meeting start and (scheduled) end, agent is "in meeting"
+                if start_minutes <= current_minutes < end_minutes:
+                    in_meeting = True
+                    break
+            except (ValueError, TypeError):
+                continue
+
+        # Also check agent_status if provided (location-based detection)
+        if agent_status:
+            if agent_status.get("in_meeting", False):
+                in_meeting = True
+            # Being in meeting_room during a meeting time strongly suggests in meeting
+            elif agent_status.get("location") == "meeting_room" and in_meeting:
+                pass  # Already set by time check
+
         # Check meeting checkpoints
         for meeting in daily_plan.meetings:
             meeting_id = f"{meeting.title}_{meeting.start_datetime_iso}"
@@ -211,106 +258,202 @@ class DecisionCheckpointManager:
             except (ValueError, TypeError):
                 continue
 
-            # Meeting prep checkpoint (6-10 minutes before start)
-            prep_event_id = f"meeting_prep:{meeting_id}"
+            # Skip meetings that have already ended (prevents trying to join ended meetings)
+            time_since_end = current_minutes - end_minutes
+            if time_since_end > 0:
+                # Meeting has ended - don't trigger any checkpoints for it
+                continue
+
+            # Calculate time relative to meeting
             time_to_start = start_minutes - current_minutes
+            time_to_end = end_minutes - current_minutes
+
+            # Meeting prep checkpoint (6-10 minutes BEFORE start, non-overlapping with start)
+            prep_event_id = f"meeting_prep:{meeting_id}"
             if (6 <= time_to_start <= 10 and
                     prep_event_id not in self._processed_events[agent_id]):
                 self._processed_events[agent_id].add(prep_event_id)
                 return True, f"meeting_prep:{meeting.title}"
 
-            # Meeting start checkpoint (within 5 minutes of start)
+            # Meeting start checkpoint (0-5 minutes BEFORE start only, not after)
+            # This is non-overlapping: prep=6-10min, start=0-5min before
             start_event_id = f"meeting_start:{meeting_id}"
-            if (abs(current_minutes - start_minutes) <= 5 and
+            if (0 <= time_to_start <= 5 and
                     start_event_id not in self._processed_events[agent_id]):
                 self._processed_events[agent_id].add(start_event_id)
                 return True, f"meeting_start:{meeting.title}"
 
-            # Meeting end checkpoint (within 5 minutes of end)
+            # Meeting end checkpoint (0-5 minutes BEFORE end only, not after)
+            # This gives agent time to wrap up meeting activities
             end_event_id = f"meeting_end:{meeting_id}"
-            if (abs(current_minutes - end_minutes) <= 5 and
+            if (0 <= time_to_end <= 5 and
                     end_event_id not in self._processed_events[agent_id]):
                 self._processed_events[agent_id].add(end_event_id)
+                # F.4: Record when meeting actually ends (for smarter protection)
+                if agent_id not in self._meeting_ended_at:
+                    self._meeting_ended_at[agent_id] = {}
+                self._meeting_ended_at[agent_id][meeting_id] = current_time
                 return True, f"meeting_end:{meeting.title}"
 
-        # Check lunch checkpoint
-        if daily_plan.lunch_plan:
-            lunch_event_id = f"lunch:{daily_plan.lunch_plan.time}"
-            try:
-                lunch_hour, lunch_minute = map(int, daily_plan.lunch_plan.time.split(":"))
-                lunch_minutes = lunch_hour * 60 + lunch_minute
-                if (abs(current_minutes - lunch_minutes) <= 5 and
-                        lunch_event_id not in self._processed_events[agent_id]):
-                    self._processed_events[agent_id].add(lunch_event_id)
-                    return True, "lunch_time"
-            except (ValueError, TypeError):
-                pass
-
-        # Check morning break checkpoint
-        if daily_plan.morning_break:
-            break_event_id = f"take_break:morning:{daily_plan.morning_break.preferred_time}"
-            try:
-                break_hour, break_minute = map(int, daily_plan.morning_break.preferred_time.split(":"))
-                break_minutes = break_hour * 60 + break_minute
-                if (abs(current_minutes - break_minutes) <= 5 and
-                        break_event_id not in self._processed_events[agent_id]):
-                    self._processed_events[agent_id].add(break_event_id)
-                    return True, "take_break:morning"
-            except (ValueError, TypeError):
-                pass
-
-        # Check afternoon break checkpoint
-        if daily_plan.afternoon_break:
-            break_event_id = f"take_break:afternoon:{daily_plan.afternoon_break.preferred_time}"
-            try:
-                break_hour, break_minute = map(int, daily_plan.afternoon_break.preferred_time.split(":"))
-                break_minutes = break_hour * 60 + break_minute
-                if (abs(current_minutes - break_minutes) <= 5 and
-                        break_event_id not in self._processed_events[agent_id]):
-                    self._processed_events[agent_id].add(break_event_id)
-                    return True, "take_break:afternoon"
-            except (ValueError, TypeError):
-                pass
-
-        # Check work activity checkpoints
-        if hasattr(daily_plan, 'work_activities') and daily_plan.work_activities:
-            for activity in daily_plan.work_activities:
-                activity_event_id = f"work_activity:{activity.activity}_{activity.planned_time}"
+        # ================================================================
+        # NON-ESSENTIAL CHECKPOINTS: Only trigger when NOT in a meeting
+        # These checkpoints (lunch, breaks, work activities, commitments)
+        # should not interrupt active meetings.
+        # ================================================================
+        if not in_meeting:
+            # Check lunch checkpoint
+            if daily_plan.lunch_plan:
+                lunch_event_id = f"{date_prefix}:lunch:{daily_plan.lunch_plan.time}"
                 try:
-                    act_hour, act_minute = map(int, activity.planned_time.split(":"))
-                    act_minutes = act_hour * 60 + act_minute
-                    if (abs(current_minutes - act_minutes) <= 5 and
-                            activity_event_id not in self._processed_events[agent_id]):
-                        self._processed_events[agent_id].add(activity_event_id)
-                        return True, f"work_activity:{activity.activity}"
+                    lunch_hour, lunch_minute = map(int, daily_plan.lunch_plan.time.split(":"))
+                    lunch_minutes = lunch_hour * 60 + lunch_minute
+                    if (abs(current_minutes - lunch_minutes) <= 5 and
+                            lunch_event_id not in self._processed_events[agent_id]):
+                        self._processed_events[agent_id].add(lunch_event_id)
+                        return True, "lunch_time"
                 except (ValueError, TypeError):
                     pass
 
-        # Check social commitment checkpoints (from conversations)
-        if hasattr(daily_plan, 'social_commitments') and daily_plan.social_commitments:
-            for commitment in daily_plan.social_commitments:
-                if commitment.fulfilled:
-                    continue
-                if commitment.time == "unspecified":
-                    continue
+            # Check morning break checkpoint
+            if daily_plan.morning_break:
+                break_event_id = f"{date_prefix}:take_break:morning:{daily_plan.morning_break.preferred_time}"
                 try:
-                    comm_hour, comm_minute = map(int, commitment.time.split(":"))
-                    comm_minutes = comm_hour * 60 + comm_minute
-                    commitment_event_id = f"commitment:{commitment.activity}_{commitment.time}"
-                    # Check if within 5 minutes of commitment time
-                    if (abs(current_minutes - comm_minutes) <= 5 and
-                            commitment_event_id not in self._processed_events[agent_id]):
-                        self._processed_events[agent_id].add(commitment_event_id)
-                        return True, f"commitment:{commitment.activity}"
+                    break_hour, break_minute = map(int, daily_plan.morning_break.preferred_time.split(":"))
+                    break_minutes = break_hour * 60 + break_minute
+                    if (abs(current_minutes - break_minutes) <= 5 and
+                            break_event_id not in self._processed_events[agent_id]):
+                        self._processed_events[agent_id].add(break_event_id)
+                        return True, "take_break:morning"
                 except (ValueError, TypeError):
                     pass
+
+            # Check afternoon break checkpoint
+            if daily_plan.afternoon_break:
+                break_event_id = f"{date_prefix}:take_break:afternoon:{daily_plan.afternoon_break.preferred_time}"
+                try:
+                    break_hour, break_minute = map(int, daily_plan.afternoon_break.preferred_time.split(":"))
+                    break_minutes = break_hour * 60 + break_minute
+                    if (abs(current_minutes - break_minutes) <= 5 and
+                            break_event_id not in self._processed_events[agent_id]):
+                        self._processed_events[agent_id].add(break_event_id)
+                        return True, "take_break:afternoon"
+                except (ValueError, TypeError):
+                    pass
+
+            # Check work activity checkpoints
+            if hasattr(daily_plan, 'work_activities') and daily_plan.work_activities:
+                for activity in daily_plan.work_activities:
+                    activity_event_id = f"{date_prefix}:work_activity:{activity.activity}_{activity.planned_time}"
+                    try:
+                        act_hour, act_minute = map(int, activity.planned_time.split(":"))
+                        act_minutes = act_hour * 60 + act_minute
+                        if (abs(current_minutes - act_minutes) <= 5 and
+                                activity_event_id not in self._processed_events[agent_id]):
+                            self._processed_events[agent_id].add(activity_event_id)
+                            return True, f"work_activity:{activity.activity}"
+                    except (ValueError, TypeError):
+                        pass
+
+            # Check social commitment checkpoints (from conversations)
+            # Group commitments by (time, agents) to trigger single checkpoint for related commitments
+            if hasattr(daily_plan, 'social_commitments') and daily_plan.social_commitments:
+                from collections import defaultdict
+                commitment_groups: dict[tuple, list] = defaultdict(list)
+
+                for commitment in daily_plan.social_commitments:
+                    if commitment.fulfilled:
+                        continue
+                    # Skip commitments without specific times
+                    if commitment.time in ("unspecified", "needs_confirmation", ""):
+                        continue
+                    try:
+                        # Validate time format
+                        comm_hour, comm_minute = map(int, commitment.time.split(":"))
+                        if not (0 <= comm_hour <= 23 and 0 <= comm_minute <= 59):
+                            continue
+                        # Group by (time, agents) - sort agents for consistent key
+                        agents_key = tuple(sorted(commitment.with_agents)) if commitment.with_agents else ()
+                        key = (commitment.time, agents_key)
+                        commitment_groups[key].append(commitment)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Check each group as a single checkpoint
+                for (time_str, agents_key), group in commitment_groups.items():
+                    try:
+                        comm_hour, comm_minute = map(int, time_str.split(":"))
+                        comm_minutes = comm_hour * 60 + comm_minute
+                        # Create combined event ID for the whole group (F.1: with date prefix)
+                        activities = sorted([c.activity for c in group])
+                        combined_id = f"{date_prefix}:commitment:{'+'.join(activities)}_{time_str}"
+
+                        # F.2: Check for commitment prep (10-15 min before commitment time)
+                        minutes_until = comm_minutes - current_minutes
+                        if 10 <= minutes_until <= 15:
+                            prep_id = f"{date_prefix}:commitment_prep:{'+'.join(activities)}_{time_str}"
+                            if prep_id not in self._processed_events[agent_id]:
+                                self._processed_events[agent_id].add(prep_id)
+                                return True, f"commitment_prep:{'+'.join(activities)}"
+
+                        # Check if within 5 minutes of commitment time
+                        if (abs(current_minutes - comm_minutes) <= 5 and
+                                combined_id not in self._processed_events[agent_id]):
+                            self._processed_events[agent_id].add(combined_id)
+                            # Return combined reason with all activities
+                            return True, f"commitment:{'+'.join(activities)}"
+                    except (ValueError, TypeError):
+                        pass
+
+                # M.3: Check for "commitment_waiting" - agent is waiting for partner
+                # This fires if: commitment time passed, agent at location, partner not there
+                for commitment in daily_plan.social_commitments:
+                    if commitment.fulfilled:
+                        continue
+                    if commitment.time in ("unspecified", "needs_confirmation", ""):
+                        continue
+                    try:
+                        comm_hour, comm_minute = map(int, commitment.time.split(":"))
+                        comm_minutes = comm_hour * 60 + comm_minute
+                        minutes_past = current_minutes - comm_minutes
+
+                        # Trigger 5-10 minutes after commitment time
+                        if 5 <= minutes_past <= 10:
+                            waiting_id = f"{date_prefix}:commitment_waiting:{commitment.activity}_{commitment.time}"
+                            if waiting_id in self._processed_events[agent_id]:
+                                continue
+
+                            # Check if agent is at the commitment location
+                            commitment_location = commitment.location or "break_area"
+                            if agent_status:
+                                agent_location = agent_status.get("location", "desk_area")
+                                if agent_location != commitment_location:
+                                    continue
+
+                            # Check if any partner is NOT at the location
+                            partner_missing = False
+                            missing_partner = None
+                            for partner_id in commitment.with_agents:
+                                if partner_id == agent_id:
+                                    continue
+                                # Get partner location from adapter if available
+                                # This requires access to the adapter, which we don't have here
+                                # So we'll mark all waiting situations and let the prompt handle it
+                                partner_missing = True
+                                missing_partner = partner_id
+                                break
+
+                            if partner_missing:
+                                self._processed_events[agent_id].add(waiting_id)
+                                return True, f"commitment_waiting:{commitment.activity}:{missing_partner}"
+                    except (ValueError, TypeError):
+                        pass
 
         # Check departure preparation checkpoint (10-20 min before departure)
         if daily_plan.actual_departure_time:
             try:
                 dep_hour, dep_minute = map(int, daily_plan.actual_departure_time.split(":"))
                 dep_minutes = dep_hour * 60 + dep_minute
-                departure_event_id = f"departure_prep:{daily_plan.actual_departure_time}"
+                departure_event_id = f"{date_prefix}:departure_prep:{daily_plan.actual_departure_time}"
                 time_to_departure = dep_minutes - current_minutes
                 if (10 <= time_to_departure <= 20 and
                         departure_event_id not in self._processed_events[agent_id]):
@@ -1683,8 +1826,9 @@ Do NOT use calendar tools - just output your final DailyPlan now.
         """Handle an agent arriving at work."""
         print(f"[LLM] {agent_id} arriving at {now.strftime('%H:%M')}")
 
-        # Mark as present
+        # Mark as present and set initial location
         self.adapter.set_occupant_present(agent_id, True)
+        self.adapter.set_agent_location(agent_id, "desk_area")
 
         agent = self._agents.get(agent_id)
         if agent:
@@ -1896,14 +2040,9 @@ Select your desk for today and specify which equipment to turn on.
         # 5. REFLECT: Generate insights if threshold reached
         await reflect(agent, now)
 
-        # 5.5 Post-conversation reflections (Stanford-style)
-        # Process any pending conversation reflections
-        pending_reflections = agent.get_pending_conversation_reflections()
-        for pending in pending_reflections:
-            other_id = pending.get("other_agent_id")
-            if other_id:
-                await reflect_on_conversation(agent, other_id, now)
-        agent.clear_pending_conversation_reflections()
+        # NOTE: Post-conversation reflections removed - commitments are now
+        # extracted directly in record_conversation_to_memory() and added to
+        # daily_plan. The goal is actionable plan changes, not memory thoughts.
 
         # 6. Get meeting context
         meeting_context = get_meeting_context(agent_id, self.calendar, now)
@@ -2110,6 +2249,9 @@ Select your desk for today and specify which equipment to turn on.
 
         # 13. Record decision to memory (using StepDecisions for structured reasoning)
         await record_decision_to_memory(agent, step_decision, now)
+
+        # 13.5. Handle commitment outcomes (M.2 - relationship consequences)
+        await self._handle_commitment_outcome(agent_id, step_decision, checkpoint_reason, now)
 
         # 14. Update tracking
         self._last_decision_time[agent_id] = now
@@ -2395,6 +2537,17 @@ Select your desk for today and specify which equipment to turn on.
             return None
 
         try:
+            # Sync agent status from adapter to agent.scratch before conversation
+            # This ensures _check_target_willingness() has accurate availability info
+            target_status = self.adapter.get_agent_status(target_id)
+            target_location = self.adapter.get_agent_location(target_id)
+            target.scratch["current_status"] = {
+                "in_meeting": target_location == "meeting_room",  # in_meeting if in meeting_room
+                "on_break": target_status.get("on_break", False),
+                "at_lunch": target_status.get("at_lunch", False),
+                "out_of_office": target_status.get("out_of_office", False),
+            }
+
             # Get list of valid colleagues in the office for anti-hallucination
             valid_colleagues = list(self._agents.keys())
 
@@ -2430,6 +2583,11 @@ Select your desk for today and specify which equipment to turn on.
                     other_agent_id=initiator_id,
                     now=now,
                 )
+                # CRITICAL: Save both agents to persist memory changes and social_commitments
+                # Without this, only the current agent in _occupant_step would be saved
+                initiator.save()
+                target.save()
+                print(f"[CONV-DEBUG] Saved both agents after conversation: {initiator_id}, {target_id}")
 
             self._log_conversation(initiator_id, target_id, topic, result, now)
             self._log_conversation_to_shared_file(result, now)
@@ -2783,6 +2941,148 @@ Select your desk for today and specify which equipment to turn on.
                                     other_commitment.fulfilled = True
                                     print(f"[COMMITMENT] {other_id}: Fulfilled '{other_commitment.activity}' with {agent_id}")
                                     break
+
+    async def _handle_commitment_outcome(
+        self,
+        agent_id: str,
+        step_decision: "StepDecisions",
+        checkpoint_reason: str,
+        now: datetime,
+    ) -> None:
+        """
+        Handle relationship consequences for commitment checkpoints (M.2).
+
+        When a commitment checkpoint fires and the agent doesn't execute it
+        (defer, skip, or no action taken), this records the impact:
+        1. Adds a memory about not meeting the person
+        2. Updates relationship sentiment negatively
+
+        Args:
+            agent_id: The agent who received the commitment checkpoint
+            step_decision: The decision they made
+            checkpoint_reason: The checkpoint reason (should start with "commitment:")
+            now: Current datetime
+        """
+        if not checkpoint_reason.startswith("commitment:"):
+            return
+
+        agent = self._agents.get(agent_id)
+        if not agent:
+            return
+
+        activity = checkpoint_reason.split(":", 1)[1] if ":" in checkpoint_reason else "activity"
+
+        # Get commitment details
+        daily_plan = agent.get_daily_plan()
+        if not daily_plan or not hasattr(daily_plan, 'social_commitments'):
+            return
+
+        # Find the matching commitment
+        matching_commitment = None
+        for commitment in daily_plan.social_commitments:
+            if commitment.fulfilled:
+                continue
+            if activity.lower() in commitment.activity.lower():
+                matching_commitment = commitment
+                break
+
+        if not matching_commitment:
+            return
+
+        partner_agents = matching_commitment.with_agents
+        if not partner_agents:
+            return
+
+        # Determine what action was taken
+        commitment_response = getattr(step_decision, 'commitment_response', None)
+        action_taken = "no_action"
+        if commitment_response:
+            response_action = getattr(commitment_response, 'action', 'no_action')
+            if response_action in ("execute", "defer", "skip"):
+                action_taken = response_action
+
+        # Check if agent actually went on break/lunch (executed)
+        if step_decision.actions:
+            for action in step_decision.actions:
+                action_type = getattr(action, 'action_type', '')
+                if action_type in ("take_break", "go_out_for_break", "go_to_lunch", "go_out_for_lunch"):
+                    action_taken = "execute"
+                    break
+
+        # If they executed, no negative consequences
+        if action_taken == "execute":
+            return
+
+        # Get partner name(s) for memory
+        partner_names = []
+        for pid in partner_agents:
+            other_agent = self._agents.get(pid)
+            if other_agent:
+                partner_names.append(other_agent.first_name)
+            else:
+                partner_names.append(pid.split("_")[0].capitalize())
+
+        if len(partner_names) == 1:
+            partner_str = partner_names[0]
+        elif len(partner_names) == 2:
+            partner_str = f"{partner_names[0]} and {partner_names[1]}"
+        else:
+            partner_str = ", ".join(partner_names[:-1]) + f", and {partner_names[-1]}"
+
+        # Determine consequences based on action
+        deferred_count = getattr(matching_commitment, 'deferred_count', 0)
+
+        if action_taken == "defer":
+            # Deferral - mild negative impact
+            sentiment_delta = -0.03 if deferred_count < 2 else -0.05
+            memory_desc = (
+                f"I had to postpone {activity} with {partner_str} again. "
+                f"They were probably expecting me. I should make it up to them."
+            )
+            importance = 5.0 if deferred_count < 2 else 7.0
+            print(f"[COMMITMENT] {agent_id}: Deferred {activity} with {partner_str} (count: {deferred_count + 1})")
+
+            # Update deferral count
+            matching_commitment.deferred = True
+            matching_commitment.deferred_count = deferred_count + 1
+
+        elif action_taken == "skip":
+            # Skip - stronger negative impact
+            sentiment_delta = -0.08
+            memory_desc = (
+                f"I skipped {activity} with {partner_str}. "
+                f"They were probably waiting for me. I feel bad about letting them down."
+            )
+            importance = 8.0
+            print(f"[COMMITMENT] {agent_id}: Skipped {activity} with {partner_str}")
+
+            # Mark as fulfilled (broken, but no longer pending)
+            matching_commitment.fulfilled = True
+
+        else:
+            # No action (no_op) - treated like skip
+            sentiment_delta = -0.06
+            memory_desc = (
+                f"I didn't meet {partner_str} for {activity} as I promised. "
+                f"They were probably waiting. I should apologize and reschedule."
+            )
+            importance = 7.0
+            print(f"[COMMITMENT] {agent_id}: Missed {activity} with {partner_str} (no action taken)")
+
+        # Record memory
+        agent.memory_stream.add_event(
+            description=memory_desc,
+            subject="I",
+            predicate="missed commitment with",
+            obj=partner_str,
+            now=now,
+            importance=importance,
+        )
+
+        # Update relationship sentiment with each partner
+        for partner_id in partner_agents:
+            agent.update_relationship(partner_id, sentiment_delta=sentiment_delta)
+            print(f"[RELATIONSHIP] {agent_id} -> {partner_id}: sentiment {sentiment_delta:+.2f}")
 
     def _log_action(
         self,

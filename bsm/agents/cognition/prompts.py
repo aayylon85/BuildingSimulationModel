@@ -58,7 +58,27 @@ def get_decision_focal_points(
             "return_from_lunch": ["when I return from lunch", "my post-lunch routine"],
             "take_break": ["my break habits", "when I take coffee or tea breaks", "staying energized"],
             "return_from_break": ["returning to work after breaks"],
-            "commitment": ["plans I made with colleagues", "social commitments", "what I promised to do"],
+            # M.1: Enhanced commitment focal points for relationship-aware memory retrieval
+            "commitment": [
+                "promises I made to colleagues",
+                "someone counting on me",
+                "times I kept my word",
+                "times I let someone down",
+                "how it feels when someone doesn't show up",
+            ],
+            # M.3: Focal points for when waiting for a colleague
+            "commitment_waiting": [
+                "when someone didn't show up to meet me",
+                "waiting for colleagues",
+                "being stood up",
+                "understanding when people are late",
+            ],
+            # F.2: Focal points for upcoming commitment
+            "commitment_prep": [
+                "upcoming plans with colleagues",
+                "getting ready for social activities",
+                "wrapping up work before breaks",
+            ],
             "departure_prep": ["wrapping up for the day", "end of day routine", "turning off equipment before leaving"],
             "forced": ["urgent matters that need attention"],
         }
@@ -616,6 +636,38 @@ def _extract_agreements_from_memories(
     return "\n".join(agreements)
 
 
+def _format_comfort_preferences_section(agent: "GenerativeAgent") -> str:
+    """
+    Extract comfort preferences from the agent's daily plan.
+
+    The comfort_preferences field captures thermal/lighting preferences set during
+    daily planning and should inform thermostat and lighting decisions.
+
+    Args:
+        agent: The generative agent
+
+    Returns:
+        Formatted string with comfort preferences, or empty string if none
+    """
+    daily_plan = agent.get_daily_plan() if hasattr(agent, 'get_daily_plan') else None
+
+    if not daily_plan:
+        return ""
+
+    # Handle both dict and Pydantic model
+    if isinstance(daily_plan, dict):
+        comfort_prefs = daily_plan.get("comfort_preferences", "")
+    elif hasattr(daily_plan, 'comfort_preferences'):
+        comfort_prefs = daily_plan.comfort_preferences
+    else:
+        comfort_prefs = ""
+
+    if not comfort_prefs or comfort_prefs.strip() == "":
+        return ""
+
+    return f"\n<your_comfort_preferences>{comfort_prefs}</your_comfort_preferences>"
+
+
 # ---------------------------------------------------------------------------
 # Decision Context Builder
 # ---------------------------------------------------------------------------
@@ -718,6 +770,9 @@ def format_step_prompt(
     # Build social commitments section
     social_commitments_section = _format_social_commitments_section(agent)
 
+    # Build upcoming commitments section (M.4 - anticipatory awareness)
+    upcoming_commitments_section = _format_upcoming_commitments_section(agent, now, checkpoint_reason)
+
     # Format lighting
     lighting = sim_state.get("lighting_conditions", {})
     natural_light = lighting.get("natural_light_level", "moderate")
@@ -744,6 +799,9 @@ def format_step_prompt(
     heating_setpoint = thermostat_info.get('heating_setpoint_c', 21)
     cooling_setpoint = thermostat_info.get('cooling_setpoint_c', 24)
 
+    # Get comfort preferences from daily plan (for thermal decisions)
+    comfort_preferences_section = _format_comfort_preferences_section(agent)
+
     # Build the main prompt
     prompt = f"""
 <current_time>
@@ -760,7 +818,7 @@ Checkpoint: {checkpoint_display}
 <temperature indoor="{sim_state.get('indoor_temp_c', 'N/A')}C" outdoor="{sim_state.get('outdoor_temp_c', 'N/A')}C" />
 <weather>{sim_state.get('weather_description', 'N/A')}</weather>{clothing_section}
 <desk>{sim_state.get('current_desk', 'N/A')}</desk>
-<thermostat heating="{heating_setpoint}C" cooling="{cooling_setpoint}C" />
+<thermostat heating="{heating_setpoint}C" cooling="{cooling_setpoint}C" />{comfort_preferences_section}
 </current_state>
 
 <location>
@@ -799,7 +857,7 @@ Checkpoint: {checkpoint_display}
 <social_commitments>
 {social_commitments_section}
 </social_commitments>
-
+{upcoming_commitments_section}
 <relevant_memories purpose="context for your decisions">
 {context['relevant_memories']}{work_preferences_section}
 </relevant_memories>
@@ -900,6 +958,28 @@ You can chat with colleagues naturally - topics might include:
 - General office observations
 Use conversation.action="initiate" with a topic to start talking.
 Note: Minor thermostat adjustments don't need discussion - just make the change directly.
+
+BEFORE INITIATING A CONVERSATION, CHECK:
+
+1. **Already have a commitment?** If you already have a confirmed social commitment
+   with this person today (check <social_commitments> above), DO NOT initiate another
+   conversation to "confirm" or "check in" about it. Just execute the plan when the
+   time comes.
+
+2. **Recently talked?** If you talked to this person within the last hour
+   (check relevant_memories), only initiate if you have NEW information to share.
+   Don't repeat the same conversation.
+
+3. **Good reason?** Only initiate conversations for:
+   - New work coordination needs (scheduling, questions, updates)
+   - Questions that genuinely need answers
+   - Social connection (if you haven't talked today)
+   - Spontaneous observations worth sharing
+
+   DO NOT initiate for:
+   - Re-confirming existing plans
+   - Checking if they're "ready" for something already planned
+   - Reminding them about commitments they already know about
 </conversations>
 """
 
@@ -937,34 +1017,180 @@ def _format_social_commitments_section(agent: "GenerativeAgent") -> str:
                     unfulfilled.append(c)
 
         if unfulfilled:
-            commitment_lines = ["You have committed to these activities with colleagues:"]
+            # Separate confirmed and unconfirmed commitments
+            confirmed = []
+            needs_time = []
             for c in unfulfilled:
                 # Handle both dict and object access
                 if isinstance(c, dict):
-                    with_agents = c.get("with_agents", [])
                     time = c.get("time", "unspecified")
-                    activity = c.get("activity", "activity")
-                    location = c.get("location", "unspecified")
-                    has_conflict = c.get("has_conflict", False)
                 else:
-                    with_agents = getattr(c, 'with_agents', [])
                     time = getattr(c, 'time', "unspecified")
-                    activity = getattr(c, 'activity', "activity")
-                    location = getattr(c, 'location', "unspecified")
-                    has_conflict = getattr(c, 'has_conflict', False)
+                if time == "needs_confirmation":
+                    needs_time.append(c)
+                else:
+                    confirmed.append(c)
 
-                with_names = ", ".join(a.split("_")[0].capitalize() for a in with_agents)
-                line = f"  - {time}: {activity} with {with_names}"
-                if location != "unspecified":
-                    line += f" at {location}"
-                if has_conflict:
-                    line += " (CONFLICT - may overlap with other plans)"
-                commitment_lines.append(line)
+            commitment_lines = []
 
-            commitment_lines.append(">>> HONOR YOUR COMMITMENTS - use take_break or go_out_for_break to fulfill these!")
+            # Show confirmed commitments (have specific times)
+            if confirmed:
+                commitment_lines.append("=== CONFIRMED COMMITMENTS (specific times) ===")
+                for c in confirmed:
+                    if isinstance(c, dict):
+                        with_agents = c.get("with_agents", [])
+                        time = c.get("time", "unspecified")
+                        activity = c.get("activity", "activity")
+                        location = c.get("location", "unspecified")
+                        has_conflict = c.get("has_conflict", False)
+                    else:
+                        with_agents = getattr(c, 'with_agents', [])
+                        time = getattr(c, 'time', "unspecified")
+                        activity = getattr(c, 'activity', "activity")
+                        location = getattr(c, 'location', "unspecified")
+                        has_conflict = getattr(c, 'has_conflict', False)
+
+                    with_names = ", ".join(a.split("_")[0].capitalize() for a in with_agents)
+                    line = f"  - {time}: {activity} with {with_names}"
+                    if location != "unspecified":
+                        line += f" at {location}"
+                    if has_conflict:
+                        line += " (CONFLICT - may overlap with other plans)"
+                    commitment_lines.append(line)
+                commitment_lines.append(">>> At the scheduled time, use take_break or go_out_for_break to fulfill these!")
+
+            # Show unconfirmed commitments (need time confirmation)
+            if needs_time:
+                commitment_lines.append("")
+                commitment_lines.append("=== UNCONFIRMED COMMITMENTS (need time) ===")
+                for c in needs_time:
+                    if isinstance(c, dict):
+                        with_agents = c.get("with_agents", [])
+                        activity = c.get("activity", "activity")
+                        location = c.get("location", "unspecified")
+                    else:
+                        with_agents = getattr(c, 'with_agents', [])
+                        activity = getattr(c, 'activity', "activity")
+                        location = getattr(c, 'location', "unspecified")
+
+                    with_names = ", ".join(a.split("_")[0].capitalize() for a in with_agents)
+                    line = f"  - {activity} with {with_names}"
+                    if location != "unspecified":
+                        line += f" (likely at {location})"
+                    commitment_lines.append(line)
+                commitment_lines.append(">>> YOU AGREED but no time was set! Suggest a specific time (e.g., '10:30') and invite them!")
+                commitment_lines.append(">>> Use conversation.action='initiate' to coordinate the time with your colleague.")
+
             return "\n".join(commitment_lines)
 
     return "No pending social commitments."
+
+
+def _format_upcoming_commitments_section(
+    agent: "GenerativeAgent",
+    now: datetime,
+    checkpoint_reason: str
+) -> str:
+    """Format upcoming commitments section (M.4).
+
+    Shows commitments coming up in 10-60 minutes to enable anticipatory planning.
+    Skips if we're already at a commitment checkpoint (detailed guidance shown there).
+
+    Args:
+        agent: The generative agent
+        now: Current datetime
+        checkpoint_reason: Current checkpoint reason
+
+    Returns:
+        Formatted upcoming commitments section or empty string
+    """
+    # Don't show if we're already at a commitment checkpoint (redundant)
+    if checkpoint_reason.startswith("commitment:"):
+        return ""
+
+    daily_plan = agent.get_daily_plan() if hasattr(agent, 'get_daily_plan') else None
+    if not daily_plan:
+        return ""
+
+    # Handle both dict and object access patterns
+    social_commitments = (
+        daily_plan.get("social_commitments", []) if isinstance(daily_plan, dict)
+        else getattr(daily_plan, 'social_commitments', [])
+    )
+
+    if not social_commitments:
+        return ""
+
+    current_minutes = now.hour * 60 + now.minute
+    upcoming = []
+
+    for c in social_commitments:
+        # Handle both dict and object access
+        if isinstance(c, dict):
+            fulfilled = c.get("fulfilled", False)
+            time_str = c.get("time", "")
+            activity = c.get("activity", "activity")
+            with_agents = c.get("with_agents", [])
+        else:
+            fulfilled = getattr(c, 'fulfilled', False)
+            time_str = getattr(c, 'time', "")
+            activity = getattr(c, 'activity', "activity")
+            with_agents = getattr(c, 'with_agents', [])
+
+        if fulfilled:
+            continue
+
+        if not time_str or time_str == "needs_confirmation":
+            continue
+
+        # Parse commitment time
+        try:
+            comm_hour, comm_minute = map(int, time_str.split(":"))
+            comm_minutes = comm_hour * 60 + comm_minute
+            minutes_until = comm_minutes - current_minutes
+
+            # Show commitments 10-60 minutes away
+            if 10 <= minutes_until <= 60:
+                # Format partner names naturally
+                if len(with_agents) == 1:
+                    partner_str = with_agents[0].split("_")[0].capitalize()
+                elif len(with_agents) == 2:
+                    partner_str = f"{with_agents[0].split('_')[0].capitalize()} and {with_agents[1].split('_')[0].capitalize()}"
+                elif with_agents:
+                    names = [a.split("_")[0].capitalize() for a in with_agents]
+                    partner_str = ", ".join(names[:-1]) + f", and {names[-1]}"
+                else:
+                    partner_str = "your colleague"
+
+                upcoming.append({
+                    "minutes": minutes_until,
+                    "activity": activity,
+                    "partner": partner_str,
+                    "time": time_str
+                })
+        except (ValueError, TypeError):
+            continue
+
+    if not upcoming:
+        return ""
+
+    # Sort by how soon they are
+    upcoming.sort(key=lambda x: x["minutes"])
+
+    lines = ["\n<upcoming_commitments>"]
+    lines.append("⏰ COMING UP SOON:")
+
+    for item in upcoming:
+        lines.append(
+            f"  In {item['minutes']} min ({item['time']}): {item['activity']} with {item['partner']}"
+        )
+
+    lines.append("")
+    lines.append(f"💭 {upcoming[0]['partner']} is counting on you. Start wrapping up your current task")
+    lines.append("   so you're ready when it's time to meet.")
+    lines.append("</upcoming_commitments>")
+
+    return "\n".join(lines)
 
 
 def _format_work_preferences_section(agent: "GenerativeAgent") -> str:
@@ -1098,21 +1324,204 @@ This action will move you back to desk_area and set your status to at_desk.
 </break_return>
 """
 
-    # Commitment guidance
-    if checkpoint_reason.startswith("commitment:"):
+    # F.2: Commitment prep guidance (10-15 min before commitment)
+    if checkpoint_reason.startswith("commitment_prep:"):
         activity = checkpoint_reason.split(":", 1)[1] if ":" in checkpoint_reason else "activity"
+
+        # Get partner names and time from the commitment
+        partner_names = []
+        commitment_time = ""
+        daily_plan = agent.get_daily_plan()
+        if daily_plan:
+            social_commitments = (
+                daily_plan.get("social_commitments", []) if isinstance(daily_plan, dict)
+                else getattr(daily_plan, 'social_commitments', [])
+            )
+            for commitment in social_commitments:
+                comm_activity = commitment.get("activity", "") if isinstance(commitment, dict) else getattr(commitment, "activity", "")
+                if comm_activity and activity.lower() in comm_activity.lower():
+                    if isinstance(commitment, dict):
+                        partner_names = commitment.get("with_agents", [])
+                        commitment_time = commitment.get("time", "")
+                    else:
+                        partner_names = getattr(commitment, "with_agents", [])
+                        commitment_time = getattr(commitment, "time", "")
+                    break
+
+        # Format partner names naturally
+        if len(partner_names) == 1:
+            partner_str = partner_names[0].split("_")[0].capitalize()
+        elif len(partner_names) == 2:
+            partner_str = f"{partner_names[0].split('_')[0].capitalize()} and {partner_names[1].split('_')[0].capitalize()}"
+        elif partner_names:
+            names = [n.split("_")[0].capitalize() for n in partner_names]
+            partner_str = ", ".join(names[:-1]) + f", and {names[-1]}"
+        else:
+            partner_str = "your colleague"
+
         guidance += f"""
 
-=== SOCIAL COMMITMENT ===
-You have a commitment for: {activity}
+=== UPCOMING: {activity.upper()} WITH {partner_str.upper()} ===
 
-ACTION REQUIRED: Honor your commitment!
-- If it's a coffee/tea break: Use take_break with location="break_area" and the appropriate activity
-- If it's lunch: Use go_to_lunch or go_out_for_lunch
-- If it's with a colleague: Make sure to go to the agreed location
+⏰ In about 10-15 minutes, you have {activity} with {partner_str}{f" at {commitment_time}" if commitment_time else ""}.
 
-Check your social_commitments above for details on who you're meeting and where.
-Your colleagues are counting on you - don't let them down!
+START WRAPPING UP:
+- Finish your current task or find a good stopping point
+- Save your work
+- {partner_str} is counting on you to be there
+
+This is a heads-up so you're ready when it's time to go.
+Don't start any new tasks that will take a long time.
+"""
+
+    # Commitment guidance - relationship-focused framing (M.5)
+    if checkpoint_reason.startswith("commitment:"):
+        activity = checkpoint_reason.split(":", 1)[1] if ":" in checkpoint_reason else "activity"
+        current_location = sim_state.get("current_location", "desk_area")
+        in_meeting_room = current_location == "meeting_room"
+
+        # Get partner name and deferral count from the commitment
+        partner_names = []
+        deferred_count = 0
+        commitment_time = ""
+        daily_plan = agent.get_daily_plan()
+        if daily_plan and hasattr(daily_plan, 'social_commitments'):
+            for commitment in daily_plan.social_commitments:
+                # Match by activity (normalized)
+                comm_activity = commitment.get("activity", "") if isinstance(commitment, dict) else getattr(commitment, "activity", "")
+                if comm_activity and activity.lower() in comm_activity.lower():
+                    if isinstance(commitment, dict):
+                        partner_names = commitment.get("with_agents", [])
+                        deferred_count = commitment.get("deferred_count", 0)
+                        commitment_time = commitment.get("time", "")
+                    else:
+                        partner_names = getattr(commitment, "with_agents", [])
+                        deferred_count = getattr(commitment, "deferred_count", 0)
+                        commitment_time = getattr(commitment, "time", "")
+                    break
+
+        # Format partner names naturally
+        if len(partner_names) == 1:
+            partner_str = partner_names[0]
+        elif len(partner_names) == 2:
+            partner_str = f"{partner_names[0]} and {partner_names[1]}"
+        elif partner_names:
+            partner_str = ", ".join(partner_names[:-1]) + f", and {partner_names[-1]}"
+        else:
+            partner_str = "your colleague"
+
+        guidance += f"""
+
+=== TIME FOR {activity.upper()} WITH {partner_str.upper()} ===
+
+You promised {partner_str} you'd have {activity} together.
+{f"The time you agreed on was {commitment_time}." if commitment_time else ""}
+Right now, {partner_str} is probably heading to the break area, expecting you.
+
+Think about this:
+- You made a promise to {partner_str}. They're counting on you.
+- How would you feel if you went to meet someone and they never showed up?
+- This is a chance to strengthen your relationship with {partner_str}.
+- Keeping your word matters - it's how trust is built.
+"""
+
+        # F.5: Limit rescheduling - after 3+ deferrals, force a real decision
+        if deferred_count >= 3:
+            guidance += f"""
+🚨 FINAL NOTICE - NO MORE RESCHEDULING 🚨
+
+You've rescheduled this commitment {deferred_count} times already.
+{partner_str} has been waiting for you to follow through, and each
+time you've pushed it back. This pattern is damaging your relationship.
+
+This is your LAST chance. You MUST choose one of these options:
+
+1. **EXECUTE NOW**: Go fulfill this commitment RIGHT NOW.
+   - Drop what you're doing (unless it's truly an emergency)
+   - Go to break_area and have {activity} with {partner_str}
+   - Show {partner_str} that you value your word and their time
+
+2. **CANCEL HONESTLY**: If you truly cannot do this today, be honest.
+   - Set commitment_response.action = "skip"
+   - In your reasoning, acknowledge you couldn't follow through
+   - Consider reaching out to {partner_str} to apologize
+
+NO MORE DEFERRALS. Rescheduling again is NOT an option.
+Ask yourself: What kind of colleague do you want to be?
+"""
+        elif deferred_count > 0:
+            guidance += f"""
+⚠️ You've already rescheduled this {deferred_count} time(s).
+{partner_str} has been waiting for you to follow through.
+Rescheduling again will likely disappoint them and hurt your relationship.
+"""
+
+        if in_meeting_room:
+            guidance += f"""
+You're currently in the meeting room. If you're in an active meeting, that's
+a legitimate reason to delay - but be honest with yourself: Is this meeting
+truly more important than keeping your promise to {partner_str}?
+
+If you must defer, let {partner_str} know as soon as the meeting ends.
+"""
+        else:
+            guidance += f"""
+You're at {current_location}. Unless you're in the middle of something truly
+critical, now is the time to go. {partner_str} is waiting.
+"""
+
+        guidance += f"""
+TO FULFILL THIS COMMITMENT:
+- Go to break_area using move_to or take_break action
+- Use take_break with activity="{activity}"
+- For outside activities: use go_out_for_break
+
+If you absolutely cannot go (real emergency, critical deadline):
+- Set commitment_response.action = "defer" with a specific defer_until time
+- Ask yourself honestly: Is this worth disappointing {partner_str}?
+- Think about how you'd feel if the situation were reversed
+"""
+
+    # M.3: Commitment waiting guidance - when agent is waiting for colleague
+    if checkpoint_reason.startswith("commitment_waiting:"):
+        parts = checkpoint_reason.split(":")
+        activity = parts[1] if len(parts) > 1 else "activity"
+        missing_partner_id = parts[2] if len(parts) > 2 else None
+
+        # Try to get partner name
+        if missing_partner_id:
+            partner_name = missing_partner_id.split("_")[0].capitalize()
+        else:
+            partner_name = "your colleague"
+
+        guidance += f"""
+
+=== WAITING FOR {partner_name.upper()} ===
+
+You're at the break area for {activity} as planned, but {partner_name} hasn't arrived yet.
+It's been 5-10 minutes past the agreed time.
+
+Think about this:
+- {partner_name} might just be running late
+- They could be stuck in something important
+- Or they might have forgotten
+
+YOUR OPTIONS:
+
+1. **Wait a bit longer**: Give them a few more minutes. Sometimes people get delayed.
+   - Stay where you are
+   - Maybe enjoy your {activity.split()[0]} while waiting
+
+2. **Check in with them**: Send a quick message or go find them.
+   - Use initiate_conversation to ask: "Hey, are we still on for {activity}?"
+   - This is natural - you're not being pushy, just checking in
+
+3. **Head back to work**: If you've been waiting a while and have things to do.
+   - Use return_from_break to go back to your desk
+   - You can try to catch up with {partner_name} later
+
+It's okay to feel a bit disappointed if someone doesn't show up as planned.
+That's a natural reaction when you were looking forward to spending time together.
 """
 
     # Meeting prep guidance

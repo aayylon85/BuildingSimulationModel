@@ -285,25 +285,32 @@ class LightingManager:
         """
         Apply a lights_set action from an agent decision.
 
-        Expected action_params:
-        {
-            "light_name": "desk_light_A",  # specific light
-            "on": true/false
-        }
-        or
-        {
-            "target": "zone_main",  # light name from LightingDecision.target_device
-            "on": true/false
-        }
-        or
-        {
-            "location": "Desk_A",  # turn on/off lights at location
-            "on": true/false
-        }
-        or
-        {
-            "desk_light": true/false  # control occupant's own desk light
-        }
+        Supports multiple parameter formats, checked in priority order:
+
+        Priority 1 - "target" (from LightingDecision.target_device):
+            {"target": "desk_light_A", "on": true}  - Specific light by name
+            {"target": "desk_light", "on": true}    - Agent's desk light (requires occupant_desk)
+            {"target": "zone_main", "on": true}     - Zone light by name
+
+        Priority 2 - "light_name" (legacy format):
+            {"light_name": "zone_main", "on": true} - Specific light by name
+
+        Priority 3 - "location" (control all lights at a location):
+            {"location": "Desk_A", "on": true}      - All lights at that location
+
+        Priority 4 - "desk_light" (shorthand for own desk, deprecated):
+            {"desk_light": true}                    - Own desk light on/off
+
+        Priority 5 - "on" only (default to own desk, deprecated):
+            {"on": true}                            - Own desk light if occupant_desk provided
+
+        Args:
+            action_params: Parameters from agent decision
+            occupant_id: ID of the occupant making the request
+            occupant_desk: Optional desk location for resolving "desk_light" references
+
+        Returns:
+            True if action was applied, False if target not found
         """
         # Handle "target" parameter (from LightingDecision.target_device)
         target = action_params.get("target")

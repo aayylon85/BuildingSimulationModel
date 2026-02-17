@@ -46,6 +46,26 @@ def _parse_time_str(time_str: str) -> Optional[time]:
     return None
 
 
+def _validate_not_base_type(path: Path, operation: str) -> None:
+    """
+    Validate that a path is not in the agent_base_types folder.
+
+    This prevents accidental modification of template agent files.
+
+    Args:
+        path: Path to validate
+        operation: Description of the operation being attempted (for error message)
+
+    Raises:
+        ValueError: If path is in agent_base_types folder
+    """
+    if "agent_base_types" in str(path.resolve()):
+        raise ValueError(
+            f"Cannot {operation} to agent_base_types folder: {path}. "
+            "Use copy_agent_base_type() first to copy to a results directory."
+        )
+
+
 @dataclass
 class AgentPaths:
     """Paths to agent data files."""
@@ -91,11 +111,7 @@ class GenerativeAgent:
         self.embedder = embedder
 
         # SAFETY: Prevent accidentally pointing to base_types
-        if "agent_base_types" in str(self.agent_folder.resolve()):
-            raise ValueError(
-                f"GenerativeAgent cannot be initialized with agent_base_types folder: {self.agent_folder}. "
-                "Use copy_agent_base_type() first to copy to a results directory."
-            )
+        _validate_not_base_type(self.agent_folder, "initialize agent")
 
         # Set up paths
         self.paths = AgentPaths(
@@ -786,10 +802,7 @@ Works weekends: {self.scratch.get('works_weekends', False)}
                    If any write fails, restores from backup.
         """
         # SAFETY: Additional check to prevent writing to base_types
-        if "agent_base_types" in str(self.paths.scratch_json.resolve()):
-            raise RuntimeError(
-                f"SAFETY: Refusing to write to agent_base_types: {self.paths.scratch_json}"
-            )
+        _validate_not_base_type(self.paths.scratch_json, "save agent data")
 
         if not atomic:
             # Original non-atomic save

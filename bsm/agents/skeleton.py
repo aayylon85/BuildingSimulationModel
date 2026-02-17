@@ -17,6 +17,7 @@ Notes
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 import uuid
@@ -26,6 +27,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 # OpenAI python client (for embeddings)
 from openai import OpenAI
@@ -52,8 +55,10 @@ DEFAULT_TOP_K = 6
 # ---------------------------------------------------------------------------
 # Action Parameter Schema - Single source of truth for action parameters
 # ---------------------------------------------------------------------------
-# This defines the expected parameters for each action type.
-# Use this to validate parameters in both conversion and application.
+# Reference documentation for action parameters.
+# This documents the expected parameters for each action type.
+# Note: These types are not currently validated at runtime - this serves as
+# documentation for developers implementing action handlers.
 
 ACTION_PARAMS = {
     "thermostat_adjust": {
@@ -217,6 +222,10 @@ class EquipmentDecision(BaseModel):
     reasoning: str = Field(
         description="Brief explanation of why this action was chosen for this equipment"
     )
+    before_move: bool = Field(
+        default=False,
+        description="If True, apply this equipment action BEFORE any location move (e.g., turn off desk equipment before leaving). If False (default), apply AFTER location move."
+    )
 
 
 class LocationDecision(BaseModel):
@@ -253,6 +262,24 @@ class BreakDecision(BaseModel):
     activity: Optional[str] = Field(
         default=None,
         description="Break activity: tea, coffee, snack, stretch, walk, fresh_air, etc."
+    )
+
+
+class CommitmentDecision(BaseModel):
+    """Decision about handling a social commitment checkpoint."""
+    action: Literal["execute", "defer", "skip", "not_applicable"] = Field(
+        description=(
+            "How to handle the commitment: "
+            "'execute' to fulfill it now, "
+            "'defer' to reschedule for later, "
+            "'skip' to cancel entirely, "
+            "'not_applicable' if this checkpoint is not about a commitment"
+        )
+    )
+    reasoning: str = Field(description="Why this choice was made given current circumstances")
+    defer_until: Optional[str] = Field(
+        default=None,
+        description="If deferring, when to try again (HH:MM format). Required if action='defer'."
     )
 
 
@@ -314,7 +341,7 @@ class StepDecisions(BaseModel):
     """Complete structured output for a decision checkpoint."""
     occupant_id: str
     timestamp: str
-    checkpoint_reason: str = Field(description="'hourly', 'meeting_start', 'meeting_end', 'lunch_time', 'morning_break', 'afternoon_break'")
+    checkpoint_reason: str = Field(description="'hourly', 'meeting_start', 'meeting_end', 'lunch_time', 'morning_break', 'afternoon_break', 'commitment:*'")
     thermostat: ThermostatDecision
     lighting: LightingDecision
     equipment_decisions: List[EquipmentDecision] = Field(
@@ -326,6 +353,10 @@ class StepDecisions(BaseModel):
     break_decision: BreakDecision = Field(description="Break/lunch decision - use 'not_applicable' or 'continue_working' when not taking a break")
     meeting_equipment: MeetingEquipmentDecision = Field(description="Meeting equipment decision - use 'not_applicable' when not at meeting boundary or not the host")
     plan_update: PlanUpdateDecision = Field(description="Whether to update daily plan based on current circumstances")
+    commitment_response: Optional[CommitmentDecision] = Field(
+        default=None,
+        description="Response to a commitment checkpoint. Use 'not_applicable' for non-commitment checkpoints. Only required when checkpoint_reason starts with 'commitment:'."
+    )
 
 
 class DeskSelectionDecision(BaseModel):
@@ -419,7 +450,14 @@ class SocialCommitment(BaseModel):
         description="Where the activity will happen"
     )
     source: str = Field(default="conversation", description="How this commitment was created")
+    # Fulfillment tracking
     fulfilled: bool = Field(default=False, description="Whether this commitment has been honored")
+    fulfilled_at: Optional[str] = Field(default=None, description="ISO timestamp when fulfilled")
+    # Deferral tracking
+    deferred: bool = Field(default=False, description="Whether this commitment has been deferred")
+    deferred_count: int = Field(default=0, description="How many times this has been deferred")
+    last_deferred_at: Optional[str] = Field(default=None, description="ISO timestamp of last deferral")
+    original_time: Optional[str] = Field(default=None, description="Original time before any deferrals")
 
 
 class DailyPlan(BaseModel):
@@ -527,12 +565,18 @@ class EmbeddingClient:
 
         # Cache miss - call API
         self._cache_misses += 1
-        resp = self.client.embeddings.create(
-            model=self.model,
-            input=text,
-        )
-        vec = resp.data[0].embedding
-        emb = np.asarray(vec, dtype=np.float32)
+        try:
+            resp = self.client.embeddings.create(
+                model=self.model,
+                input=text,
+            )
+            vec = resp.data[0].embedding
+            emb = np.asarray(vec, dtype=np.float32)
+        except Exception as e:
+            logger.error(f"Embedding API call failed: {e}")
+            # Return zero vector as fallback (will have low similarity to everything)
+            # 3072 is the dimension for text-embedding-3-large
+            return np.zeros(3072, dtype=np.float32)
 
         # Add to cache with LRU eviction
         self._cache[cache_key] = emb.copy()
@@ -692,17 +736,20 @@ class CalendarStore:
             - existing_event_info: Dict with title/creator if existing event found, else None
         """
         with self._conn() as con:
-            # For shared calendar, check across ALL creators
+            # Use exact title match (case-insensitive) to prevent false positives
+            # The time window (1800s = 30min) handles slight timing variations
+            # Previously used LIKE pattern which matched unrelated events
+            # (e.g., "Project Review" would match "Project Planning")
             if calendar_id == "shared":
                 existing = con.execute(
                     """
                     SELECT event_id, title, created_by FROM events
                     WHERE calendar_id = ?
                     AND ABS(start_ts - ?) < 1800
-                    AND LOWER(title) LIKE ?
+                    AND LOWER(title) = LOWER(?)
                     AND cancelled = 0
                     """,
-                    (calendar_id, _utc_ts(start), f"%{title.lower()[:20]}%")
+                    (calendar_id, _utc_ts(start), title)
                 ).fetchone()
             else:
                 # Personal calendar - only check same creator
@@ -711,10 +758,10 @@ class CalendarStore:
                     SELECT event_id, title, created_by FROM events
                     WHERE calendar_id = ? AND created_by = ?
                     AND ABS(start_ts - ?) < 1800
-                    AND LOWER(title) LIKE ?
+                    AND LOWER(title) = LOWER(?)
                     AND cancelled = 0
                     """,
-                    (calendar_id, created_by, _utc_ts(start), f"%{title.lower()[:20]}%")
+                    (calendar_id, created_by, _utc_ts(start), title)
                 ).fetchone()
 
             if existing:
@@ -1596,12 +1643,16 @@ Social:
 <decision_guidance>
 THERMOSTAT - Focus on how you FEEL:
 - Check the actual indoor temperature and notice how you feel (too hot, too cold, comfortable)
-- If you feel TOO HOT: Request direction="cooler" - this LOWERS the cooling setpoint to get more cooling
-- If you feel TOO COLD: Request direction="warmer" - this RAISES the heating setpoint to get more heating
-- adjustment_amount: Use a positive number (e.g., 1.0 or 2.0 degrees)
+- If you feel TOO HOT: Request direction="cooler" - shifts the comfort band down
+- If you feel TOO COLD: Request direction="warmer" - shifts the comfort band up
+- adjustment_amount: Use 0.5 (small), 1.0 (medium), or 1.5-2.0 (large) degrees
+- IMPORTANT: Adjustments are CAPPED at +/- 2C from the base setpoint (21C)
+  - Large requests (e.g., +5C) will be limited to +2C
+  - If multiple people request changes, their votes are AVERAGED
 - Your personality affects sensitivity: some people run hot, others cold
 - Only adjust when genuinely uncomfortable - don't manage setpoints abstractly
 - Use your thermal preferences and memories to guide comfort decisions
+- Consider outdoor weather: if it's hot outside, cooler indoor temps feel refreshing
 
 LIGHTING - Consider your preferences and current needs:
 - Check natural light level (bright, moderate, dim, dark)

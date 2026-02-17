@@ -1,0 +1,97 @@
+{
+  "conversation_id": "conv_20250610_152000_charlie_003_alice_001",
+  "start_time": "2025-06-10T15:20:00+00:00",
+  "participants": [
+    "charlie_003",
+    "alice_001"
+  ],
+  "initiated_by": "charlie_003",
+  "topics": [
+    "weekend",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Hey Alice\u2014quick reset after that 2pm planning: want to do a quick coffee run sometime this afternoon? I could use a little break."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, I\u2019m up for a quick coffee. I\u2019m free now that the 2pm is done\u2014want to head out in the next few minutes, or do you need to wrap something up first?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Give me like 2 minutes to fire off one message, then I\u2019m good to go. Want to do the usual spot near the corner?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yep, the usual spot sounds perfect. I\u2019ll grab my stuff and meet you by the door in a couple minutes\u2014nice to get a quick reset after that deep-dive."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u2014sending this now and I\u2019ll meet you by the door. I\u2019m definitely ready for a reset after that deep-dive."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Sounds good\u2014I'll meet you by the door. I\u2019m going to try to keep this one a real quick reset so I don\u2019t get pulled into another long chat before I dive back in."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Totally\u2014quick in and out. I\u2019m walking over now; I\u2019ll meet you by the door in like a minute, and we\u2019ll keep it to a grab-and-go."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Awesome\u2014see you by the door in a sec. I\u2019ll do my usual order and then we can head straight back so I can get a focused block in before I leave on time."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yep\u2014same, in and out. After your order, let\u2019s just head straight back so you can grab that focused block."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "That was exactly the kind of quick reset I needed\u2014thanks for keeping it grab-and-go. I\u2019ve got a bit of a focus block now before I wrap up; you all set for the rest of the afternoon?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah, I\u2019m pretty set\u2014just need to regroup after my 2pm planning and knock out a few follow-ups. You heading out right at your usual time today, or are you getting pulled into anything last-minute?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "I\u2019m aiming to head out right on time today\u2014no plans to stay late. I\u2019ve got my 2pm deep-dive done, so I\u2019m just going to tidy up a couple things and then call it at my usual time."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Nice\u2014love a clean on-time exit. I\u2019m going to do the same vibe after my 2pm thing: quick follow-ups and then try not to let anything drag on. Want to do a short lap outside around 4-ish as a mini reset, or are you in full wrap-up mode?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "A short lap sounds nice, but I\u2019ve got a couple things I want to finish so I can still leave on time. How about we play it by ear closer to 4\u2014if I\u2019m wrapped up, I\u2019m in; if not, I\u2019ll take a quick stretch at my desk."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u2014let\u2019s check in around 4 and keep it flexible. I\u2019ve got a couple follow-ups to knock out after the 2pm planning, but I\u2019m definitely up for a quick lap if you\u2019re clear and it won\u2019t mess with your on-time exit."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Sounds good\u2014ping me around 4 and we\u2019ll see where we\u2019re both at. I\u2019m trying to keep my head down for the next hour so I can do that clean on-time exit."
+    }
+  ],
+  "duration_minutes": 8,
+  "summary": "Charlie and Alice had an extended conversation."
+}

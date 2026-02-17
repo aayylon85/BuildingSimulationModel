@@ -9,11 +9,14 @@ Implements the reflection stage of the cognitive loop:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
 from agents import Agent, Runner, ModelSettings
 from agents.agent_output import AgentOutputSchema
+
+logger = logging.getLogger(__name__)
 
 from bsm.agents.cognition.schemas import (
     ReflectionOutput,
@@ -99,7 +102,7 @@ Return the indices of memories to consolidate, or empty list if none qualify."""
         result = await Runner.run(assessor, prompt)
         return result.final_output
     except Exception as e:
-        print(f"[CONSOLIDATION] LLM assessment failed: {e}")
+        logger.error(f"LLM consolidation assessment failed: {e}")
         return ConsolidationBatch(memories_to_consolidate=[], reasoning=f"Assessment failed: {e}")
 
 
@@ -170,7 +173,7 @@ Based on these observations, generate an insight."""
         output: ReflectionOutput = result.final_output
         return output.insight if output.insight else None
     except Exception as e:
-        print(f"[REFLECTION] LLM reflection failed: {e}")
+        logger.error(f"LLM reflection failed: {e}")
         return None
 
 
@@ -292,10 +295,10 @@ async def reflect(
                     importance=importance,
                 )
                 reflections.append(thought)
-                print(f"[Reflect] {agent.name}: {insight}")
+                logger.info(f"{agent.name}: {insight}")
 
         except Exception as e:
-            print(f"[Reflect] LLM reflection failed for {agent.name}: {e}")
+            logger.error(f"LLM reflection failed for {agent.name}: {e}")
             # Fall back to template-based reflection
             reflections.extend(
                 await _generate_template_reflections(agent, recent_events, now)
@@ -399,7 +402,7 @@ Generate a SPECIFIC planning thought about what you should do and WHEN."""
         output: PlanningThoughtOutput = result.final_output
         return output.thought if output.thought else None
     except Exception as e:
-        print(f"[PLANNING] Planning thought generation failed: {e}")
+        logger.error(f"Planning thought generation failed: {e}")
         return None
 
 
@@ -457,8 +460,31 @@ Generate an observation about {other_name}."""
         output: MemoThoughtOutput = result.final_output
         return output.observation if output.observation else None
     except Exception as e:
-        print(f"[MEMO] Memo thought generation failed: {e}")
+        logger.error(f"Memo thought generation failed: {e}")
         return None
+
+
+def _to_timestamp(created_value: Union[int, float, datetime, str]) -> float:
+    """Safely convert a created value to a Unix timestamp.
+
+    Handles multiple possible types that memory nodes may store:
+    - float/int: Already a timestamp, return as-is
+    - datetime: Convert to timestamp
+    - str: Try to parse as ISO format datetime
+
+    Returns:
+        float timestamp, or 0.0 if conversion fails
+    """
+    if isinstance(created_value, (int, float)):
+        return float(created_value)
+    elif isinstance(created_value, datetime):
+        return created_value.timestamp()
+    elif isinstance(created_value, str):
+        try:
+            return datetime.fromisoformat(created_value).timestamp()
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
 
 
 async def reflect_on_conversation(
@@ -487,21 +513,22 @@ async def reflect_on_conversation(
         return []
 
     # Deduplication: Track conversations we've already reflected on this hour
+    # Store in agent.scratch so it persists across reloads
     conv_key = f"conv_{other_agent_id}_{now.strftime('%Y%m%d_%H')}"
-    if not hasattr(agent, '_reflected_conversations'):
-        agent._reflected_conversations = set()
+    reflected_set = set(agent.scratch.get('_reflected_conversations', []))
 
-    if conv_key in agent._reflected_conversations:
-        print(f"[ConvReflect] {agent.name}: Skipping duplicate reflection for {other_agent_id} (same hour)")
+    if conv_key in reflected_set:
+        logger.debug(f"{agent.name}: Skipping duplicate reflection for {other_agent_id} (same hour)")
         return []
 
     # Check for similar existing planning thoughts to avoid memory clutter
     if agent.memory_stream:
-        all_nodes = agent.memory_stream.get_all_nodes()
+        all_nodes = agent.memory_stream.nodes
+        now_ts = now.timestamp()
         recent_thoughts = [
             n for n in all_nodes
             if n.node_type == "thought"
-            and (now - n.created).total_seconds() < 7200  # Last 2 hours
+            and (now_ts - _to_timestamp(n.created)) < 7200  # Last 2 hours
         ]
         # Count planning thoughts about this person
         other_name_lower = other_agent_id.lower()
@@ -511,11 +538,12 @@ async def reflect_on_conversation(
             and any(w in t.description.lower() for w in ['should', 'will meet', 'at ', 'around '])
         )
         if similar_count >= 2:
-            print(f"[ConvReflect] {agent.name}: Skipping reflection - already have {similar_count} planning thoughts about {other_agent_id}")
+            logger.debug(f"{agent.name}: Skipping reflection - already have {similar_count} planning thoughts about {other_agent_id}")
             return []
 
-    # Mark this conversation as reflected
-    agent._reflected_conversations.add(conv_key)
+    # Mark this conversation as reflected (persisted in scratch)
+    reflected_set.add(conv_key)
+    agent.scratch['_reflected_conversations'] = list(reflected_set)
 
     reflections: List[MemoryNode] = []
 
@@ -554,10 +582,10 @@ async def reflect_on_conversation(
                 importance=importance,
             )
             reflections.append(thought)
-            print(f"[ConvReflect] {agent.name} planning: {planning_insight}")
+            logger.info(f"{agent.name} planning: {planning_insight}")
 
     except Exception as e:
-        print(f"[ConvReflect] Planning thought failed for {agent.name}: {e}")
+        logger.error(f"Planning thought failed for {agent.name}: {e}")
 
     # Generate memo thought about the other person
     try:
@@ -577,10 +605,10 @@ async def reflect_on_conversation(
                 importance=importance,
             )
             reflections.append(thought)
-            print(f"[ConvReflect] {agent.name} memo: {memo_insight}")
+            logger.info(f"{agent.name} memo: {memo_insight}")
 
     except Exception as e:
-        print(f"[ConvReflect] Memo thought failed for {agent.name}: {e}")
+        logger.error(f"Memo thought failed for {agent.name}: {e}")
 
     return reflections
 

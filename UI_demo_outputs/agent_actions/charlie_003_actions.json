@@ -3,18 +3,23 @@
   "agent_name": "Charlie",
   "actions": [
     {
-      "timestamp": "2025-06-10T10:35:00+00:00",
-      "action_type": "lights_set",
+      "timestamp": "2025-06-10T10:20:00+00:00",
+      "action_type": "move_to",
       "details": {
-        "action": "turn_on",
-        "target": "desk_light",
-        "on": true,
-        "brightness": null
+        "destination": "meeting_room"
       },
       "reason": "Checkpoint: hourly"
     },
     {
-      "timestamp": "2025-06-10T11:10:00+00:00",
+      "timestamp": "2025-06-10T10:25:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: meeting_end:Weekly sync (Tue) - priorities & blockers"
+    },
+    {
+      "timestamp": "2025-06-10T11:00:00+00:00",
       "action_type": "move_to",
       "details": {
         "destination": "break_area"
@@ -22,16 +27,7 @@
       "reason": "Checkpoint: take_break:morning"
     },
     {
-      "timestamp": "2025-06-10T11:10:00+00:00",
-      "action_type": "initiate_conversation",
-      "details": {
-        "target_agent": "alice_001",
-        "topic": "coffee break + quick check on how the morning\u2019s going"
-      },
-      "reason": "Checkpoint: take_break:morning"
-    },
-    {
-      "timestamp": "2025-06-10T11:10:00+00:00",
+      "timestamp": "2025-06-10T11:00:00+00:00",
       "action_type": "take_break",
       "details": {
         "location": "break_area",
@@ -40,7 +36,7 @@
       "reason": "Checkpoint: take_break:morning"
     },
     {
-      "timestamp": "2025-06-10T11:10:00+00:00",
+      "timestamp": "2025-06-10T11:00:00+00:00",
       "action_type": "use_appliance",
       "details": {
         "appliance_name": "coffee_machine"
@@ -48,7 +44,7 @@
       "reason": "Checkpoint: take_break:morning"
     },
     {
-      "timestamp": "2025-06-10T11:20:00+00:00",
+      "timestamp": "2025-06-10T11:10:00+00:00",
       "action_type": "move_to",
       "details": {
         "destination": "desk_area"
@@ -56,56 +52,48 @@
       "reason": "Checkpoint: return_from_break"
     },
     {
-      "timestamp": "2025-06-10T11:20:00+00:00",
+      "timestamp": "2025-06-10T11:10:00+00:00",
       "action_type": "return_from_break",
       "details": {},
       "reason": "Checkpoint: return_from_break"
     },
     {
-      "timestamp": "2025-06-10T11:35:00+00:00",
+      "timestamp": "2025-06-10T11:20:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T12:20:00+00:00",
       "action_type": "initiate_conversation",
       "details": {
         "target_agent": "alice_001",
-        "topic": "Work: align on any open items/agenda for the 14:00 requirements review."
+        "topic": "Work check-in for the 14:00 project planning (any last inputs/owners to capture) and whether she\u2019s grabbing lunch soon."
       },
       "reason": "Checkpoint: hourly"
     },
     {
-      "timestamp": "2025-06-10T12:35:00+00:00",
-      "action_type": "initiate_conversation",
-      "details": {
-        "target_agent": "alice_001",
-        "topic": "Lunch plan + quick coordination check for the 14:00 requirements review"
-      },
-      "reason": "Checkpoint: hourly"
-    },
-    {
-      "timestamp": "2025-06-10T12:35:00+00:00",
+      "timestamp": "2025-06-10T12:20:00+00:00",
       "action_type": "update_daily_plan",
       "details": {
         "updates": {
           "lunch_plan": {
-            "location": "go_out",
-            "time": "12:45"
+            "location": "break_area",
+            "time": "12:40"
           }
         },
-        "reason": "It\u2019s past noon and I should lock in a lunch plan that fits the 14:00 meeting."
+        "reason": "It\u2019s past midday and I haven\u2019t set a lunch plan yet; I should lock in a simple plan around the 14:00 meeting."
       },
       "reason": "Checkpoint: hourly"
     },
     {
-      "timestamp": "2025-06-10T12:55:00+00:00",
-      "action_type": "lights_set",
-      "details": {
-        "action": "turn_off",
-        "target": "desk_light",
-        "on": false,
-        "brightness": null
-      },
-      "reason": "Checkpoint: lunch_time"
+      "timestamp": "2025-06-10T12:30:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: commitment_prep:lunch with outdoor walk"
     },
     {
-      "timestamp": "2025-06-10T12:55:00+00:00",
+      "timestamp": "2025-06-10T12:40:00+00:00",
       "action_type": "equipment_set",
       "details": {
         "equipment_name": "monitor_C",
@@ -114,46 +102,70 @@
       "reason": "Checkpoint: lunch_time"
     },
     {
-      "timestamp": "2025-06-10T12:55:00+00:00",
-      "action_type": "move_to",
-      "details": {
-        "destination": "entrance"
-      },
-      "reason": "Checkpoint: lunch_time"
-    },
-    {
-      "timestamp": "2025-06-10T12:55:00+00:00",
-      "action_type": "initiate_conversation",
-      "details": {
-        "target_agent": "alice_001",
-        "topic": "Lunch plan\u2014want to head out together now and do a quick check-in before the 14:00 session?"
-      },
-      "reason": "Checkpoint: lunch_time"
-    },
-    {
-      "timestamp": "2025-06-10T12:55:00+00:00",
+      "timestamp": "2025-06-10T12:40:00+00:00",
       "action_type": "update_daily_plan",
       "details": {
         "updates": {
           "lunch_plan": {
             "location": "go_out",
-            "time": "12:55"
+            "time": "12:45"
           }
         },
-        "reason": "Aligning the lunch plan with the 14:00 meeting and my intention to go out with Alice."
+        "reason": "Lunch is planned as break_area, but I\u2019m going outside with Alice at 12:45 instead."
       },
       "reason": "Checkpoint: lunch_time"
     },
     {
-      "timestamp": "2025-06-10T12:55:00+00:00",
+      "timestamp": "2025-06-10T12:40:00+00:00",
       "action_type": "go_out_for_break",
       "details": {
-        "activity": "lunch"
+        "activity": "lunch + walk"
       },
       "reason": "Checkpoint: lunch_time"
     },
     {
-      "timestamp": "2025-06-10T13:05:00+00:00",
+      "timestamp": "2025-06-10T12:41:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "entrance"
+      },
+      "reason": "Checkpoint: commitment:lunch with outdoor walk"
+    },
+    {
+      "timestamp": "2025-06-10T12:41:00+00:00",
+      "action_type": "go_out_for_break",
+      "details": {
+        "activity": "lunch with outdoor walk"
+      },
+      "reason": "Checkpoint: commitment:lunch with outdoor walk"
+    },
+    {
+      "timestamp": "2025-06-10T12:50:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "alice_001",
+        "topic": "Hey\u2014still on for our lunch + outdoor walk? I\u2019m by the entrance."
+      },
+      "reason": "Checkpoint: commitment_waiting:lunch with outdoor walk:alice_001"
+    },
+    {
+      "timestamp": "2025-06-10T12:50:00+00:00",
+      "action_type": "go_out_for_break",
+      "details": {
+        "activity": "lunch walk / fresh air"
+      },
+      "reason": "Checkpoint: commitment_waiting:lunch with outdoor walk:alice_001"
+    },
+    {
+      "timestamp": "2025-06-10T13:00:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: return_from_break"
+    },
+    {
+      "timestamp": "2025-06-10T13:00:00+00:00",
       "action_type": "equipment_set",
       "details": {
         "equipment_name": "monitor_C",
@@ -162,18 +174,277 @@
       "reason": "Checkpoint: return_from_break"
     },
     {
-      "timestamp": "2025-06-10T13:05:00+00:00",
+      "timestamp": "2025-06-10T13:00:00+00:00",
+      "action_type": "return_from_break",
+      "details": {},
+      "reason": "Checkpoint: return_from_break"
+    },
+    {
+      "timestamp": "2025-06-10T13:20:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "alice_001",
+        "topic": "Confirm times for the quick loop and a short reset/headphones chat after the 15:00 meeting (or 15:10) so we can lock them in."
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T13:30:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "shared_area"
+      },
+      "reason": "Checkpoint: work_activity:Print agendas/handouts for project planning session"
+    },
+    {
+      "timestamp": "2025-06-10T13:50:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "photocopier",
+        "on": true
+      },
+      "reason": "Checkpoint: meeting_prep:Project planning - next steps & owners"
+    },
+    {
+      "timestamp": "2025-06-10T13:55:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "photocopier",
+        "on": false
+      },
+      "reason": "Checkpoint: meeting_start:Project planning - next steps & owners"
+    },
+    {
+      "timestamp": "2025-06-10T13:55:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "whiteboard_light",
+        "on": false
+      },
+      "reason": "Checkpoint: meeting_start:Project planning - next steps & owners"
+    },
+    {
+      "timestamp": "2025-06-10T13:55:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "projector",
+        "on": false
+      },
+      "reason": "Checkpoint: meeting_start:Project planning - next steps & owners"
+    },
+    {
+      "timestamp": "2025-06-10T13:55:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "conference_phone",
+        "on": false
+      },
+      "reason": "Checkpoint: meeting_start:Project planning - next steps & owners"
+    },
+    {
+      "timestamp": "2025-06-10T13:55:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "meeting_room"
+      },
+      "reason": "Checkpoint: meeting_start:Project planning - next steps & owners"
+    },
+    {
+      "timestamp": "2025-06-10T14:20:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T14:55:00+00:00",
       "action_type": "move_to",
       "details": {
         "destination": "desk_area"
       },
-      "reason": "Checkpoint: return_from_break"
+      "reason": "Checkpoint: meeting_end:Project planning - next steps & owners"
     },
     {
-      "timestamp": "2025-06-10T13:05:00+00:00",
+      "timestamp": "2025-06-10T15:05:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "shared_area"
+      },
+      "reason": "Checkpoint: work_activity:Photocopy any annotated notes into a shareable packet"
+    },
+    {
+      "timestamp": "2025-06-10T15:05:00+00:00",
+      "action_type": "lights_set",
+      "details": {
+        "action": "turn_on",
+        "target": "desk_light",
+        "on": true,
+        "brightness": null
+      },
+      "reason": "Checkpoint: work_activity:Photocopy any annotated notes into a shareable packet"
+    },
+    {
+      "timestamp": "2025-06-10T15:05:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "bob_002",
+        "topic": "I\u2019m going to run a quick photocopy job for the annotated notes\u2014are you about to use the copier, or is now a good time?"
+      },
+      "reason": "Checkpoint: work_activity:Photocopy any annotated notes into a shareable packet"
+    },
+    {
+      "timestamp": "2025-06-10T15:20:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T15:20:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "alice_001",
+        "topic": "Schedule a quick 10-min reset chat in the meeting room around 16:00."
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T15:40:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: take_break:afternoon"
+    },
+    {
+      "timestamp": "2025-06-10T15:55:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: commitment_prep:coffee"
+    },
+    {
+      "timestamp": "2025-06-10T16:05:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: work_activity:Send recap email + update owners/next steps tracker"
+    },
+    {
+      "timestamp": "2025-06-10T16:06:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "break_area"
+      },
+      "reason": "Checkpoint: commitment:coffee"
+    },
+    {
+      "timestamp": "2025-06-10T16:06:00+00:00",
+      "action_type": "take_break",
+      "details": {
+        "location": "break_area",
+        "activity": "coffee"
+      },
+      "reason": "Checkpoint: commitment:coffee"
+    },
+    {
+      "timestamp": "2025-06-10T16:06:00+00:00",
+      "action_type": "use_appliance",
+      "details": {
+        "appliance_name": "coffee_machine"
+      },
+      "reason": "Checkpoint: commitment:coffee"
+    },
+    {
+      "timestamp": "2025-06-10T16:15:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "alice_001",
+        "topic": "Hey Alice\u2014still on for coffee in the break area? I\u2019m here now."
+      },
+      "reason": "Checkpoint: commitment_waiting:coffee:alice_001"
+    },
+    {
+      "timestamp": "2025-06-10T16:15:00+00:00",
+      "action_type": "take_break",
+      "details": {
+        "location": "break_area",
+        "activity": "coffee"
+      },
+      "reason": "Checkpoint: commitment_waiting:coffee:alice_001"
+    },
+    {
+      "timestamp": "2025-06-10T16:15:00+00:00",
+      "action_type": "use_appliance",
+      "details": {
+        "appliance_name": "coffee_machine"
+      },
+      "reason": "Checkpoint: commitment_waiting:coffee:alice_001"
+    },
+    {
+      "timestamp": "2025-06-10T16:20:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T16:20:00+00:00",
+      "action_type": "return_from_break",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T16:25:00+00:00",
       "action_type": "return_from_break",
       "details": {},
       "reason": "Checkpoint: return_from_break"
+    },
+    {
+      "timestamp": "2025-06-10T17:20:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T18:20:00+00:00",
+      "action_type": "no_op",
+      "details": {},
+      "reason": "Checkpoint: hourly"
+    },
+    {
+      "timestamp": "2025-06-10T18:30:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "laptop_C",
+        "on": false
+      },
+      "reason": "Checkpoint: departure_prep"
+    },
+    {
+      "timestamp": "2025-06-10T18:30:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "monitor_C",
+        "on": false
+      },
+      "reason": "Checkpoint: departure_prep"
+    },
+    {
+      "timestamp": "2025-06-10T18:30:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "entrance"
+      },
+      "reason": "Checkpoint: departure_prep"
+    },
+    {
+      "timestamp": "2025-06-10T18:30:00+00:00",
+      "action_type": "lights_set",
+      "details": {
+        "action": "turn_off",
+        "target": "desk_light",
+        "on": false,
+        "brightness": null
+      },
+      "reason": "Checkpoint: departure_prep"
     }
   ]
 }

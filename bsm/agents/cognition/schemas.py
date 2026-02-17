@@ -101,14 +101,14 @@ class UtteranceOutput(BaseModel):
 
 class ConversationCommitmentOutput(BaseModel):
     """Output schema for commitment extraction from conversations."""
-    activity: str = Field(description="What was agreed to do (coffee, walk, lunch, etc.)")
-    time: str = Field(
-        default="unspecified",
-        description="When (HH:MM) if specified, otherwise 'unspecified'"
+    activity: str = Field(
+        description="SHORT activity name (max 4 words) - e.g., 'coffee', 'lunch', 'walk outside'"
     )
-    location: Literal["break_area", "outside", "meeting_room", "unspecified"] = Field(
-        default="unspecified",
-        description="Where the activity will happen"
+    time: str = Field(
+        description="When: HH:MM format (e.g., '10:30') for specific times, or 'needs_confirmation' for vague agreements"
+    )
+    location: Literal["break_area", "outside", "meeting_room"] = Field(
+        description="Where the activity will happen - must be one of the valid locations"
     )
 
 

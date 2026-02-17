@@ -10,11 +10,232 @@ Implements functions for recording various events to agent memory:
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, List, TYPE_CHECKING
+import logging
+import re
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from bsm.agents.cognition.perception import get_importance
-from bsm.agents.cognition.schemas import ConversationResult, ConsultationOutcome
+from bsm.agents.cognition.schemas import ConversationResult, ConsultationOutcome, ConversationCommitmentOutput
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Commitment Deduplication Helpers
+# ---------------------------------------------------------------------------
+
+# Activity keywords that map to normalized activity types
+ACTIVITY_KEYWORDS = {
+    "coffee": ["coffee", "coffee break", "coffee run", "grab coffee", "get coffee", "coffee with"],
+    "lunch": ["lunch", "eat lunch", "lunch break", "grab lunch", "lunch with", "lunch and"],
+    "break": ["break", "quick break", "take a break", "short break", "rest"],
+    "walk": ["walk", "walk outside", "go for a walk", "take a walk", "stroll",
+             "outdoor walk", "lap outside", "stretch legs", "stretch our legs"],
+    "chat": ["chat", "talk", "catch up", "quick chat"],
+    "meeting": ["meeting", "meet", "meet up", "meetup"],
+}
+
+# Compound activity patterns - normalize to primary activity
+# These patterns match activities like "lunch with outdoor walk" and normalize to "lunch"
+COMPOUND_PATTERNS = [
+    # lunch + walk combinations → lunch (primary activity)
+    (re.compile(r'lunch.*walk|walk.*lunch', re.IGNORECASE), "lunch"),
+    # coffee + walk combinations → coffee
+    (re.compile(r'coffee.*walk|walk.*coffee', re.IGNORECASE), "coffee"),
+    # break + walk combinations → break
+    (re.compile(r'break.*walk|walk.*break', re.IGNORECASE), "break"),
+    # lunch + chat combinations → lunch
+    (re.compile(r'lunch.*chat|chat.*lunch', re.IGNORECASE), "lunch"),
+    # coffee + chat combinations → coffee
+    (re.compile(r'coffee.*chat|chat.*coffee', re.IGNORECASE), "coffee"),
+]
+
+
+def _normalize_activity(activity: str) -> str:
+    """
+    Normalize activity string to a canonical form for comparison.
+    Handles compound activities by normalizing to the primary activity.
+
+    Examples:
+        "grab coffee" -> "coffee"
+        "lunch with outdoor walk" -> "lunch"
+        "walk outside and chat" -> "walk"
+
+    Args:
+        activity: Raw activity string (e.g., "grab coffee", "lunch with outdoor walk")
+
+    Returns:
+        Normalized activity type (e.g., "coffee", "lunch")
+    """
+    activity_lower = activity.lower().strip()
+
+    # First check compound patterns - these take priority
+    for pattern, canonical in COMPOUND_PATTERNS:
+        if pattern.search(activity_lower):
+            return canonical
+
+    # Then check single-activity keywords
+    for canonical, keywords in ACTIVITY_KEYWORDS.items():
+        for kw in keywords:
+            if kw in activity_lower or activity_lower in kw:
+                return canonical
+
+    # If no match, return the original lowercased
+    return activity_lower
+
+
+def _parse_commitment_time(time_str: str) -> Optional[Tuple[int, int]]:
+    """
+    Parse a commitment time string into (hour, minute) tuple.
+
+    Args:
+        time_str: Time string in HH:MM format or "needs_confirmation"
+
+    Returns:
+        Tuple of (hour, minute) or None if time is unspecified
+    """
+    if not time_str or time_str in ("needs_confirmation", "unspecified", ""):
+        return None
+
+    # Try to parse HH:MM format
+    match = re.match(r'^(\d{1,2}):(\d{2})$', time_str.strip())
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return (hour, minute)
+
+    return None
+
+
+def _times_within_window(
+    time1: Optional[Tuple[int, int]],
+    time2: Optional[Tuple[int, int]],
+    window_minutes: int = 15
+) -> bool:
+    """
+    Check if two times are within a given window of each other.
+
+    Args:
+        time1: First time as (hour, minute) tuple or None
+        time2: Second time as (hour, minute) tuple or None
+        window_minutes: Maximum difference in minutes to consider as "same time"
+
+    Returns:
+        True if times are within window (or if either is None/unspecified)
+    """
+    # If either time is unspecified, consider them potentially matching
+    if time1 is None or time2 is None:
+        return True
+
+    # Convert to minutes since midnight for easy comparison
+    mins1 = time1[0] * 60 + time1[1]
+    mins2 = time2[0] * 60 + time2[1]
+
+    return abs(mins1 - mins2) <= window_minutes
+
+
+def _find_similar_commitment(
+    existing_commitments: List[Dict[str, Any]],
+    new_activity: str,
+    new_time: str,
+    new_with_agents: List[str],
+    window_minutes: int = 15
+) -> Optional[int]:
+    """
+    Find an existing commitment similar to a new one being added.
+
+    A commitment is considered similar if:
+    - Activity type matches (after normalization)
+    - Time is within the window (or either is unspecified)
+    - At least one agent in common
+
+    Args:
+        existing_commitments: List of existing commitment dicts
+        new_activity: Activity for the new commitment
+        new_time: Time for the new commitment
+        new_with_agents: Agent IDs for the new commitment
+        window_minutes: Time window for considering times as "same"
+
+    Returns:
+        Index of similar commitment if found, None otherwise
+    """
+    new_activity_norm = _normalize_activity(new_activity)
+    new_time_parsed = _parse_commitment_time(new_time)
+    new_agents_set = set(new_with_agents)
+
+    for idx, existing in enumerate(existing_commitments):
+        # Skip already fulfilled commitments
+        if existing.get("fulfilled", False):
+            continue
+
+        # Check activity match
+        existing_activity_norm = _normalize_activity(existing.get("activity", ""))
+        if existing_activity_norm != new_activity_norm:
+            continue
+
+        # Check time proximity
+        existing_time_parsed = _parse_commitment_time(existing.get("time", ""))
+        if not _times_within_window(existing_time_parsed, new_time_parsed, window_minutes):
+            continue
+
+        # Check agent overlap
+        existing_agents = set(existing.get("with_agents", []))
+        if not (existing_agents & new_agents_set):
+            continue
+
+        # Found a similar commitment
+        return idx
+
+    return None
+
+
+def _merge_commitment(
+    existing: Dict[str, Any],
+    new_activity: str,
+    new_time: str,
+    new_with_agents: List[str],
+    new_location: str,
+) -> Dict[str, Any]:
+    """
+    Merge a new commitment into an existing one.
+
+    Prefers more specific information (e.g., actual time over "needs_confirmation").
+
+    Args:
+        existing: Existing commitment dict
+        new_activity: Activity from new commitment
+        new_time: Time from new commitment
+        new_with_agents: Agents from new commitment
+        new_location: Location from new commitment
+
+    Returns:
+        Updated commitment dict
+    """
+    # Prefer more specific time
+    existing_time = existing.get("time", "")
+    if _parse_commitment_time(new_time) is not None:
+        # New time is specific, use it
+        if _parse_commitment_time(existing_time) is None:
+            existing["time"] = new_time
+        # If both are specific, prefer the new one (more recent agreement)
+        else:
+            existing["time"] = new_time
+
+    # Merge agents (union)
+    existing_agents = set(existing.get("with_agents", []))
+    existing_agents.update(new_with_agents)
+    existing["with_agents"] = list(existing_agents)
+
+    # Update location if new one is more specific
+    if new_location and new_location != existing.get("location"):
+        existing["location"] = new_location
+
+    # Track that this was updated
+    existing["last_updated"] = datetime.now().isoformat()
+
+    return existing
 
 if TYPE_CHECKING:
     from bsm.agents.generative_agent import GenerativeAgent
@@ -202,18 +423,49 @@ async def record_conversation_to_memory(
         extract_conversation_commitments,
         check_commitment_conflicts,
     )
+    from bsm.agents.cognition.reflection import reflect_on_conversation
 
     if not agent.memory_stream:
         return
 
-    # Build description
     other_first_name = other_agent_id.split("_")[0].capitalize()
+
+    # Extract commitments FIRST so we can include them in the summary
+    participant_ids = [agent.agent_id, other_agent_id]
+    logger.debug(f"{agent.agent_id}: Starting commitment extraction...")
+    commitments = await extract_conversation_commitments(
+        conversation=conversation,
+        participant_ids=participant_ids,
+    )
+    logger.debug(f"{agent.agent_id}: Received {len(commitments)} commitments from extraction")
+
+    # Build enhanced description that includes commitment details
     topics_str = ", ".join(conversation.topics_discussed) if conversation.topics_discussed else "general topics"
 
-    description = (
-        f"Had a conversation with {other_first_name} about {topics_str}. "
-        f"{conversation.summary}"
-    )
+    if commitments:
+        # Build a summary that includes what was agreed
+        commitment_parts = []
+        for c in commitments:
+            if c.time and c.time not in ("needs_confirmation", "unspecified", ""):
+                commitment_parts.append(f"{c.activity} at {c.time}")
+            else:
+                commitment_parts.append(f"{c.activity} (time to be confirmed)")
+
+        if commitment_parts:
+            commitment_summary = f"Agreed to: {', '.join(commitment_parts)}."
+        else:
+            commitment_summary = ""
+
+        description = (
+            f"Had a conversation with {other_first_name} about {topics_str}. "
+            f"{commitment_summary}"
+        )
+    else:
+        # No commitments - use topics-based summary
+        description = (
+            f"Had a conversation with {other_first_name} about {topics_str}. "
+            f"{conversation.summary}"
+        )
 
     # Use LLM to assess importance of this conversation
     importance = await get_importance(agent, description, 5.0, use_llm=True)
@@ -226,8 +478,8 @@ async def record_conversation_to_memory(
         importance=importance,
     )
 
-    # Mark for post-conversation reflection (Stanford-style)
-    agent.mark_conversation_end(other_agent_id, now)
+    # Track conversation end for compatibility, but we'll process reflection synchronously
+    # (The pending_conversation_reflections queue is no longer needed since we process immediately)
 
     # Update relationship: familiarity increases with each conversation
     agent.update_relationship(
@@ -236,22 +488,58 @@ async def record_conversation_to_memory(
         sentiment_delta=0.0,     # Sentiment neutral for general conversations
     )
 
-    # Extract any commitments made during the conversation
-    participant_ids = [agent.agent_id, other_agent_id]
-    commitments = await extract_conversation_commitments(
-        conversation=conversation,
-        participant_ids=participant_ids,
-    )
-
     # Add commitments to the agent's daily plan (with conflict checking)
-    # Note: daily_plan is stored as a dict (from model_dump()), not a DailyPlan object
+    # Note: daily_plan may be a dict (from model_dump()) or a Pydantic model
     daily_plan = agent.get_daily_plan() if hasattr(agent, 'get_daily_plan') else None
+    logger.debug(f"{agent.agent_id}: daily_plan exists: {daily_plan is not None}")
+
+    # Convert Pydantic model to dict if needed
+    if daily_plan and not isinstance(daily_plan, dict):
+        if hasattr(daily_plan, 'model_dump'):
+            daily_plan = daily_plan.model_dump()
+        elif hasattr(daily_plan, '__dict__'):
+            daily_plan = vars(daily_plan)
+        else:
+            logger.warning(f"{agent.agent_id}: daily_plan is type {type(daily_plan).__name__}, cannot convert to dict")
+            daily_plan = None
+
+    if daily_plan:
+        logger.debug(f"{agent.agent_id}: daily_plan keys: {list(daily_plan.keys())}")
+        logger.debug(f"{agent.agent_id}: existing social_commitments: {daily_plan.get('social_commitments', [])}")
+
     if commitments and daily_plan:
         # Ensure social_commitments list exists in the dict
         if "social_commitments" not in daily_plan:
             daily_plan["social_commitments"] = []
 
         for commitment in commitments:
+            # Check for similar existing commitment (deduplication)
+            existing_commitments = daily_plan["social_commitments"]
+            similar_idx = _find_similar_commitment(
+                existing_commitments=existing_commitments,
+                new_activity=commitment.activity,
+                new_time=commitment.time,
+                new_with_agents=[other_agent_id],
+                window_minutes=15,  # Commitments within 15 min are considered duplicates
+            )
+
+            if similar_idx is not None:
+                # Update existing commitment instead of creating duplicate
+                existing = existing_commitments[similar_idx]
+                logger.info(
+                    f"{agent.agent_id}: DEDUP - Found similar commitment '{existing.get('activity')}' "
+                    f"at {existing.get('time')}, merging with '{commitment.activity}' at {commitment.time}"
+                )
+                _merge_commitment(
+                    existing=existing,
+                    new_activity=commitment.activity,
+                    new_time=commitment.time,
+                    new_with_agents=[other_agent_id],
+                    new_location=commitment.location,
+                )
+                continue  # Skip adding new entry
+
+            # No similar commitment found - create new entry
             social_commitment_dict = {
                 "activity": commitment.activity,
                 "time": commitment.time,
@@ -264,25 +552,57 @@ async def record_conversation_to_memory(
             # Check for conflicts before adding
             social_commitment = SocialCommitment(**social_commitment_dict)
             conflicts = check_commitment_conflicts(agent, social_commitment, now)
+
+            # F.3 (revised): Flag meeting conflicts but still add the commitment
+            # With schedule awareness in conversations, this should be rare
+            # But if it happens, let the agent see the conflict and address it
+            has_meeting_conflict = any("Conflicts with meeting" in c for c in conflicts)
+
+            if has_meeting_conflict:
+                # Flag the commitment so the agent can see and address the conflict
+                meeting_conflicts = [c for c in conflicts if "Conflicts with meeting" in c]
+                logger.warning(
+                    f"{agent.agent_id}: Commitment '{commitment.activity}' at {commitment.time} "
+                    f"conflicts with meeting - flagging: {meeting_conflicts[0]}"
+                )
+                print(
+                    f"[COMMITMENT] {agent.agent_id}: {commitment.activity} at {commitment.time} conflicts with meeting - "
+                    f"agent should address this"
+                )
+                social_commitment_dict["has_meeting_conflict"] = True
+                social_commitment_dict["meeting_conflict_details"] = meeting_conflicts[0]
+
             if conflicts:
-                print(f"[CONV] {agent.agent_id}: CONFLICT detected for '{commitment.activity}' at {commitment.time}:")
+                # Non-meeting conflicts (e.g., other commitments) - still add but mark
+                logger.info(f"{agent.agent_id}: CONFLICT detected for '{commitment.activity}' at {commitment.time}:")
                 for conflict in conflicts:
-                    print(f"        - {conflict}")
-                # Still add but mark it so the agent is aware of the conflict
+                    logger.info(f"        - {conflict}")
                 social_commitment_dict["has_conflict"] = True
 
             # Add to the daily_plan dict (it's stored as a dict, not a Pydantic model)
             daily_plan["social_commitments"].append(social_commitment_dict)
-            print(f"[CONV] {agent.agent_id}: Added commitment - {commitment.activity} with {other_agent_id}")
+            logger.info(f"{agent.agent_id}: Added NEW commitment - {commitment.activity} at {commitment.time} with {other_agent_id}")
 
-    # Generate post-conversation reflections with commitments for action-oriented thoughts
-    from bsm.agents.cognition.reflection import reflect_on_conversation
-    await reflect_on_conversation(
-        agent=agent,
-        other_agent_id=other_agent_id,
-        now=now,
-        commitments=commitments if commitments else None,
-    )
+        logger.debug(f"{agent.agent_id}: After adding, social_commitments = {daily_plan.get('social_commitments', [])}")
+    elif commitments and not daily_plan:
+        logger.warning(f"{agent.agent_id}: {len(commitments)} commitments extracted but daily_plan is None!")
+    elif not commitments:
+        logger.debug(f"{agent.agent_id}: No commitments extracted from conversation")
+
+    # Process reflection SYNCHRONOUSLY after conversation ends
+    # This generates planning thoughts and memos about the other person
+    # Pass commitments so reflection can reference specific agreements made
+    try:
+        reflections = await reflect_on_conversation(
+            agent=agent,
+            other_agent_id=other_agent_id,
+            now=now,
+            commitments=commitments,  # Include extracted commitments for context
+        )
+        if reflections:
+            logger.info(f"{agent.agent_id}: Generated {len(reflections)} reflection(s) from conversation with {other_agent_id}")
+    except Exception as e:
+        logger.warning(f"{agent.agent_id}: Reflection after conversation failed: {e}")
 
 
 async def record_agreement_to_memory(
@@ -344,6 +664,127 @@ async def record_agreement_to_memory(
 
 
 # ---------------------------------------------------------------------------
+# Commitment Fulfillment Tracking
+# ---------------------------------------------------------------------------
+
+def mark_commitment_fulfilled(
+    agent: "GenerativeAgent",
+    activity_type: str,
+    with_agent_id: Optional[str],
+    at_time: datetime,
+    window_minutes: int = 30,
+) -> bool:
+    """
+    Mark a matching commitment as fulfilled.
+
+    Searches for an unfulfilled commitment that matches the activity type,
+    involves the specified agent (if provided), and is within the time window.
+
+    Args:
+        agent: The agent whose commitments to search
+        activity_type: Type of activity (e.g., "coffee", "break", "lunch")
+        with_agent_id: ID of the other agent involved (None if solo activity)
+        at_time: When the activity was executed
+        window_minutes: Time window for matching (default 30 min)
+
+    Returns:
+        True if a commitment was found and marked fulfilled, False otherwise
+    """
+    daily_plan = agent.get_daily_plan() if hasattr(agent, 'get_daily_plan') else None
+
+    # Convert Pydantic model to dict if needed
+    if daily_plan and not isinstance(daily_plan, dict):
+        if hasattr(daily_plan, 'model_dump'):
+            daily_plan = daily_plan.model_dump()
+        elif hasattr(daily_plan, '__dict__'):
+            daily_plan = vars(daily_plan)
+        else:
+            return False
+
+    if not daily_plan:
+        return False
+
+    commitments = daily_plan.get("social_commitments", [])
+    if not commitments:
+        return False
+
+    activity_norm = _normalize_activity(activity_type)
+    execution_time = (at_time.hour, at_time.minute)
+
+    for commitment in commitments:
+        # Skip already fulfilled
+        if commitment.get("fulfilled", False):
+            continue
+
+        # Check activity match
+        if _normalize_activity(commitment.get("activity", "")) != activity_norm:
+            continue
+
+        # Check agent match (if specified)
+        if with_agent_id:
+            commitment_agents = commitment.get("with_agents", [])
+            if with_agent_id not in commitment_agents:
+                continue
+
+        # Check time proximity
+        commitment_time = _parse_commitment_time(commitment.get("time", ""))
+        if not _times_within_window(commitment_time, execution_time, window_minutes):
+            continue
+
+        # Found matching commitment - mark as fulfilled
+        commitment["fulfilled"] = True
+        commitment["fulfilled_at"] = at_time.isoformat()
+        logger.info(
+            f"{agent.agent_id}: Marked commitment fulfilled - {commitment.get('activity')} "
+            f"at {commitment.get('time')} with {commitment.get('with_agents')}"
+        )
+        return True
+
+    return False
+
+
+def get_unfulfilled_commitments(
+    agent: "GenerativeAgent",
+    activity_filter: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Get all unfulfilled commitments for an agent.
+
+    Args:
+        agent: The agent to query
+        activity_filter: Optional activity type to filter by (e.g., "coffee")
+
+    Returns:
+        List of unfulfilled commitment dicts
+    """
+    daily_plan = agent.get_daily_plan() if hasattr(agent, 'get_daily_plan') else None
+
+    # Convert Pydantic model to dict if needed
+    if daily_plan and not isinstance(daily_plan, dict):
+        if hasattr(daily_plan, 'model_dump'):
+            daily_plan = daily_plan.model_dump()
+        elif hasattr(daily_plan, '__dict__'):
+            daily_plan = vars(daily_plan)
+        else:
+            return []
+
+    if not daily_plan:
+        return []
+
+    commitments = daily_plan.get("social_commitments", [])
+    unfulfilled = [c for c in commitments if not c.get("fulfilled", False)]
+
+    if activity_filter:
+        filter_norm = _normalize_activity(activity_filter)
+        unfulfilled = [
+            c for c in unfulfilled
+            if _normalize_activity(c.get("activity", "")) == filter_norm
+        ]
+
+    return unfulfilled
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -352,4 +793,7 @@ __all__ = [
     "record_plan_to_memory",
     "record_conversation_to_memory",
     "record_agreement_to_memory",
+    # Commitment helpers
+    "mark_commitment_fulfilled",
+    "get_unfulfilled_commitments",
 ]

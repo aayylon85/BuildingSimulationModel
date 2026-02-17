@@ -1,0 +1,53 @@
+{
+  "conversation_id": "conv_20250610_125000_alice_001_charlie_003",
+  "start_time": "2025-06-10T12:50:00+00:00",
+  "participants": [
+    "alice_001",
+    "charlie_003"
+  ],
+  "initiated_by": "alice_001",
+  "topics": [
+    "work",
+    "weather",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Hey Charlie \u2014 I just got back from my walk. How\u2019s your day going so far?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Pretty good so far\u2014just ticking through a few things before my planning meeting at 2. How was the walk?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "It was really nice out\u2014sunny enough that it actually felt like a proper break. Since you\u2019ve got that 2pm meeting, want to do a quick loop outside with me now, or are you in the middle of something?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "I\u2019d love to, but I actually just did my lunch walk at 12:45, so I should probably get back to my desk. How about we do a quick loop after my 2pm meeting instead?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, that works \u2014 I\u2019ve got a deep-dive 2\u20133, but I\u2019m free right after if you\u2019re up for a quick loop then. Want to just ping me when you\u2019re out of your meeting?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect \u2014 I\u2019ll ping you as soon as I\u2019m out of the 2\u20133. A quick loop after that sounds ideal to reset a bit."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Nice\u2014let\u2019s do that. I\u2019ll wrap up a couple things before my 2\u20133, and you just ping me when you\u2019re out and I\u2019ll meet you by the door for a quick loop."
+    }
+  ],
+  "duration_minutes": 3,
+  "summary": "Alice and Charlie had a conversation."
+}
