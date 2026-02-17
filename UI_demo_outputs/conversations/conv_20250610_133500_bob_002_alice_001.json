@@ -1,0 +1,57 @@
+{
+  "conversation_id": "conv_20250610_133500_bob_002_alice_001",
+  "start_time": "2025-06-10T13:35:00+00:00",
+  "participants": [
+    "bob_002",
+    "alice_001"
+  ],
+  "initiated_by": "bob_002",
+  "topics": [
+    "work",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Hey Alice\u2014quick heads-up, I\u2019ve got the design/approach review 14:00\u201315:00 and then a quick debrief right after. You all set for that, or want to sync on anything before 14:00?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yep, I\u2019m all set for 14:00. If you want, we can do a super quick 5-minute sync right now before things kick off\u2014anything in particular you\u2019re worried might get sticky in the review?"
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Yeah\u2014just one thing: I want to make sure we\u2019re aligned on the opening framing and what \u201cdone\u201d looks like coming out of the review, so it doesn\u2019t drift into a bunch of side debates. Got 5 minutes now to sanity-check that and who\u2019s covering which points?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yep, I\u2019ve got 5 minutes. For the opening, I was thinking we frame it as: confirm the approach, lock the key decisions, and leave with a short list of follow-ups\u2014so \u201cdone\u201d is agreement on the direction plus owners for any action items. I can cover the context/why we\u2019re here, and you lead the approach details\u2014sound right, or do you want to swap anything?"
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "That split works\u2014keep the opener tight on \u201cdecisions + owners,\u201d and I\u2019ll walk through the approach details. Only tweak: let\u2019s explicitly call out what\u2019s out-of-scope up front so it doesn\u2019t wander; I can do that right after your context, then we roll into the approach."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Perfect\u2014out-of-scope callout right after my context is a good guardrail. I\u2019ll keep the opener to \u201cdecisions + owners,\u201d then hand to you; anything specific you want listed as out-of-scope so we\u2019re both saying the same thing?"
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Yeah\u2014let\u2019s keep out-of-scope to: no re-litigating old options, no deep implementation details, and no new requirements unless they\u2019re blockers. If something comes up, we park it as a follow-up with an owner instead of debating it live."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yep, agreed\u2014out-of-scope as: no re-litigating old options, no deep implementation details, and no new requirements unless they\u2019re blockers; anything else gets parked with an owner. I\u2019ll mirror that wording in the opener so we sound consistent."
+    }
+  ],
+  "duration_minutes": 4,
+  "summary": "Bob and Alice had a conversation."
+}

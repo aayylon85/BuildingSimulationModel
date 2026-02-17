@@ -43,21 +43,9 @@ def _build_consensus_assessor_agent() -> Agent[SimContext]:
 1. Did ALL participants agree to a temperature change?
 2. If yes, what specific temperature was agreed upon?
 3. Summarize the outcome.
+<output_schema>
 
-Be strict: silence or vague responses do NOT count as agreement.
-Look for explicit acceptance like:
-- "okay, let's do 21 degrees"
-- "I agree to 20.5"
-- "that works for me"
-- "fine, let's try 22"
-
-Look for explicit disagreement like:
-- "no way"
-- "I don't agree"
-- "too cold/hot for me"
-- "I refuse"
-
-If the outcome is ambiguous or unclear, set consensus_reached to false."""
+"""
 
     return Agent(
         name="consensus_assessor",

@@ -863,6 +863,87 @@ class MemoryStream:
 
         return node
 
+    def update_node(
+        self,
+        node_id: int,
+        description: str,
+        keywords: Optional[Set[str]] = None,
+        now: Optional[datetime] = None,
+    ) -> Optional[MemoryNode]:
+        """
+        Update an existing memory node's description and re-embed.
+
+        Args:
+            node_id: ID of node to update
+            description: New description text
+            keywords: Optional new keywords (keeps existing if None)
+            now: Current time for last_accessed update
+
+        Returns:
+            Updated MemoryNode or None if not found
+        """
+        node = self.id_to_node.get(node_id)
+        if not node:
+            return None
+
+        # Store old embedding key for cleanup
+        old_emb_key = node.embedding_key
+
+        # Update description
+        node.description = description
+
+        # Update keywords if provided
+        if keywords is not None:
+            # Remove from old keyword index
+            for kw in node.keywords:
+                if kw in self.kw_to_nodes:
+                    if node_id in self.kw_to_nodes[kw]:
+                        self.kw_to_nodes[kw].remove(node_id)
+            node.keywords = keywords
+            # Add to new keyword index
+            self._update_keyword_index(node)
+
+        # Update last_accessed
+        if now:
+            node.last_accessed = _utc_ts(now)
+
+        # Re-embed the new description
+        new_emb_key = self._get_embedding_key(description)
+
+        if new_emb_key != old_emb_key:
+            # Generate new embedding
+            new_emb_key, _ = self._get_or_create_embedding(description)
+            node.embedding_key = new_emb_key
+
+            # Clean up old embedding if not used by other nodes
+            if old_emb_key:
+                still_used = any(
+                    n.embedding_key == old_emb_key
+                    for n in self.nodes if n.node_id != node_id
+                )
+                if not still_used:
+                    self.embeddings.pop(old_emb_key, None)
+
+        return node
+
+    def find_plan_thought(self, date: datetime) -> Optional[MemoryNode]:
+        """
+        Find the daily plan thought for a specific date.
+
+        Args:
+            date: The date to find the plan for
+
+        Returns:
+            The plan MemoryNode or None if not found
+        """
+        date_str = date.strftime("%Y-%m-%d")
+
+        for node in reversed(self.nodes):  # Most recent first
+            if node.node_type == "thought" and "daily_plan" in node.keywords:
+                if date_str in node.keywords:
+                    return node
+        return None
+
     def retrieve(
         self,
         focal_point: str,

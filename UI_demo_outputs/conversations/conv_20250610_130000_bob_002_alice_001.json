@@ -1,0 +1,37 @@
+{
+  "conversation_id": "conv_20250610_130000_bob_002_alice_001",
+  "start_time": "2025-06-10T13:00:00+00:00",
+  "participants": [
+    "bob_002",
+    "alice_001"
+  ],
+  "initiated_by": "bob_002",
+  "topics": [
+    "work",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Hey Alice\u2014quick heads-up, I\u2019ve got the design/approach review 14:00\u201315:00 today. You all set for that, or want to sync on anything tiny before then?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yep, I\u2019m set for 14:00\u2014thanks for the heads-up. If you\u2019ve got 5 minutes after your 15:00 wrap, I can do a quick debrief with you then to make sure we\u2019re aligned on next steps."
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "15:00 works for me\u2014let\u2019s do 5 minutes right after the review while it\u2019s fresh. If I\u2019m a couple minutes late, it\u2019s just me closing the loop with whoever\u2019s on the call."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Perfect\u2014I'll plan to catch you right at 15:00 for that quick debrief. Also, heads-up: it\u2019s super windy outside today, so if you\u2019re stepping out around lunch just watch for papers getting launched off your desk."
+    }
+  ],
+  "duration_minutes": 2,
+  "summary": "Bob and Alice had a short conversation."
+}

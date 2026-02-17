@@ -265,6 +265,9 @@ def run_simulation_from_config(config_path):
             if use_llm_agents:
                 current_zone_temp[0] = T_air_prev
                 current_weather_data[0] = current_weather
+                # Update weather history buffer for conversation context
+                if llm_manager is not None:
+                    llm_manager.update_weather_history(current_weather, dt_minutes / 60.0)
 
             # --- Track occupant count for non-LLM modes (every timestep) ---
             if not use_llm_agents:

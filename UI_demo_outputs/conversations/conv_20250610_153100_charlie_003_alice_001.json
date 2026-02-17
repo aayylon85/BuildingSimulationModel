@@ -1,0 +1,66 @@
+{
+  "conversation_id": "conv_20250610_153100_charlie_003_alice_001",
+  "start_time": "2025-06-10T15:31:00+00:00",
+  "participants": [
+    "charlie_003",
+    "alice_001"
+  ],
+  "initiated_by": "charlie_003",
+  "topics": [
+    "general chat"
+  ],
+  "dialogue": [
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Hey Alice\u2014how\u2019d the design review end up going? I\u2019m about to do a quick indoor loop in a sec if you want to tag along and decompress for a minute."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "The design review was actually pretty smooth\u2014no big surprises, just a couple follow-ups. I can join for a quick indoor loop, but I\u2019ll keep it short so I can get back to focus after."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Nice\u2014love a smooth review. Let\u2019s do one quick loop and then we\u2019ll both jump back in; any follow-ups you want to sanity-check while we walk?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah\u2014there are two follow-ups I want to sanity-check: I need to clarify the owner for the last round of tweaks, and make sure we\u2019re aligned on what \u201cdone\u201d actually means for the handoff. As we walk, can I run you through the wording I\u2019m thinking so it doesn\u2019t spiral into extra scope?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah, totally\u2014hit me. If you want to keep it tight, you could say: \u201cCan we confirm the single DRI for the remaining tweaks, and agree on the handoff definition of done so we don\u2019t expand scope?\u201d Then list 2\u20133 bullet criteria for \u201cdone.\u201d"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "That wording is perfect\u2014especially \u201csingle DRI\u201d plus a tight 2\u20133 bullets for done. I\u2019ll use that and keep it from ballooning; thanks. Want to do the loop now and then I\u2019ll shoot the note right after?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah\u2014let\u2019s do it now. One quick loop, then you fire off that note; I\u2019ll keep you honest if it starts creeping into scope."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Perfect\u2014quick loop now. And if I start rambling, just give me the \u201cscope creep\u201d look you\u2019re so good at."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Deal\u2014I'll give you the full \u201cscope creep\u201d look if you even hint at a fourth bullet. Quick loop now, then you send the note and we\u2019ll call it done."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Alright, one loop done\u2014thanks for keeping me from sneaking in a fourth bullet. I\u2019m going to send that note now, then I need to switch gears for a bit; catch you after?"
+    }
+  ],
+  "duration_minutes": 5,
+  "summary": "Charlie and Alice had an extended conversation."
+}

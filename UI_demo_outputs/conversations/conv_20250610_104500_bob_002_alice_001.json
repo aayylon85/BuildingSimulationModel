@@ -1,0 +1,36 @@
+{
+  "conversation_id": "conv_20250610_104500_bob_002_alice_001",
+  "start_time": "2025-06-10T10:45:00+00:00",
+  "participants": [
+    "bob_002",
+    "alice_001"
+  ],
+  "initiated_by": "bob_002",
+  "topics": [
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Hey Alice\u2014since my coffee run got pushed, I\u2019m about to do a quick one now. Want me to grab you something while I\u2019m up?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Thanks\u2014yeah, could you grab me a small black coffee if they\u2019ve got it? And no rush; I\u2019m just back from my own quick run."
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Perfect\u2014just grabbed it: small black, no sugar. I\u2019ll drop it by your desk in a sec; anything else you need while I\u2019m up?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "That\u2019s perfect, thanks\u2014just drop it at my desk. I\u2019m all set otherwise; appreciate it."
+    }
+  ],
+  "duration_minutes": 2,
+  "summary": "Bob and Alice had a short conversation."
+}

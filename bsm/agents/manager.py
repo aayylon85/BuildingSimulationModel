@@ -792,6 +792,11 @@ class LLMOccupantManager:
         # Initialize checkpoint manager for event-triggered decisions
         self._checkpoint_manager = DecisionCheckpointManager()
 
+        # Weather history buffer for conversation context
+        # Stores recent weather data (up to 72 hours / ~3 days)
+        self._weather_history: List[Dict[str, Any]] = []
+        self._weather_history_max_hours: int = 72
+
         # Note: Core memories are now seeded from markdown files in agent_base_types/
         # via GenerativeAgent._seed_core_memories_from_markdown()
 
@@ -1822,6 +1827,41 @@ Do NOT use calendar tools - just output your final DailyPlan now.
 
         return equipment_power, lighting_power, thermostat_offset, window_fraction
 
+    def update_weather_history(self, weather_data: Dict[str, Any], timestep_hours: float = 1.0) -> None:
+        """
+        Update the weather history buffer with new weather data.
+
+        Called by the simulation runner each timestep to maintain a rolling
+        history of recent weather conditions for conversation context.
+
+        Args:
+            weather_data: Current timestep's weather dict from Open Meteo
+            timestep_hours: Duration of each timestep in hours (for calculating max entries)
+        """
+        if weather_data:
+            self._weather_history.append(weather_data.copy())
+
+            # Calculate max entries based on timestep size
+            # For example: 72 hours with 15-min timesteps = 288 entries
+            max_entries = int(self._weather_history_max_hours / timestep_hours)
+            max_entries = max(max_entries, 10)  # Keep at least 10 entries
+
+            # Trim to max size
+            if len(self._weather_history) > max_entries:
+                self._weather_history = self._weather_history[-max_entries:]
+
+    def get_weather_context(self) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Get current weather and recent history for conversation context.
+
+        Returns:
+            Tuple of (current_weather, weather_history) where:
+            - current_weather: Most recent weather dict or None
+            - weather_history: List of recent weather dicts (up to 72 hours)
+        """
+        current = self._zone_state._get_weather() if self._zone_state else None
+        return current, self._weather_history.copy()
+
     def _handle_arrival(self, agent_id: str, now: datetime) -> None:
         """Handle an agent arriving at work."""
         print(f"[LLM] {agent_id} arriving at {now.strftime('%H:%M')}")
@@ -2551,6 +2591,9 @@ Select your desk for today and specify which equipment to turn on.
             # Get list of valid colleagues in the office for anti-hallucination
             valid_colleagues = list(self._agents.keys())
 
+            # Get weather context for natural conversation about weather
+            current_weather, weather_history = self.get_weather_context()
+
             result = await agent_conversation(
                 init_agent=initiator,
                 target_agent=target,
@@ -2558,6 +2601,8 @@ Select your desk for today and specify which equipment to turn on.
                 calendar=self.calendar,
                 valid_colleagues=valid_colleagues,
                 topic=topic,
+                current_weather=current_weather,
+                weather_history=weather_history,
             )
 
             # Handle declined conversations differently

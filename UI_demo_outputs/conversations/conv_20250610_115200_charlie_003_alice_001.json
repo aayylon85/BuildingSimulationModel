@@ -1,0 +1,36 @@
+{
+  "conversation_id": "conv_20250610_115200_charlie_003_alice_001",
+  "start_time": "2025-06-10T11:52:00+00:00",
+  "participants": [
+    "charlie_003",
+    "alice_001"
+  ],
+  "initiated_by": "charlie_003",
+  "topics": [
+    "work"
+  ],
+  "dialogue": [
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Hey Alice\u2014since it\u2019s actually nice out (and super windy), want to do a quick loop outside after you\u2019re done with whatever you\u2019re on? I\u2019ve got a walk penciled in around 12:05 if you want to join."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, I\u2019m in\u201412:05 works perfectly since I\u2019ve already got a quick walk blocked then. Let\u2019s meet by the door at 12:05 and do a short loop so we don\u2019t get absolutely blasted by the wind."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u2014door at 12:05 it is. I\u2019ll grab my jacket so I don\u2019t get frozen in that wind, and we\u2019ll keep it a quick loop."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Nice\u2014good call on the jacket; this wind is doing the most today. I\u2019ll wrap up what I\u2019m on and meet you at the door at 12:05."
+    }
+  ],
+  "duration_minutes": 2,
+  "summary": "Charlie and Alice had a short conversation."
+}

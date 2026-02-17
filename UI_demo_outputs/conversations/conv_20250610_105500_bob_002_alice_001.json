@@ -1,0 +1,36 @@
+{
+  "conversation_id": "conv_20250610_105500_bob_002_alice_001",
+  "start_time": "2025-06-10T10:55:00+00:00",
+  "participants": [
+    "bob_002",
+    "alice_001"
+  ],
+  "initiated_by": "bob_002",
+  "topics": [
+    "work"
+  ],
+  "dialogue": [
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Hey Alice\u2014quick heads-up, I\u2019m about to do my usual 11:10 walk. Want to join for a quick 10\u201315 minutes, or are you tied up this morning?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, I can join\u2014I've already got a quick walk blocked at 11:10 anyway. Want to meet by the front doors at 11:10 and keep it to ~15 minutes since it\u2019s pretty windy out?"
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Yep, front doors at 11:10 works\u2014let\u2019s keep it to ~15 and maybe loop the sheltered side so we\u2019re not fighting the wind the whole time."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Perfect\u2014I'll see you at the front doors at 11:10. I\u2019ll grab my jacket so the wind doesn\u2019t win."
+    }
+  ],
+  "duration_minutes": 2,
+  "summary": "Bob and Alice had a short conversation."
+}

@@ -1,0 +1,31 @@
+{
+  "conversation_id": "conv_20250610_123500_charlie_003_alice_001",
+  "start_time": "2025-06-10T12:35:00+00:00",
+  "participants": [
+    "charlie_003",
+    "alice_001"
+  ],
+  "initiated_by": "charlie_003",
+  "topics": [
+    "work"
+  ],
+  "dialogue": [
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Hey Alice\u2014since it\u2019s actually nice out (just super windy), want to do a quick indoor loop together around 15:10 after my design review?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, I\u2019m up for that. I\u2019ve got a design review 14:00\u201315:00 too, but I can do an indoor loop right after\u201415:10 works if we keep it quick since it\u2019s so windy outside."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u201415:10 right after the review works for me. Let\u2019s just do one quick loop and then we can both get back to it."
+    }
+  ],
+  "duration_minutes": 1,
+  "summary": "Charlie and Alice had a short conversation."
+}

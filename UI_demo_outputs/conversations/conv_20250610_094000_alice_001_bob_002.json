@@ -1,0 +1,53 @@
+{
+  "conversation_id": "conv_20250610_094000_alice_001_bob_002",
+  "start_time": "2025-06-10T09:40:00+00:00",
+  "participants": [
+    "alice_001",
+    "bob_002"
+  ],
+  "initiated_by": "alice_001",
+  "topics": [
+    "work",
+    "weather",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Morning, Bob\u2014nice that it\u2019s finally a bit warmer out today, even if it\u2019s super windy. How\u2019s your morning going?"
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Morning, Alice. Pretty good\u2014windy but I\u2019ll take the warmer air. I got in on time and I\u2019m just lining things up before the 10:00 check-in; how\u2019s your morning going?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Good so far\u2014just getting a few things squared away before the 10:00 sync too. If you\u2019re up for it, want to do a quick coffee run right after the check-in, like 10:35?"
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Yeah, 10:35 works for me\u2014I\u2019m free after the 10:00 check-in. Want to meet by the elevators right when it wraps up so we can head out quickly?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yep, elevators right after the sync works\u2014let\u2019s do 10:35 on the dot. I\u2019ll bring my reusable cup so we can keep it quick and low-waste."
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Perfect\u2014I'll grab my cup too and we\u2019ll keep it tight. I\u2019ll try to wrap my notes a minute early so I\u2019m at the elevators ready to go as soon as the 10:00 sync ends."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Sounds good\u2014I\u2019ll aim to join the sync a minute early so we can actually get out on time. See you by the elevators right after, 10:35."
+    }
+  ],
+  "duration_minutes": 3,
+  "summary": "Alice and Bob had a conversation."
+}

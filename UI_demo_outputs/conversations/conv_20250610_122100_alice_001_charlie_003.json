@@ -1,0 +1,38 @@
+{
+  "conversation_id": "conv_20250610_122100_alice_001_charlie_003",
+  "start_time": "2025-06-10T12:21:00+00:00",
+  "participants": [
+    "alice_001",
+    "charlie_003"
+  ],
+  "initiated_by": "alice_001",
+  "topics": [
+    "work",
+    "weather",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Hey Charlie\u2014since it\u2019s actually warm out for once, up for a quick 10-minute loop outside after we both finish lunch? The wind might be intense, but it\u2019ll be a nice reset."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah, I\u2019m in\u2014windy but worth it. Want to do a quick loop at 12:30 and be back by 12:40?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "12:30 works for me\u2014let\u2019s meet by the break room doors and do a quick windy loop. I\u2019ll probably grab a light layer since you always end up freezing faster than I do."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Deal\u2014break room doors at 12:30. And yeah, I\u2019ll bring something too; you\u2019re not wrong, I get cold the second that wind hits."
+    }
+  ],
+  "duration_minutes": 2,
+  "summary": "Alice and Charlie had a short conversation."
+}

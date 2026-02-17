@@ -36,6 +36,7 @@ from bsm.agents.cognition.schemas import (
 )
 from bsm.agents.cognition.social import generate_relationship_summary
 from bsm.agents.cognition.retrieval import retrieve
+from bsm.agents.cognition.perception import get_weather_context, WeatherDict
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +53,9 @@ Consider:
 - Do you have a meeting starting very soon?
 - Are you in a social mood right now?
 
-Most of the time, you should ACCEPT conversations with colleagues - it's part of normal office social dynamics.
-Only DECLINE if you have a genuine reason (rushing to a meeting, in the middle of something urgent, etc.).
+ACCEPT if you are available and open to having a conversation and co-worker wants to discuss something regarding plans with your co-worker(s), adjustments to thermostat, or turning main light on or off.
+DECLINE if you have a genuine reason (rushing to a meeting, in the middle of something urgent, etc.).
+
 
 Decide whether to accept or decline, and briefly explain why."""
 
@@ -61,7 +63,7 @@ Decide whether to accept or decline, and briefly explain why."""
         name=f"decline_check_{target_id}",
         instructions=instructions,
         model=DEFAULT_AGENT_MODEL,
-        model_settings=ModelSettings(reasoning_effort="low"),
+        model_settings=ModelSettings(reasoning_effort="medium"),
         output_type=AgentOutputSchema(DeclineDecisionOutput),
     )
 
@@ -139,23 +141,19 @@ def _build_conversation_agent(
 <colleague_constraint>
 IMPORTANT: The ONLY colleagues in this office are: {colleague_names}
 Do NOT reference, mention, or discuss any other people by name.
-If you think of other names (Priya, Sam, Martin, etc.), they do NOT work here.
-Only discuss the colleague you are currently talking to ({listener_id}).
+If you think of other names, they do NOT work here.
 </colleague_constraint>
 """
     else:
         colleague_constraint = ""
 
     instructions = f"""
-You are {speaker_id}, having a natural workplace conversation with {listener_id}.
+You are {speaker_id}, having a natural workplace conversation with {listener_id} about.
 {colleague_constraint}
 <schedule_awareness>
 BEFORE suggesting specific times for coffee, lunch, walks, or other activities:
 1. CHECK your schedule in the <your_schedule> section of the context
-2. Do NOT suggest times that overlap with your meetings
-3. If you have a meeting soon, mention it: "I have a meeting at 10, but maybe after that?"
-4. If unsure of a good time, ask about availability: "Want to grab coffee later?"
-   rather than proposing a specific time you might not be free for
+2. You should not suggest times that overlap with your meetings or existing commitments.
 </schedule_awareness>
 
 <recent_conversation_check>
@@ -167,18 +165,16 @@ Vary your conversation topics throughout the day.
 
 <conversation_topics>
 PREFERRED TOPICS (in order of preference):
-1. SOCIAL: Making plans together - "Want to grab coffee?", "Shall we go for lunch?"
-2. PERSONAL: Weekend plans, hobbies, life outside work
-3. ENVIRONMENT: Temperature comfort, office conditions
-4. LIGHT WORK: Brief updates on actual tasks, not elaborate fictional projects
+1. SOCIAL: Making plans together for breaks or lunch.
+2. ENVIRONMENT: Temperature comfort, office conditions.
+3. WORK: Upcoming meetings.
 
 AVOID:
 - Long discussions about fictional projects, deadlines, or deliverables
-- Referencing people who aren't in the conversation or aren't your colleagues
-- Detailed planning of work tasks (this isn't a meeting)
-- Making up project names, client names, or events
+- Referencing people aren't your colleagues
+- Detailed planning of work tasks
 
-Temperature/thermostat should rarely come up unless you're genuinely uncomfortable.
+Temperature/thermostat should rarely come up unless conversation participants are proposing a change to thermostat.
 </conversation_topics>
 
 <guidelines>
@@ -205,47 +201,6 @@ Output your utterance directly.
         tools=[],
         output_type=AgentOutputSchema(UtteranceOutput, strict_json_schema=False),
     )
-
-
-# ---------------------------------------------------------------------------
-# Seasonal Context Helper
-# ---------------------------------------------------------------------------
-
-def _get_season_guidance(date: datetime) -> str:
-    """
-    Generate seasonal guidance for conversations.
-
-    Helps agents calibrate their temperature/weather comments to be
-    appropriate for the current season.
-
-    Args:
-        date: Current date
-
-    Returns:
-        Guidance text about seasonal temperature expectations
-    """
-    month = date.month
-
-    if 6 <= month <= 8:  # Summer
-        return (
-            "It's summer. Temperatures of 15-25°C are pleasant and normal. "
-            "Don't describe weather as 'freezing' or 'chilly' unless it's actually unusual for summer."
-        )
-    elif month in (12, 1, 2):  # Winter
-        return (
-            "It's winter. Temperatures of 0-10°C are typical. "
-            "Temperatures above 10°C are mild for winter."
-        )
-    elif 3 <= month <= 5:  # Spring
-        return (
-            "It's spring. Temperatures can vary, with 10-18°C being typical. "
-            "Expect some variability day to day."
-        )
-    else:  # Autumn
-        return (
-            "It's autumn. Temperatures of 10-18°C are typical. "
-            "Expect gradually cooling weather."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +301,8 @@ def _build_conversation_context(
     listener: "GenerativeAgent",
     conversation_history: List[ConversationUtterance],
     now: datetime,
+    current_weather: Optional[WeatherDict] = None,
+    weather_history: Optional[List[WeatherDict]] = None,
 ) -> str:
     """
     Build context for generating the next utterance.
@@ -355,6 +312,8 @@ def _build_conversation_context(
         listener: Agent who will listen
         conversation_history: Utterances so far
         now: Current datetime
+        current_weather: Current weather conditions dict
+        weather_history: List of recent weather dicts (last ~72 hours)
 
     Returns:
         Formatted context string for the prompt
@@ -394,6 +353,9 @@ def _build_conversation_context(
     # F.3: Add schedule awareness so agent knows their busy times
     schedule_section = _format_schedule_for_conversation(speaker, now)
 
+    # Get weather guidance using actual weather data (from perception module)
+    weather_guidance = get_weather_context(now, current_weather, weather_history)
+
     context = f"""
 <identity>
 {identity}
@@ -415,9 +377,9 @@ def _build_conversation_context(
 
 <current_time>{now.strftime('%H:%M on %A, %B %d')}</current_time>
 
-<seasonal_context>
-{_get_season_guidance(now)}
-</seasonal_context>
+<weather_context>
+{weather_guidance}
+</weather_context>
 
 Generate your natural response to continue the conversation. Reference your memories or shared experiences when relevant.
 """.strip()
@@ -436,6 +398,8 @@ async def generate_one_utterance(
     now: datetime,
     calendar: Optional[CalendarStore] = None,
     valid_colleagues: Optional[List[str]] = None,
+    current_weather: Optional[WeatherDict] = None,
+    weather_history: Optional[List[WeatherDict]] = None,
 ) -> ConversationUtterance:
     """
     Generate a single utterance in a conversation.
@@ -447,12 +411,18 @@ async def generate_one_utterance(
         now: Current datetime
         calendar: Optional calendar store
         valid_colleagues: List of valid colleague IDs in the office (for anti-hallucination)
+        current_weather: Current weather conditions dict
+        weather_history: List of recent weather dicts (last ~72 hours)
 
     Returns:
         The generated utterance
     """
-    # Build context
-    context = _build_conversation_context(speaker, listener, conversation_history, now)
+    # Build context with weather data
+    context = _build_conversation_context(
+        speaker, listener, conversation_history, now,
+        current_weather=current_weather,
+        weather_history=weather_history,
+    )
 
     # Build agent with valid colleagues for anti-hallucination
     convo_agent = _build_conversation_agent(
@@ -491,6 +461,8 @@ async def agent_conversation(
     calendar: Optional[CalendarStore] = None,
     valid_colleagues: Optional[List[str]] = None,
     topic: Optional[str] = None,
+    current_weather: Optional[WeatherDict] = None,
+    weather_history: Optional[List[WeatherDict]] = None,
 ) -> ConversationResult:
     """
     Conduct a multi-turn conversation between two agents.
@@ -505,6 +477,8 @@ async def agent_conversation(
         calendar: Optional calendar store for context
         valid_colleagues: List of valid colleague IDs in the office (for anti-hallucination)
         topic: Optional topic of the conversation
+        current_weather: Current weather conditions dict from simulation
+        weather_history: List of recent weather dicts (last ~72 hours) for context
 
     Returns:
         ConversationResult with all utterances and summary
@@ -545,6 +519,8 @@ async def agent_conversation(
             now=now,
             calendar=calendar,
             valid_colleagues=valid_colleagues,
+            current_weather=current_weather,
+            weather_history=weather_history,
         )
         utterances.append(utterance)
 
@@ -714,12 +690,10 @@ IMPORTANT: If participants agree to MULTIPLE activities as part of ONE break or 
 3. time: The START time of the combined activity
 4. location: Where they END UP (e.g., "outside" if walking outside after coffee)
 
-CORRECT Examples:
+CORRECT Example:
 - "Want to grab coffee at 3:30 and do a lap outside?"
   → ONE commitment: activity="coffee break with walk", time="15:30", location="outside"
-
-- "Let's meet at the break room, grab coffees to-go, then walk outside"
-  → ONE commitment: activity="coffee break with walk", time from context, location="outside"
+"
 
 WRONG (do not do this):
 - TWO separate commitments: {{activity: "coffee"}} + {{activity: "walk"}}

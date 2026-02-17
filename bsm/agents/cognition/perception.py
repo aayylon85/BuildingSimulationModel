@@ -10,7 +10,8 @@ Implements the perception stage of the cognitive loop:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing_extensions import TypeAlias
 
 from agents import Agent, Runner, ModelSettings
 from agents.agent_output import AgentOutputSchema
@@ -18,6 +19,9 @@ from agents.agent_output import AgentOutputSchema
 from bsm.agents.cognition.schemas import ImportanceAssessment
 from bsm.agents.memory.stream import MemoryNode
 from bsm.agents.skeleton import DEFAULT_AGENT_MODEL
+
+# Type alias for weather data dictionaries
+WeatherDict: TypeAlias = Dict[str, Any]
 
 if TYPE_CHECKING:
     from bsm.agents.generative_agent import GenerativeAgent
@@ -138,16 +142,78 @@ async def get_importance(
 
 
 # ---------------------------------------------------------------------------
-# Seasonal Context Helper
+# Weather Context Helpers
 # ---------------------------------------------------------------------------
+
+
+def _describe_temperature(temp_c: float) -> str:
+    """Describe a temperature in human terms."""
+    if temp_c < 0:
+        return "freezing"
+    elif temp_c < 5:
+        return "very cold"
+    elif temp_c < 10:
+        return "cold"
+    elif temp_c < 15:
+        return "cool"
+    elif temp_c < 20:
+        return "mild"
+    elif temp_c < 25:
+        return "warm"
+    elif temp_c < 30:
+        return "hot"
+    else:
+        return "very hot"
+
+
+def _describe_sky_conditions(cloud_cover: float, is_sunny: bool) -> str:
+    """Describe sky conditions based on cloud cover percentage."""
+    if cloud_cover is None:
+        return "clear" if is_sunny else "overcast"
+
+    if cloud_cover < 10:
+        return "clear"
+    elif cloud_cover < 30:
+        return "mostly clear"
+    elif cloud_cover < 60:
+        return "partly cloudy"
+    elif cloud_cover < 85:
+        return "mostly cloudy"
+    else:
+        return "overcast"
+
+
+def _describe_wind(wind_speed_ms: float) -> str:
+    """Describe wind conditions."""
+    if wind_speed_ms is None or wind_speed_ms < 1:
+        return "calm"
+    elif wind_speed_ms < 3:
+        return "light breeze"
+    elif wind_speed_ms < 6:
+        return "breezy"
+    elif wind_speed_ms < 10:
+        return "windy"
+    else:
+        return "very windy"
+
+
+def _get_season_name(month: int) -> str:
+    """Get the season name for a given month."""
+    if 6 <= month <= 8:
+        return "summer"
+    elif month in (12, 1, 2):
+        return "winter"
+    elif 3 <= month <= 5:
+        return "spring"
+    else:
+        return "autumn"
+
 
 def _get_seasonal_context(date: datetime, outdoor_temp: float) -> str:
     """
-    Generate seasonal interpretation of temperature.
+    Generate seasonal interpretation of temperature for perception events.
 
-    Helps agents understand whether the current temperature is normal
-    for the season, preventing inappropriate comments like "freezing"
-    on a pleasant summer day.
+    Simplified version that uses shared temperature description helper.
 
     Args:
         date: Current date (to determine season)
@@ -156,47 +222,138 @@ def _get_seasonal_context(date: datetime, outdoor_temp: float) -> str:
     Returns:
         Human-readable seasonal weather description
     """
+    temp_desc = _describe_temperature(outdoor_temp)
+    season = _get_season_name(date.month)
+    return f"It's a {temp_desc} {season} day at {outdoor_temp:.0f}°C"
+
+
+def _get_season_guidance_fallback(date: datetime) -> str:
+    """
+    Fallback seasonal guidance when no weather data is available.
+
+    Args:
+        date: Current date
+
+    Returns:
+        Generic guidance text about seasonal temperature expectations
+    """
     month = date.month
 
-    # Summer: June-August
-    if 6 <= month <= 8:
-        season = "summer"
-        if outdoor_temp < 15:
-            return f"It's unusually cool for {season} at {outdoor_temp:.0f}°C"
-        elif outdoor_temp >= 25:
-            return f"It's a warm {season} day at {outdoor_temp:.0f}°C"
-        else:
-            return f"It's a pleasant {season} day at {outdoor_temp:.0f}°C"
+    if 6 <= month <= 8:  # Summer
+        return (
+            "It's summer. Temperatures of 15-25°C are pleasant and normal. "
+            "Temperatures above 26°C are warm and might prompt comments about heat if planning to go outside. "
+            "Temperatures below 15°C are cool and might prompt comments about feeling cold if planning to go outside. "
+            "Days are long and more likely to be sunny."
+        )
+    elif month in (12, 1, 2):  # Winter
+        return (
+            "It's winter. Temperatures of 0-10°C are typical. "
+            "Temperatures above 11°C are warm and might prompt comments if planning to go outside. "
+            "Temperatures below 0°C are very cold and might prompt comments if planning to go outside. "
+            "Days are shorter."
+        )
+    elif 3 <= month <= 5:  # Spring
+        return (
+            "It's spring. Temperatures can vary, with 10-16°C being typical. "
+            "Expect some variability day to day. "
+            "Temperatures above 11°C are warm and might prompt comments if planning to go outside. "
+            "Temperatures below 0°C are very cold and might prompt comments if planning to go outside."
+        )
+    else:  # Autumn
+        return (
+            "It's autumn. Temperatures of 10-16°C are typical. "
+            "Expect gradually cooling weather."
+        )
 
-    # Winter: December-February
-    elif month in (12, 1, 2):
-        season = "winter"
-        if outdoor_temp > 10:
-            return f"It's mild for {season} at {outdoor_temp:.0f}°C"
-        elif outdoor_temp < 0:
-            return f"It's a cold {season} day at {outdoor_temp:.0f}°C"
-        else:
-            return f"It's a typical {season} day at {outdoor_temp:.0f}°C"
 
-    # Spring: March-May
-    elif 3 <= month <= 5:
-        season = "spring"
-        if outdoor_temp < 10:
-            return f"It's a cool {season} morning at {outdoor_temp:.0f}°C"
-        elif outdoor_temp >= 20:
-            return f"It's a warm {season} day at {outdoor_temp:.0f}°C"
-        else:
-            return f"It's a typical {season} day at {outdoor_temp:.0f}°C"
+def get_weather_context(
+    date: datetime,
+    current_weather: Optional[WeatherDict] = None,
+    weather_history: Optional[List[WeatherDict]] = None,
+) -> str:
+    """
+    Generate weather guidance for conversations using actual weather data.
 
-    # Autumn: September-November
+    Provides agents with real weather context for natural conversations,
+    including recent weather trends and current conditions.
+
+    Args:
+        date: Current datetime
+        current_weather: Current weather dict with keys like 'air_temp_c',
+                        'wind_speed_local_ms', 'cloud_cover', 'is_sunlit'
+        weather_history: List of recent weather dicts (e.g., last 72 hours)
+                        Each dict should have at least 'air_temp_c'
+
+    Returns:
+        Guidance text about current and recent weather conditions
+    """
+    # If no weather data provided, fall back to basic seasonal guidance
+    if current_weather is None:
+        return _get_season_guidance_fallback(date)
+
+    parts = []
+
+    # --- Current conditions ---
+    temp = current_weather.get("air_temp_c")
+    wind = current_weather.get("wind_speed_local_ms") or current_weather.get("wind_speed_10m_ms")
+    cloud_cover = current_weather.get("cloud_cover")
+    is_sunny = current_weather.get("is_sunlit", False)
+
+    if temp is not None:
+        temp_desc = _describe_temperature(temp)
+        sky_desc = _describe_sky_conditions(cloud_cover, is_sunny)
+        wind_desc = _describe_wind(wind)
+
+        parts.append(f"Current conditions outside: {temp:.1f}°C ({temp_desc}), {sky_desc}, {wind_desc}.")
+
+    # --- Recent weather trend (if history available) ---
+    if weather_history and len(weather_history) > 0:
+        # Extract temperatures from history
+        temps = [w.get("air_temp_c") for w in weather_history if w.get("air_temp_c") is not None]
+
+        if temps:
+            avg_temp = sum(temps) / len(temps)
+            min_temp = min(temps)
+            max_temp = max(temps)
+
+            # Describe the trend
+            trend_parts = []
+            trend_parts.append(f"Over the past few days, temperatures have ranged from {min_temp:.0f}°C to {max_temp:.0f}°C")
+            trend_parts.append(f"(averaging {avg_temp:.0f}°C).")
+
+            # Compare current to recent average
+            if temp is not None:
+                diff = temp - avg_temp
+                if abs(diff) > 3:
+                    if diff > 0:
+                        trend_parts.append("Today is notably warmer than recent days.")
+                    else:
+                        trend_parts.append("Today is notably cooler than recent days.")
+
+            parts.append(" ".join(trend_parts))
+
+            # Cloud cover trend
+            clouds = [w.get("cloud_cover") for w in weather_history if w.get("cloud_cover") is not None]
+            if clouds:
+                avg_cloud = sum(clouds) / len(clouds)
+                if avg_cloud > 70:
+                    parts.append("It's been mostly cloudy recently.")
+                elif avg_cloud < 30:
+                    parts.append("It's been mostly clear and sunny recently.")
+
+    # --- Add seasonal context ---
+    season = _get_season_name(date.month)
+    if season == "summer":
+        parts.append("It's summer, so longer days and generally warmer weather.")
+    elif season == "winter":
+        parts.append("It's winter, so shorter days and generally cooler weather.")
+    elif season == "spring":
+        parts.append("It's spring, weather can be changeable.")
     else:
-        season = "autumn"
-        if outdoor_temp < 10:
-            return f"It's a cool {season} day at {outdoor_temp:.0f}°C"
-        elif outdoor_temp >= 20:
-            return f"It's a warm {season} day at {outdoor_temp:.0f}°C"
-        else:
-            return f"It's a typical {season} day at {outdoor_temp:.0f}°C"
+        parts.append("It's autumn, weather is gradually cooling.")
+
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +391,7 @@ async def perceive(
     # Collect potential perceptions with priority scores
     # Format: (priority, description, subject, predicate, obj, base_importance)
     from typing import Tuple
-    PotentialPerception = Tuple[float, str, str, str, str, float]
+    PotentialPerception: TypeAlias = Tuple[float, str, str, str, str, float]
     potential_perceptions: List[PotentialPerception] = []
 
     # Perceive indoor temperature as raw data - let agent reason about comfort
@@ -371,4 +528,6 @@ __all__ = [
     "get_importance",
     "assess_event_importance_llm",
     "_build_simple_agent",  # Export factory for use in other modules
+    "get_weather_context",  # Weather context for conversations
+    "WeatherDict",  # Type alias for weather data
 ]

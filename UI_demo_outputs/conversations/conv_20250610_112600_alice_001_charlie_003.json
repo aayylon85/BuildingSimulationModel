@@ -1,0 +1,48 @@
+{
+  "conversation_id": "conv_20250610_112600_alice_001_charlie_003",
+  "start_time": "2025-06-10T11:26:00+00:00",
+  "participants": [
+    "alice_001",
+    "charlie_003"
+  ],
+  "initiated_by": "alice_001",
+  "topics": [
+    "work",
+    "weather",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Hey Charlie \u2014 it\u2019s suddenly warm out today, but the wind looks intense. After your next break, want to do a quick 5\u201310 minute lap outside around 11:45 to reset?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah, I\u2019m in\u201411:45 works for me. Let\u2019s do a quick windy lap and then we can swing by for my coffee reset right after if you\u2019re up for it."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "I\u2019m up for it, yeah. I\u2019ve got an 11:40 stretch break, so let\u2019s stick with 11:45 for the lap and then we can grab your coffee right after."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u201411:45 it is. I\u2019ll wrap up what I\u2019m on and meet you by the door; with that wind I might actually need my light jacket for once."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Sounds good \u2014 I\u2019ll meet you by the door at 11:45. And yeah, with this wind I\u2019m probably grabbing my light jacket too so I don\u2019t freeze once we\u2019re outside."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Nice\u2014windy lap at 11:45 it is. I\u2019ll bring my jacket too, and I\u2019ll see you by the door in a bit."
+    }
+  ],
+  "duration_minutes": 3,
+  "summary": "Alice and Charlie had a conversation."
+}

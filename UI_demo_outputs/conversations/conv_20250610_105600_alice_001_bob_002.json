@@ -1,0 +1,31 @@
+{
+  "conversation_id": "conv_20250610_105600_alice_001_bob_002",
+  "start_time": "2025-06-10T10:56:00+00:00",
+  "participants": [
+    "alice_001",
+    "bob_002"
+  ],
+  "initiated_by": "alice_001",
+  "topics": [
+    "work"
+  ],
+  "dialogue": [
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Hey Bob\u2014since it\u2019s actually nice out today, want to do a quick walk around 11:10? I was planning to step out then anyway, could be a good reset before the next stretch of work."
+    },
+    {
+      "speaker": "bob_002",
+      "speaker_name": "Bob",
+      "utterance": "Yeah, 11:10 works for me\u2014I\u2019ve got that blocked already. Let\u2019s meet by the lobby doors at 11:10 and do a quick loop around the block?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Perfect\u2014lobby doors at 11:10 it is. It\u2019s super windy though, so I\u2019m grabbing a light jacket before we head out."
+    }
+  ],
+  "duration_minutes": 1,
+  "summary": "Alice and Bob had a short conversation."
+}

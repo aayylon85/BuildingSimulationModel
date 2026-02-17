@@ -1,0 +1,72 @@
+{
+  "conversation_id": "conv_20250610_152600_charlie_003_alice_001",
+  "start_time": "2025-06-10T15:26:00+00:00",
+  "participants": [
+    "charlie_003",
+    "alice_001"
+  ],
+  "initiated_by": "charlie_003",
+  "topics": [
+    "work",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Hey Alice\u2014quick sanity break? I\u2019m about to do a short indoor loop at 15:30 if you want to join and just reset for a minute."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "I\u2019m in\u2014an indoor loop sounds perfect. I\u2019ve got something right at 15:30, but I can do a quick lap now and then peel off a minute or two early if that works?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah, that works\u2014let\u2019s do a quick lap right now and you can dip out a minute early for your 15:30 thing. Meet by the hallway corner in like 1\u20132 minutes?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Perfect\u2014be there in a sec. If it\u2019s super windy by the vents again, let\u2019s take the loop past the inner hallway so we don\u2019t freeze out mid-reset."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Good call\u2014inner hallway it is; those vents always get me. I\u2019ll meet you at the hallway corner in a minute and we\u2019ll do one quick lap before you have to peel off."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "On my way\u2014give me a sec to grab my badge. One quick inner-hallway lap sounds ideal before I peel off for my 15:30."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "All good\u2014same, I\u2019m grabbing my badge now too. I\u2019ll wait at the hallway corner and we\u2019ll do one quick inner-hallway lap before you break off for your 15:30."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Cool\u2014I\u2019m at the hallway corner now. Let\u2019s do the inner loop quick and then I\u2019ll peel off a minute early for my 15:30."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u2014let\u2019s do it. Inner loop, brisk pace, and I\u2019ll make sure we\u2019re back with you peeled off by 15:30."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Nice\u2014this inner hallway is way less brutal than the vent zone. I\u2019m going to split in a minute for my 15:30, but thanks for the quick lap\u2014good reset."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Totally\u2014thanks for squeezing that in. I\u2019ll let you peel off for your 15:30; I\u2019m gonna do a quick water refill and head back to my desk."
+    }
+  ],
+  "duration_minutes": 5,
+  "summary": "Charlie and Alice had an extended conversation."
+}

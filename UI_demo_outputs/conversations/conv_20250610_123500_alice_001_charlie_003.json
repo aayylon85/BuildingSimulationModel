@@ -1,0 +1,97 @@
+{
+  "conversation_id": "conv_20250610_123500_alice_001_charlie_003",
+  "start_time": "2025-06-10T12:35:00+00:00",
+  "participants": [
+    "alice_001",
+    "charlie_003"
+  ],
+  "initiated_by": "alice_001",
+  "topics": [
+    "weather",
+    "coffee"
+  ],
+  "dialogue": [
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Hey Charlie\u2014since it\u2019s actually nice out (even if it\u2019s windy), want to do a quick 10-minute lap outside now and then head back in?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "I\u2019m in\u201410 minutes sounds perfect. It\u2019s super windy though, so I\u2019m grabbing a layer since I get cold; meet by the door now?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yep, I\u2019ll meet you by the door now\u2014good call on the layer, this wind is no joke. I\u2019ll grab my light jacket and be there in a sec."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Awesome\u2014let\u2019s do it. I\u2019ll meet you by the door in like 30 seconds; if the wind\u2019s brutal we can just do a quick loop and head back in."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Sounds good\u2014quick loop it is. I\u2019m at the door now with my jacket; if it\u2019s too brutal we\u2019ll just duck back in and warm up."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Whew, that wind is no joke\u2014my ears are freezing. Want to duck back in and do a quick warm-up loop inside before we split back to our desks?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, let\u2019s duck in\u2014my face is getting sandblasted out there. Quick loop inside sounds perfect, then I\u2019ll head back to my desk."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Perfect\u2014inside sounds way better. After this loop I\u2019m probably going to warm up and actually sit down for lunch; you heading straight back to Desk_A after?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Yeah, I\u2019m heading back to Desk_A after this\u2014probably just going to eat at my desk and thaw out. You want to grab lunch now too and we can chat for a minute in the break room before we split?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah, I\u2019m in\u2014break room sounds great. Let\u2019s do like 10 minutes to thaw out and eat, then we can both bail back to our desks."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Deal\u2014let\u2019s do 10 in the break room and thaw out. That wind totally caught me off guard for how warm it is today."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Seriously\u2014warm temp, but that wind makes it feel like a different season. I\u2019m down for the break room now; I\u2019ll grab my lunch and meet you there for our 10-minute thaw-out."
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Sounds good\u2014I\u2019ll grab mine and head to the break room now too. Ten minutes to thaw out, then we\u2019ll escape back to our desks before we get sucked into a long chat."
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Yeah\u2014let\u2019s keep it to the promised ten so we don\u2019t accidentally turn it into a whole hangout. After we eat, are you heading into anything this afternoon, or just heads-down at Desk_A?"
+    },
+    {
+      "speaker": "alice_001",
+      "speaker_name": "Alice",
+      "utterance": "Mostly heads-down, but I\u2019ve got a design review 2\u20133, so I\u2019m trying to keep the rest of the afternoon pretty quiet at Desk_A. What about you\u2014anything stacked up later, or are you free after lunch?"
+    },
+    {
+      "speaker": "charlie_003",
+      "speaker_name": "Charlie",
+      "utterance": "Kinda stacked for me too\u2014design review 2\u20133, then I\u2019ve got a quick indoor loop at 3:05 to unfreeze and reset. After that I\u2019m heads-down at Desk_C; if you want a low-key 5-minute coffee top-up around 3:20-ish, I\u2019d be in."
+    }
+  ],
+  "duration_minutes": 8,
+  "summary": "Alice and Charlie had an extended conversation."
+}
