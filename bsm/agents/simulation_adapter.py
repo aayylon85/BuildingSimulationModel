@@ -1368,27 +1368,6 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                     "in_use_by": eq_info.get("assigned_to"),
                 })
 
-        # Add lights at this location (so agents can control them via equipment_set)
-        lights_at_loc = self.lighting.get_lights_at_location(location)
-        for light in lights_at_loc:
-            result.append({
-                "name": light.name,
-                "type": "light",
-                "is_on": light.is_on,
-                "in_use_by": None,
-            })
-
-        # Also add zone_main light (accessible from all indoor locations)
-        if location not in ("outside", "entrance"):
-            zone_main = self.lighting.get_light("zone_main")
-            if zone_main and not any(eq["name"] == "zone_main" for eq in result):
-                result.append({
-                    "name": "zone_main",
-                    "type": "light",
-                    "is_on": zone_main.is_on,
-                    "in_use_by": None,
-                })
-
         return result
 
     def get_present_occupant_ids(self) -> List[str]:

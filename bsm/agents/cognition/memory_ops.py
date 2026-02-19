@@ -588,31 +588,26 @@ async def record_conversation_to_memory(
     dialogue_text = " | ".join(dialogue_highlights[:6]) if dialogue_highlights else ""
 
     if commitments:
-        # Build a summary that includes what was agreed
+        # Build a summary focused on agreed plans and times (most important first)
         commitment_parts = []
         for c in commitments:
             if c.time and c.time not in ("needs_confirmation", "unspecified", ""):
                 commitment_parts.append(f"{c.activity} at {c.time}")
             else:
-                commitment_parts.append(f"{c.activity} (time to be confirmed)")
+                commitment_parts.append(f"{c.activity} (time TBD)")
 
-        if commitment_parts:
-            commitment_summary = f"Agreed to: {', '.join(commitment_parts)}."
-        else:
-            commitment_summary = ""
+        commitment_summary = ", ".join(commitment_parts)
 
-        # Include dialogue highlights so agent remembers actual conversation content
+        # Format: Agreements first (most important), then dialogue context
         description = (
-            f"Had a conversation with {other_first_name} about {topics_str}. "
-            f"{dialogue_text} "
-            f"{commitment_summary}"
+            f"Agreed with {other_first_name}: {commitment_summary}. "
+            f"Key dialogue: {dialogue_text}"
         ).strip()
     else:
-        # No commitments - use topics-based summary with dialogue highlights
+        # No commitments - summarize topics with dialogue context
         description = (
-            f"Had a conversation with {other_first_name} about {topics_str}. "
-            f"{dialogue_text} "
-            f"{conversation.summary}"
+            f"Chatted with {other_first_name} about {topics_str}. "
+            f"Key dialogue: {dialogue_text}"
         ).strip()
 
     # Use LLM to assess importance of this conversation

@@ -1105,18 +1105,24 @@ You are at {current}.
 **Staying is the default.** You do NOT need to move unless you have a specific reason.
 
 Reasons to move:
-- A commitment to fulfill at another location
-- A meeting starting soon in another room
+- A meeting starting soon (checkpoint indicates "meeting_start:" or "meeting_prep:")
+- A commitment checkpoint (checkpoint indicates "commitment_prep:" or "commitment_start:")
 - Equipment you need is only available elsewhere
-- You want to take a break in a different area
+
+**IMPORTANT - Timing for Social Commitments:**
+- Do NOT move to break_area or other locations just because you have a future commitment there
+- If a commitment (coffee run, break with colleague) is more than 15 minutes away, STAY at your current location
+- The system will trigger a "commitment_prep:" checkpoint ~5 minutes before the commitment time
+- Wait for that checkpoint before moving to the commitment location
+- Only move early if the checkpoint reason specifically indicates it's time
 
 **IMPORTANT - Meeting Attendance:**
 If your checkpoint reason indicates a meeting is starting (e.g., "meeting_start:", "meeting_prep:"),
 you MUST move to meeting_room unless you are already there. Meetings happen in meeting_room.
 
 **IMPORTANT - Commitment Fulfillment:**
-If your checkpoint reason indicates a commitment (e.g., "commitment:"), check the commitment_status
-and move to the appropriate location to fulfill it.
+If your checkpoint reason indicates a commitment (e.g., "commitment_prep:", "commitment_start:"),
+check the commitment_status and move to the appropriate location to fulfill it.
 
 If staying: Simply output action="stay" - no justification needed.
 If moving: Specify destination and purpose.
