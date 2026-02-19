@@ -75,29 +75,37 @@ class UIDemoWriter:
             )
         """)
 
-        # Device state per timestep
+        # Device state per timestep - pivoted schema with one row per simulation_time
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS device_state (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestep_id INTEGER REFERENCES timestep_state(id),
-                device_name TEXT NOT NULL,
-                device_type TEXT,
-                is_on BOOLEAN,
-                power_w REAL,
-                location TEXT,
-                assigned_to TEXT
+                simulation_time TEXT NOT NULL,
+                laptop_A_on BOOLEAN, laptop_A_power REAL,
+                laptop_B_on BOOLEAN, laptop_B_power REAL,
+                laptop_C_on BOOLEAN, laptop_C_power REAL,
+                monitor_A_on BOOLEAN, monitor_A_power REAL,
+                monitor_B_on BOOLEAN, monitor_B_power REAL,
+                monitor_C_on BOOLEAN, monitor_C_power REAL,
+                photocopier_on BOOLEAN, photocopier_power REAL,
+                projector_on BOOLEAN, projector_power REAL,
+                conference_phone_on BOOLEAN, conference_phone_power REAL,
+                coffee_machine_on BOOLEAN, coffee_machine_power REAL,
+                kettle_on BOOLEAN, kettle_power REAL,
+                microwave_on BOOLEAN, microwave_power REAL,
+                fridge_on BOOLEAN, fridge_power REAL
             )
         """)
 
-        # Light state per timestep
+        # Light state per timestep - pivoted schema with one row per simulation_time
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS light_state (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestep_id INTEGER REFERENCES timestep_state(id),
-                light_name TEXT NOT NULL,
-                is_on BOOLEAN,
-                power_w REAL,
-                location TEXT
+                simulation_time TEXT NOT NULL,
+                desk_light_A_on BOOLEAN, desk_light_A_power REAL,
+                desk_light_B_on BOOLEAN, desk_light_B_power REAL,
+                desk_light_C_on BOOLEAN, desk_light_C_power REAL,
+                zone_main_on BOOLEAN, zone_main_power REAL,
+                meeting_room_on BOOLEAN, meeting_room_power REAL
             )
         """)
 
@@ -119,8 +127,8 @@ class UIDemoWriter:
 
         # Create indices for common queries
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestep_time ON timestep_state(simulation_time)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_device_timestep ON device_state(timestep_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_light_timestep ON light_state(timestep_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_device_time ON device_state(simulation_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_light_time ON light_state(simulation_time)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_occupant_timestep ON occupant_state(timestep_id)")
 
         conn.commit()
@@ -166,41 +174,75 @@ class UIDemoWriter:
             ))
 
             timestep_id = cursor.lastrowid
+            simulation_time = timestep_data.get("simulation_time")
 
-            # Insert device states
+            # Insert device state - single row with all devices as columns
             equipment_state = timestep_data.get("equipment_state", {})
             items = equipment_state.get("items", {})
-            for device_name, device_info in items.items():
-                cursor.execute("""
-                    INSERT INTO device_state (
-                        timestep_id, device_name, device_type, is_on,
-                        power_w, location, assigned_to
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    timestep_id,
-                    device_name,
-                    device_info.get("equipment_type"),
-                    device_info.get("is_on"),
-                    device_info.get("current_power_w", 0),
-                    device_info.get("location"),
-                    device_info.get("assigned_to"),
-                ))
 
-            # Insert light states
+            def get_device(name):
+                """Helper to get device info safely."""
+                return items.get(name, {})
+
+            cursor.execute("""
+                INSERT INTO device_state (
+                    simulation_time,
+                    laptop_A_on, laptop_A_power,
+                    laptop_B_on, laptop_B_power,
+                    laptop_C_on, laptop_C_power,
+                    monitor_A_on, monitor_A_power,
+                    monitor_B_on, monitor_B_power,
+                    monitor_C_on, monitor_C_power,
+                    photocopier_on, photocopier_power,
+                    projector_on, projector_power,
+                    conference_phone_on, conference_phone_power,
+                    coffee_machine_on, coffee_machine_power,
+                    kettle_on, kettle_power,
+                    microwave_on, microwave_power,
+                    fridge_on, fridge_power
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                simulation_time,
+                get_device("laptop_A").get("is_on"), get_device("laptop_A").get("current_power_w", 0),
+                get_device("laptop_B").get("is_on"), get_device("laptop_B").get("current_power_w", 0),
+                get_device("laptop_C").get("is_on"), get_device("laptop_C").get("current_power_w", 0),
+                get_device("monitor_A").get("is_on"), get_device("monitor_A").get("current_power_w", 0),
+                get_device("monitor_B").get("is_on"), get_device("monitor_B").get("current_power_w", 0),
+                get_device("monitor_C").get("is_on"), get_device("monitor_C").get("current_power_w", 0),
+                get_device("photocopier").get("is_on"), get_device("photocopier").get("current_power_w", 0),
+                get_device("projector").get("is_on"), get_device("projector").get("current_power_w", 0),
+                get_device("conference_phone").get("is_on"), get_device("conference_phone").get("current_power_w", 0),
+                get_device("coffee_machine").get("is_on"), get_device("coffee_machine").get("current_power_w", 0),
+                get_device("kettle").get("is_on"), get_device("kettle").get("current_power_w", 0),
+                get_device("microwave").get("is_on"), get_device("microwave").get("current_power_w", 0),
+                get_device("fridge").get("is_on"), get_device("fridge").get("current_power_w", 0),
+            ))
+
+            # Insert light state - single row with all lights as columns
             lighting_state = timestep_data.get("lighting_state", {})
             lights = lighting_state.get("lights", {})
-            for light_name, light_info in lights.items():
-                cursor.execute("""
-                    INSERT INTO light_state (
-                        timestep_id, light_name, is_on, power_w, location
-                    ) VALUES (?, ?, ?, ?, ?)
-                """, (
-                    timestep_id,
-                    light_name,
-                    light_info.get("is_on"),
-                    light_info.get("current_power_w", 0),
-                    light_info.get("location"),
-                ))
+
+            def get_light(name):
+                """Helper to get light info safely."""
+                return lights.get(name, {})
+
+            cursor.execute("""
+                INSERT INTO light_state (
+                    simulation_time,
+                    desk_light_A_on, desk_light_A_power,
+                    desk_light_B_on, desk_light_B_power,
+                    desk_light_C_on, desk_light_C_power,
+                    zone_main_on, zone_main_power,
+                    meeting_room_on, meeting_room_power
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                simulation_time,
+                get_light("desk_light_A").get("is_on"), get_light("desk_light_A").get("current_power_w", 0),
+                get_light("desk_light_B").get("is_on"), get_light("desk_light_B").get("current_power_w", 0),
+                get_light("desk_light_C").get("is_on"), get_light("desk_light_C").get("current_power_w", 0),
+                get_light("zone_main").get("is_on"), get_light("zone_main").get("current_power_w", 0),
+                get_light("meeting_room").get("is_on"), get_light("meeting_room").get("current_power_w", 0),
+            ))
 
             # Insert occupant states
             for occupant in timestep_data.get("occupant_states", []):

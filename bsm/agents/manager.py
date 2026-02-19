@@ -22,6 +22,7 @@ from bsm.agents.skeleton import (
     ClothingChoice,
     EmbeddingClient,
     OccupantStepDecision,
+    OccupantAction,
     DailyPlan,
     LunchPlan,
     BreakPlan,
@@ -29,6 +30,13 @@ from bsm.agents.skeleton import (
     DeskSelectionDecision,
     SimContext,
     SocialCommitment,
+    # 6-step checkpoint flow schemas
+    PlanReviewDecision,
+    CurrentLocationDecision,
+    StepConversationDecision,
+    MoveDecision,
+    NewLocationDecision,
+    LOCATION_TRANSITIONS,
     build_step_agent,
     build_arrival_agent,
     build_day_planner_agent,
@@ -49,6 +57,17 @@ from bsm.agents.cognition.modules import (
     record_decision_to_memory,
     record_plan_to_memory,
     get_importance,
+)
+# 6-step checkpoint flow imports
+from bsm.agents.cognition.checkpoint_state import CheckpointState, create_checkpoint_state
+from bsm.agents.cognition.sync_manager import CommitmentSyncManager
+from bsm.agents.cognition.prompts import (
+    format_step1_prompt,
+    format_step2_prompt,
+    format_step3_prompt,
+    format_step4_prompt,
+    format_step5_prompt,
+    format_step6_prompt,
 )
 from bsm.agents.cognition.conversation import (
     consultation_conversation,
@@ -163,14 +182,18 @@ class DecisionCheckpointManager:
         Returns:
             Tuple of (should_decide, reason) where reason is one of:
             - "hourly": Regular hourly checkpoint
-            - "meeting_start:{title}": Meeting is starting
-            - "meeting_end:{title}": Meeting is ending
+            - "meeting_prep:{title}": Meeting prep (4-6 min before)
+            - "meeting_start:{title}": Meeting is starting (0-3 min before)
+            - "meeting_end:{title}": Meeting is ending (0-5 min before end)
             - "lunch_time": Time for planned lunch
             - "return_from_lunch": Time to return from lunch (30-60 min after start)
             - "take_break:morning": Time for morning break
             - "take_break:afternoon": Time for afternoon break
             - "return_from_break": Time to return from break (10-20 min after start)
-            - "commitment:{activity}": Time for a social commitment
+            - "commitment_prep:{activity}": Commitment prep (4-6 min before)
+            - "commitment_start:{activity}": Commitment starting (within ±2 min)
+            - "commitment_end:{activity}": Commitment ending (15-20 min after start)
+            - "commitment_waiting:{activity}:{partner}": Waiting for partner (5-10 min after)
             - "": No checkpoint needed
         """
         if agent_id not in self._processed_events:
@@ -268,17 +291,17 @@ class DecisionCheckpointManager:
             time_to_start = start_minutes - current_minutes
             time_to_end = end_minutes - current_minutes
 
-            # Meeting prep checkpoint (6-10 minutes BEFORE start, non-overlapping with start)
+            # Meeting prep checkpoint (4-6 minutes BEFORE start, centered on 5 min)
             prep_event_id = f"meeting_prep:{meeting_id}"
-            if (6 <= time_to_start <= 10 and
+            if (4 <= time_to_start <= 6 and
                     prep_event_id not in self._processed_events[agent_id]):
                 self._processed_events[agent_id].add(prep_event_id)
                 return True, f"meeting_prep:{meeting.title}"
 
-            # Meeting start checkpoint (0-5 minutes BEFORE start only, not after)
-            # This is non-overlapping: prep=6-10min, start=0-5min before
+            # Meeting start checkpoint (0-3 minutes BEFORE start only, not after)
+            # This is non-overlapping: prep=4-6min, start=0-3min before
             start_event_id = f"meeting_start:{meeting_id}"
-            if (0 <= time_to_start <= 5 and
+            if (0 <= time_to_start <= 3 and
                     start_event_id not in self._processed_events[agent_id]):
                 self._processed_events[agent_id].add(start_event_id)
                 return True, f"meeting_start:{meeting.title}"
@@ -387,20 +410,27 @@ class DecisionCheckpointManager:
                         activities = sorted([c.activity for c in group])
                         combined_id = f"{date_prefix}:commitment:{'+'.join(activities)}_{time_str}"
 
-                        # F.2: Check for commitment prep (10-15 min before commitment time)
+                        # Commitment prep checkpoint (4-6 min before commitment time, centered on 5 min)
                         minutes_until = comm_minutes - current_minutes
-                        if 10 <= minutes_until <= 15:
+                        if 4 <= minutes_until <= 6:
                             prep_id = f"{date_prefix}:commitment_prep:{'+'.join(activities)}_{time_str}"
                             if prep_id not in self._processed_events[agent_id]:
                                 self._processed_events[agent_id].add(prep_id)
                                 return True, f"commitment_prep:{'+'.join(activities)}"
 
-                        # Check if within 5 minutes of commitment time
-                        if (abs(current_minutes - comm_minutes) <= 5 and
-                                combined_id not in self._processed_events[agent_id]):
-                            self._processed_events[agent_id].add(combined_id)
-                            # Return combined reason with all activities
-                            return True, f"commitment:{'+'.join(activities)}"
+                        # Commitment start checkpoint (within ±2 min of start time)
+                        if abs(minutes_until) <= 2:
+                            start_id = f"{date_prefix}:commitment_start:{'+'.join(activities)}_{time_str}"
+                            if start_id not in self._processed_events[agent_id]:
+                                self._processed_events[agent_id].add(start_id)
+                                return True, f"commitment_start:{'+'.join(activities)}"
+
+                        # Commitment end checkpoint (15-20 min after start for typical social activities)
+                        if -20 <= minutes_until <= -15:
+                            end_id = f"{date_prefix}:commitment_end:{'+'.join(activities)}_{time_str}"
+                            if end_id not in self._processed_events[agent_id]:
+                                self._processed_events[agent_id].add(end_id)
+                                return True, f"commitment_end:{'+'.join(activities)}"
                     except (ValueError, TypeError):
                         pass
 
@@ -791,6 +821,13 @@ class LLMOccupantManager:
 
         # Initialize checkpoint manager for event-triggered decisions
         self._checkpoint_manager = DecisionCheckpointManager()
+
+        # Initialize 6-step checkpoint flow support
+        self._sync_manager = CommitmentSyncManager()
+
+        # Use new 6-step sequential flow (default: True)
+        # Set to False in config to use legacy monolithic prompt
+        self._use_sequential_flow = llm_config.get("use_sequential_flow", True)
 
         # Weather history buffer for conversation context
         # Stores recent weather data (up to 72 hours / ~3 days)
@@ -2307,6 +2344,388 @@ Select your desk for today and specify which equipment to turn on.
 
         return step_decision
 
+    # ---------------------------------------------------------------------------
+    # 6-Step Sequential Decision Flow
+    # ---------------------------------------------------------------------------
+
+    async def _make_agent_decision_sequential(
+        self,
+        agent_id: str,
+        now: datetime,
+        checkpoint_reason: str = "interval",
+    ) -> Optional[OccupantStepDecision]:
+        """
+        Execute checkpoint as 6 sequential focused steps.
+
+        This is the new decision-making approach that replaces the monolithic
+        single-prompt system. Each step has a focused prompt and output schema:
+
+        Step 1: Plan Review - understand priorities and commitment status
+        Step 2: Current Location Decisions - equipment, comfort, breaks
+        Step 3: Current Location Conversations - talk to colleagues here
+        Step 4: Move Decision - should I go somewhere else?
+        Step 5: New Location Decisions - equipment at destination (if moved)
+        Step 6: New Location Conversations - talk to colleagues there (if moved)
+
+        Args:
+            agent_id: The agent making the decision
+            now: Current simulation datetime
+            checkpoint_reason: Why decision is being made
+
+        Returns:
+            OccupantStepDecision with accumulated actions from all steps
+        """
+        agent = self._agents.get(agent_id)
+        if not agent:
+            print(f"[LLM] {agent_id}: Agent not found")
+            return None
+
+        # Decrement chat buffers at start of each decision cycle
+        agent.decrement_all_chat_buffers()
+
+        # 1. Get simulation state
+        sim_state = self.adapter.get_state(agent_id, now)
+
+        # Get focal points and retrieve memories
+        focal_points = get_decision_focal_points(sim_state, checkpoint_reason)
+        retrieved = retrieve(agent, focal_points, now)
+
+        # Create checkpoint state
+        state = create_checkpoint_state(
+            agent_id=agent_id,
+            now=now,
+            checkpoint_reason=checkpoint_reason,
+            sim_state=sim_state,
+            memories=retrieved,
+            daily_plan=agent.get_daily_plan(),
+            sync_manager=self._sync_manager,
+            agent=agent,
+        )
+
+        try:
+            # STEP 1: Plan Review
+            prompt1 = format_step1_prompt(state)
+            state.step1 = await self._run_step(
+                agent_id, prompt1, PlanReviewDecision, "plan_review"
+            )
+
+            # STEP 2: Current Location Decisions
+            prompt2 = format_step2_prompt(state)
+            state.step2 = await self._run_step(
+                agent_id, prompt2, CurrentLocationDecision, "current_location"
+            )
+            self._apply_step2_actions(state)
+
+            # STEP 3: Current Location Conversations (skip if no colleagues)
+            prompt3 = format_step3_prompt(state)
+            if prompt3:
+                state.step3 = await self._run_step(
+                    agent_id, prompt3, StepConversationDecision, "conversation"
+                )
+                self._apply_conversation(state, state.step3)
+
+            # STEP 4: Move Decision
+            prompt4 = format_step4_prompt(state)
+            state.step4 = await self._run_step(
+                agent_id, prompt4, MoveDecision, "move_decision"
+            )
+
+            if state.moved():
+                # Apply move action
+                destination = state.step4.destination
+                state.add_action("move_to", destination=destination)
+                state.current_location = destination
+
+                # Update sync manager with new location
+                self._sync_manager.update_agent_location(agent_id, destination)
+
+                # Re-perceive new environment before making decisions there
+                await state.refresh_perception_at_new_location(self.adapter)
+
+                # STEP 5: New Location Decisions
+                prompt5 = format_step5_prompt(state)
+                state.step5 = await self._run_step(
+                    agent_id, prompt5, NewLocationDecision, "new_location"
+                )
+                self._apply_step5_actions(state)
+
+                # STEP 6: New Location Conversations (skip if no colleagues)
+                prompt6 = format_step6_prompt(state)
+                if prompt6:
+                    state.step6 = await self._run_step(
+                        agent_id, prompt6, StepConversationDecision, "conversation"
+                    )
+                    self._apply_conversation(state, state.step6)
+
+            # Create OccupantStepDecision wrapper
+            decision = OccupantStepDecision(
+                occupant_id=agent_id,
+                datetime_iso=now.isoformat(),
+                location_zone=state.current_location,
+                current_desk=sim_state.get("current_desk"),
+                is_present=True,
+                actions=state.actions,
+                brief_rationale=state.summary(),
+            )
+
+            # Apply decision to simulation
+            self.adapter.apply_decision(decision)
+
+            # Process pending conversations (initiated in Step 3 or Step 6)
+            pending_convs = self.adapter.get_pending_conversations()
+            for conv in pending_convs:
+                conv_result = await self._process_conversation(
+                    conv["initiator"], conv["target"], conv["topic"], now
+                )
+                if conv_result:
+                    self._log_conversation_to_shared_file(conv_result, now)
+
+            # Update tracking
+            self._last_decision_time[agent_id] = now
+
+            # Log summary
+            print(f"[LLM] {agent_id}: {state.summary()}")
+
+            # Record decisions to agent memory
+            await self._record_sequential_decisions_to_memory(agent, state, now)
+
+            # Log decision to agent's decisions.log (adapted for 6-step flow)
+            self._log_sequential_decision(agent_id, now, state, checkpoint_reason)
+
+            # Log actions to shared action log and UI demo output
+            self._log_action(agent_id, decision, now)
+
+            # Save agent state
+            agent.save()
+
+            return decision
+
+        except Exception as e:
+            print(f"[LLM] {agent_id} sequential decision failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    async def _run_step(
+        self,
+        agent_id: str,
+        prompt: str,
+        output_type: type,
+        step_name: str,
+    ):
+        """
+        Run a single step of the 6-step decision flow.
+
+        Args:
+            agent_id: The agent making the decision
+            prompt: The formatted prompt for this step
+            output_type: The Pydantic model type for the output
+            step_name: Name of the step for logging
+
+        Returns:
+            The parsed output of the appropriate type
+        """
+        from agents import Agent
+        from agents.agent_output import AgentOutputSchema
+
+        # Create a focused agent for this step
+        step_agent = Agent(
+            name=f"{step_name}_agent",
+            instructions=f"You are making a decision for agent {agent_id}. Follow the instructions carefully.",
+            model=self._agent_model,
+            output_type=AgentOutputSchema(output_type, strict_json_schema=False),
+        )
+
+        context = SimContext(
+            occupant_id=agent_id,
+            now=datetime.now(timezone.utc),
+            simulation=self.adapter,
+            calendar=self.calendar,
+            configured_agent_ids=list(self._agents.keys()),
+        )
+
+        result = await run_with_retry(step_agent, prompt, context=context, max_turns=3)
+        return result.final_output
+
+    def _apply_step2_actions(self, state: CheckpointState) -> None:
+        """
+        Convert Step 2 (Current Location) decisions to actions.
+
+        Handles:
+        - Thermostat adjustments
+        - Lighting changes
+        - Equipment ON/OFF at current location
+        - Break actions at current location
+        """
+        d = state.step2
+        if not d:
+            return
+
+        # Thermostat
+        if d.thermostat and d.thermostat.action == "adjust":
+            direction = d.thermostat.adjustment_direction or "warmer"
+            amount = d.thermostat.adjustment_amount or "small"
+            # Convert amount to delta
+            delta_map = {"small": 0.5, "medium": 1.0, "large": 1.5}
+            delta = delta_map.get(amount, 0.5)
+            if direction == "cooler":
+                delta = -delta
+            state.add_action("thermostat_adjust", setpoint_delta_c=delta, direction=direction)
+
+        # Lighting (ON/OFF only, no brightness dimming)
+        if d.lighting and d.lighting.action in ("turn_on", "turn_off"):
+            target = d.lighting.target_device or "desk_light"
+            on_state = d.lighting.action == "turn_on"
+            state.add_action("lights_set", target=target, on=on_state)
+
+        # Equipment ON/OFF at current location
+        if d.equipment_decisions:
+            for eq in d.equipment_decisions:
+                if eq.action == "turn_on":
+                    state.add_action("equipment_set", equipment_name=eq.equipment_name, on=True)
+                elif eq.action == "turn_off":
+                    state.add_action("equipment_set", equipment_name=eq.equipment_name, on=False)
+
+        # Break at current location
+        if d.break_action and d.break_action.action in ("take_break", "go_out_for_break"):
+            params = {}
+            if d.break_action.break_type:
+                params["break_type"] = d.break_action.break_type
+            if d.break_action.activity:
+                params["activity"] = d.break_action.activity
+            state.add_action(d.break_action.action, **params)
+
+        # Plan update
+        if d.plan_update and d.plan_update.action == "update":
+            if d.plan_update.updates:
+                state.add_action("update_daily_plan", updates=d.plan_update.updates.model_dump())
+
+    def _apply_step5_actions(self, state: CheckpointState) -> None:
+        """
+        Convert Step 5 (New Location) decisions to actions.
+
+        Handles:
+        - Equipment ON/OFF at new location
+        - Meeting equipment setup
+        - Break actions at new location
+        """
+        d = state.step5
+        if not d:
+            return
+
+        # Equipment ON/OFF at new location
+        if d.equipment_decisions:
+            for eq in d.equipment_decisions:
+                if eq.action == "turn_on":
+                    state.add_action("equipment_set", equipment_name=eq.equipment_name, on=True)
+                elif eq.action == "turn_off":
+                    state.add_action("equipment_set", equipment_name=eq.equipment_name, on=False)
+
+        # Meeting equipment
+        if d.meeting_equipment and d.meeting_equipment.action == "set_equipment":
+            if d.meeting_equipment.equipment_changes:
+                for change in d.meeting_equipment.equipment_changes:
+                    if isinstance(change, dict):
+                        state.add_action("equipment_set", **change)
+
+        # Break at new location
+        if d.break_action and d.break_action.action in ("take_break", "go_out_for_break"):
+            params = {}
+            if d.break_action.break_type:
+                params["break_type"] = d.break_action.break_type
+            if d.break_action.activity:
+                params["activity"] = d.break_action.activity
+            state.add_action(d.break_action.action, **params)
+
+    def _apply_conversation(
+        self,
+        state: CheckpointState,
+        conv: Optional[StepConversationDecision],
+    ) -> None:
+        """
+        Convert conversation decision to action.
+
+        Args:
+            state: CheckpointState to add actions to
+            conv: StepConversationDecision from step 3 or 6
+        """
+        if not conv:
+            return
+
+        if conv.action == "initiate" and conv.target_agent:
+            state.add_action(
+                "initiate_conversation",
+                target_agent=conv.target_agent,
+                topic=conv.topic or "general",
+            )
+
+    async def _record_sequential_decisions_to_memory(
+        self,
+        agent: GenerativeAgent,
+        state: CheckpointState,
+        now: datetime,
+    ) -> None:
+        """
+        Record decisions from 6-step flow to agent memory.
+
+        This ensures that decisions made via the sequential checkpoint flow
+        are recorded to the agent's memory stream for future reference.
+
+        Args:
+            agent: The agent who made decisions
+            state: CheckpointState with all step outputs
+            now: Current datetime
+        """
+        from bsm.agents.cognition.perception import get_importance
+
+        if not agent.memory_stream:
+            return
+
+        decisions_made = []
+
+        # Step 2 decisions (current location)
+        if state.step2:
+            if state.step2.thermostat and state.step2.thermostat.action != "maintain_current":
+                direction = state.step2.thermostat.adjustment_direction or ""
+                decisions_made.append(f"Thermostat: {state.step2.thermostat.action} ({direction})")
+            if state.step2.lighting and state.step2.lighting.action != "keep_current":
+                target = state.step2.lighting.target_device or "desk_light"
+                decisions_made.append(f"Lighting {target}: {state.step2.lighting.action}")
+            for eq in state.step2.equipment_decisions:
+                if eq.action != "keep_current":
+                    decisions_made.append(f"Equipment {eq.equipment_name}: {eq.action}")
+
+        # Step 4 decisions (move)
+        if state.moved():
+            decisions_made.append(f"Moved to {state.step4.destination}")
+
+        # Step 5 decisions (new location)
+        if state.step5:
+            for eq in state.step5.equipment_decisions:
+                if eq.action != "keep_current":
+                    decisions_made.append(f"Equipment {eq.equipment_name}: {eq.action}")
+
+        # Step 3/6 conversation decisions
+        if state.step3 and state.step3.action == "initiate":
+            decisions_made.append(f"Started conversation with {state.step3.target_agent}")
+        if state.step6 and state.step6.action == "initiate":
+            decisions_made.append(f"Started conversation with {state.step6.target_agent}")
+
+        if not decisions_made:
+            return
+
+        description = f"At {now.strftime('%H:%M')}: " + "; ".join(decisions_made)
+        importance = await get_importance(agent, description, 5.0, use_llm=True)
+
+        agent.memory_stream.add_event(
+            description=description,
+            subject="I",
+            predicate="decided",
+            obj=", ".join(decisions_made[:3]) if decisions_made else "no change",
+            now=now,
+            importance=importance,
+        )
+
     async def _maybe_consult_on_shared_action(
         self,
         agent: GenerativeAgent,
@@ -2682,6 +3101,9 @@ Select your desk for today and specify which equipment to turn on.
         """
         Sync wrapper for cognitive loop (for compatibility with main.py).
 
+        Uses the new 6-step sequential flow by default, with fallback to
+        the legacy monolithic prompt if use_sequential_flow is False.
+
         Args:
             agent_id: The agent making the decision
             now: Current simulation datetime
@@ -2690,38 +3112,55 @@ Select your desk for today and specify which equipment to turn on.
         Returns the decision or None if failed.
         """
         try:
-            decision = asyncio.run(
-                self._make_agent_decision_async(agent_id, now, checkpoint_reason=checkpoint_reason)
-            )
+            # Use new 6-step sequential flow (default)
+            if getattr(self, '_use_sequential_flow', True):
+                decision = asyncio.run(
+                    self._make_agent_decision_sequential(agent_id, now, checkpoint_reason=checkpoint_reason)
+                )
 
-            # Log non-trivial decisions to console
-            if decision:
-                non_trivial = []
-                # Check each category for non-trivial actions
-                if decision.thermostat.action != "maintain_current":
-                    non_trivial.append(f"thermostat:{decision.thermostat.action}")
-                if decision.lighting.action != "keep_current":
-                    non_trivial.append(f"lighting:{decision.lighting.action}")
-                # Check equipment_decisions list for any non-trivial actions
-                for eq_dec in decision.equipment_decisions:
-                    if eq_dec.action != "keep_current":
-                        non_trivial.append(f"equipment:{eq_dec.equipment_name}:{eq_dec.action}")
-                if decision.location.action != "stay":
-                    non_trivial.append(f"location:{decision.location.action}")
-                if decision.conversation.action != "none":
-                    non_trivial.append(f"conversation:{decision.conversation.action}")
-                if decision.break_decision and decision.break_decision.action != "continue_working":
-                    non_trivial.append(f"break:{decision.break_decision.action}")
-                if decision.meeting_equipment and decision.meeting_equipment.action != "accept_current":
-                    non_trivial.append(f"meeting_equipment:{decision.meeting_equipment.action}")
-                if decision.plan_update.action != "keep_current":
-                    non_trivial.append(f"plan_update:{decision.plan_update.action}")
+                # Log actions for new flow
+                if decision and decision.actions:
+                    action_types = [a.action_type for a in decision.actions if a.action_type != "no_op"]
+                    if action_types:
+                        print(f"[LLM] {agent_id}: {', '.join(action_types)}")
 
-                if non_trivial:
-                    actions_str = ", ".join(non_trivial)
-                    print(f"[LLM] {agent_id}: {actions_str}")
+                return decision
 
-            return decision
+            # Legacy flow (monolithic prompt)
+            else:
+                decision = asyncio.run(
+                    self._make_agent_decision_async(agent_id, now, checkpoint_reason=checkpoint_reason)
+                )
+
+                # Log non-trivial decisions to console (legacy format)
+                if decision:
+                    non_trivial = []
+                    # Check each category for non-trivial actions
+                    if hasattr(decision, 'thermostat') and decision.thermostat.action != "maintain_current":
+                        non_trivial.append(f"thermostat:{decision.thermostat.action}")
+                    if hasattr(decision, 'lighting') and decision.lighting.action != "keep_current":
+                        non_trivial.append(f"lighting:{decision.lighting.action}")
+                    # Check equipment_decisions list for any non-trivial actions
+                    if hasattr(decision, 'equipment_decisions'):
+                        for eq_dec in decision.equipment_decisions:
+                            if eq_dec.action != "keep_current":
+                                non_trivial.append(f"equipment:{eq_dec.equipment_name}:{eq_dec.action}")
+                    if hasattr(decision, 'location') and decision.location.action != "stay":
+                        non_trivial.append(f"location:{decision.location.action}")
+                    if hasattr(decision, 'conversation') and decision.conversation.action != "none":
+                        non_trivial.append(f"conversation:{decision.conversation.action}")
+                    if hasattr(decision, 'break_decision') and decision.break_decision and decision.break_decision.action != "continue_working":
+                        non_trivial.append(f"break:{decision.break_decision.action}")
+                    if hasattr(decision, 'meeting_equipment') and decision.meeting_equipment and decision.meeting_equipment.action != "accept_current":
+                        non_trivial.append(f"meeting_equipment:{decision.meeting_equipment.action}")
+                    if hasattr(decision, 'plan_update') and decision.plan_update.action != "keep_current":
+                        non_trivial.append(f"plan_update:{decision.plan_update.action}")
+
+                    if non_trivial:
+                        actions_str = ", ".join(non_trivial)
+                        print(f"[LLM] {agent_id}: {actions_str}")
+
+                return decision
 
         except Exception as e:
             print(f"[LLM] {agent_id} decision failed: {e}")
@@ -3128,6 +3567,78 @@ Select your desk for today and specify which equipment to turn on.
         for partner_id in partner_agents:
             agent.update_relationship(partner_id, sentiment_delta=sentiment_delta)
             print(f"[RELATIONSHIP] {agent_id} -> {partner_id}: sentiment {sentiment_delta:+.2f}")
+
+    def _log_sequential_decision(
+        self,
+        agent_id: str,
+        now: datetime,
+        state: "CheckpointState",
+        checkpoint_reason: str,
+    ) -> None:
+        """Log 6-step flow decision to agent's decision log."""
+        try:
+            agent_paths = self._agent_paths.get(agent_id, {})
+            log_path = agent_paths.get("decision_log")
+            if not log_path:
+                return
+
+            with open(log_path, "a") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"CHECKPOINT: {checkpoint_reason}\n")
+                f.write(f"TIME: {now.strftime('%Y-%m-%d %H:%M')}\n")
+                f.write(f"LOCATION: {state.current_location}\n")
+                f.write(f"\n--- STEP DECISIONS ---\n")
+
+                # Step 1: Plan Review
+                if state.step1:
+                    f.write(f"Step 1 (Plan Review):\n")
+                    f.write(f"  Alignment: {state.step1.plan_alignment}\n")
+                    f.write(f"  Priorities: {state.step1.priorities}\n")
+                    if state.step1.commitment_status:
+                        f.write(f"  Commitment: {state.step1.active_commitment} ({state.step1.commitment_status})\n")
+
+                # Step 2: Current Location Actions
+                if state.step2:
+                    f.write(f"Step 2 (Current Location):\n")
+                    f.write(f"  Thermostat: {state.step2.thermostat.action}\n")
+                    f.write(f"  Lighting: {state.step2.lighting.action}\n")
+                    for eq in state.step2.equipment_decisions:
+                        f.write(f"  Equipment {eq.equipment_name}: {eq.action}\n")
+
+                # Step 3: Conversation at current location
+                if state.step3:
+                    f.write(f"Step 3 (Conversation):\n")
+                    f.write(f"  Action: {state.step3.action}\n")
+                    if state.step3.target_agent:
+                        f.write(f"  Target: {state.step3.target_agent}\n")
+
+                # Step 4: Move Decision
+                if state.step4:
+                    f.write(f"Step 4 (Move):\n")
+                    f.write(f"  Action: {state.step4.action}\n")
+                    if state.step4.destination:
+                        f.write(f"  Destination: {state.step4.destination}\n")
+                    f.write(f"  Reasoning: {state.step4.reasoning}\n")
+
+                # Step 5: New Location Actions
+                if state.step5:
+                    f.write(f"Step 5 (New Location):\n")
+                    for eq in state.step5.equipment_decisions:
+                        f.write(f"  Equipment {eq.equipment_name}: {eq.action}\n")
+
+                # Step 6: Conversation at new location
+                if state.step6:
+                    f.write(f"Step 6 (Conversation):\n")
+                    f.write(f"  Action: {state.step6.action}\n")
+                    if state.step6.target_agent:
+                        f.write(f"  Target: {state.step6.target_agent}\n")
+
+                f.write(f"\n--- ACTIONS ---\n")
+                for action in state.actions:
+                    f.write(f"  {action.action_type}: {action.parameters}\n")
+
+        except IOError as e:
+            print(f"Warning: Failed to log sequential decision for {agent_id}: {e}")
 
     def _log_action(
         self,

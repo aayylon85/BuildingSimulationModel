@@ -73,7 +73,21 @@ from bsm.agents.cognition.prompts import (
     format_meetings_for_prompt,
     format_pending_invitations_for_prompt,
     build_decision_context,
+    # 6-step checkpoint flow prompts
+    format_step1_prompt,
+    format_step2_prompt,
+    format_step3_prompt,
+    format_step4_prompt,
+    format_step5_prompt,
+    format_step6_prompt,
 )
+
+# 6-step checkpoint flow support
+from bsm.agents.cognition.checkpoint_state import (
+    CheckpointState,
+    create_checkpoint_state,
+)
+from bsm.agents.cognition.sync_manager import CommitmentSyncManager
 
 # Memory operations
 from bsm.agents.cognition.memory_ops import (
@@ -149,6 +163,17 @@ __all__ = [
     "format_meetings_for_prompt",
     "format_pending_invitations_for_prompt",
     "build_decision_context",
+    # 6-step checkpoint flow prompts
+    "format_step1_prompt",
+    "format_step2_prompt",
+    "format_step3_prompt",
+    "format_step4_prompt",
+    "format_step5_prompt",
+    "format_step6_prompt",
+    # 6-step checkpoint flow support
+    "CheckpointState",
+    "create_checkpoint_state",
+    "CommitmentSyncManager",
     # Memory operations
     "record_decision_to_memory",
     "record_plan_to_memory",

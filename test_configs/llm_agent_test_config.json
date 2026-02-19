@@ -181,6 +181,8 @@
     "_comment": "LLM-based occupant agents using OpenAI API with generative agent architecture",
     "enabled": true,
     "log_prompts": true,
+    "use_sequential_flow": true,
+    "_sequential_flow_comment": "When true, uses new 6-step checkpoint flow (plan review, current location decisions, conversations, move decision, new location decisions, new location conversations). When false, uses legacy single-prompt approach.",
     "api_timeout_seconds": 30,
     "agent_model": "gpt-5.2",
     "embed_model": "text-embedding-3-large",

@@ -573,6 +573,20 @@ async def record_conversation_to_memory(
     # Build enhanced description that includes commitment details
     topics_str = ", ".join(conversation.topics_discussed) if conversation.topics_discussed else "general topics"
 
+    # Include key dialogue highlights so agents remember what was actually said
+    dialogue_highlights = []
+    speaker_utterance_counts: dict = {}
+    for utt in conversation.utterances:
+        speaker = utt.speaker_id.split("_")[0].capitalize()  # "alice_001" -> "Alice"
+        count = speaker_utterance_counts.get(utt.speaker_id, 0)
+        if count < 3:  # Limit to 3 utterances per speaker to avoid overly long memories
+            # Truncate long utterances
+            utterance_text = utt.utterance[:150] + "..." if len(utt.utterance) > 150 else utt.utterance
+            dialogue_highlights.append(f'{speaker}: "{utterance_text}"')
+            speaker_utterance_counts[utt.speaker_id] = count + 1
+
+    dialogue_text = " | ".join(dialogue_highlights[:6]) if dialogue_highlights else ""
+
     if commitments:
         # Build a summary that includes what was agreed
         commitment_parts = []
@@ -587,16 +601,19 @@ async def record_conversation_to_memory(
         else:
             commitment_summary = ""
 
+        # Include dialogue highlights so agent remembers actual conversation content
         description = (
             f"Had a conversation with {other_first_name} about {topics_str}. "
+            f"{dialogue_text} "
             f"{commitment_summary}"
-        )
+        ).strip()
     else:
-        # No commitments - use topics-based summary
+        # No commitments - use topics-based summary with dialogue highlights
         description = (
             f"Had a conversation with {other_first_name} about {topics_str}. "
+            f"{dialogue_text} "
             f"{conversation.summary}"
-        )
+        ).strip()
 
     # Use LLM to assess importance of this conversation
     importance = await get_importance(agent, description, 5.0, use_llm=True)

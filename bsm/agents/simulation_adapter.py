@@ -130,13 +130,6 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
                         parameters={"equipment_name": "conference_phone", "on": on_state},
                         confidence=0.8,
                     ))
-                elif "blinds" in change_lower or "shade" in change_lower:
-                    close_state = "close" in change_lower
-                    actions.append(OccupantAction(
-                        action_type="blinds_set",
-                        parameters={"closed": close_state},
-                        confidence=0.8,
-                    ))
                 elif "whiteboard" in change_lower:
                     on_state = "on" in change_lower and "off" not in change_lower
                     actions.append(OccupantAction(
@@ -153,16 +146,14 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
             confidence=0.8,
         ))
 
-    # 3. Lighting (after location move, at new location)
-    if decision.lighting.action in ("turn_on", "turn_off", "adjust_brightness"):
-        light_on = decision.lighting.action in ("turn_on", "adjust_brightness")
+    # 3. Lighting (after location move, at new location) - ON/OFF only
+    if decision.lighting.action in ("turn_on", "turn_off"):
+        light_on = decision.lighting.action == "turn_on"
         actions.append(OccupantAction(
             action_type="lights_set",
             parameters={
-                "action": decision.lighting.action,
                 "target": decision.lighting.target_device or "desk_light",
                 "on": light_on,
-                "brightness": decision.lighting.brightness_level,
             },
             confidence=0.8,
         ))
@@ -185,8 +176,26 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
     # Plan update
     if decision.plan_update.action == "update" and decision.plan_update.updates:
         # Convert PlanUpdates Pydantic model to dict for storage
-        updates_dict = decision.plan_update.updates.model_dump(exclude_none=True)
-        if updates_dict:  # Only add action if there are actual updates
+        # Handle both Pydantic model and plain dict
+        if hasattr(decision.plan_update.updates, 'model_dump'):
+            updates_dict = decision.plan_update.updates.model_dump(exclude_none=True)
+        elif isinstance(decision.plan_update.updates, dict):
+            # Filter None values from plain dict (recursively)
+            def filter_none(d):
+                if not isinstance(d, dict):
+                    return d
+                return {k: filter_none(v) for k, v in d.items() if v is not None}
+            updates_dict = filter_none(decision.plan_update.updates)
+        else:
+            updates_dict = {}
+
+        # Check for actual content (not just empty dicts or dicts with only None/empty values)
+        def has_actual_content(d):
+            if not isinstance(d, dict):
+                return d is not None
+            return any(has_actual_content(v) for v in d.values()) if d else False
+
+        if updates_dict and has_actual_content(updates_dict):
             actions.append(OccupantAction(
                 action_type="update_daily_plan",
                 parameters={
@@ -737,6 +746,12 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 self.get_agent_location(occupant_id), agent_id=occupant_id
             ),
 
+            # Equipment by location (dict mapping location -> equipment list for CheckpointState)
+            "equipment_at_location": {
+                loc: self.get_equipment_at_location(loc, agent_id=occupant_id)
+                for loc in self._office_locations.keys()
+            },
+
             # Feedback about recently dropped/invalid actions (helps agents learn from mistakes)
             "recent_action_errors": [
                 {"action": action_type, "reason": reason}
@@ -863,6 +878,17 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                     )
                     # Keep only last 5 dropped actions per agent
                     self._dropped_actions[occupant_id] = self._dropped_actions[occupant_id][-5:]
+                    return
+
+                # Check if this is actually a light (redirect to lighting manager)
+                light = self.lighting.get_light(equipment_name)
+                if light:
+                    on_state = params.get("on", False)
+                    self.lighting.apply_lighting_action(
+                        {"target": equipment_name, "on": on_state},
+                        occupant_id,
+                        current_desk
+                    )
                     return
 
             self.equipment.apply_equipment_action(params, occupant_id)
@@ -1340,6 +1366,27 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                     "type": eq_info.get("type", eq_ref),
                     "is_on": eq_info.get("is_on", False),
                     "in_use_by": eq_info.get("assigned_to"),
+                })
+
+        # Add lights at this location (so agents can control them via equipment_set)
+        lights_at_loc = self.lighting.get_lights_at_location(location)
+        for light in lights_at_loc:
+            result.append({
+                "name": light.name,
+                "type": "light",
+                "is_on": light.is_on,
+                "in_use_by": None,
+            })
+
+        # Also add zone_main light (accessible from all indoor locations)
+        if location not in ("outside", "entrance"):
+            zone_main = self.lighting.get_light("zone_main")
+            if zone_main and not any(eq["name"] == "zone_main" for eq in result):
+                result.append({
+                    "name": "zone_main",
+                    "type": "light",
+                    "is_on": zone_main.is_on,
+                    "in_use_by": None,
                 })
 
         return result

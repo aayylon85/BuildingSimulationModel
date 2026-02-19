@@ -26,7 +26,7 @@ from datetime import datetime, date, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +67,8 @@ ACTION_PARAMS = {
         "setpoint_delta_c": float,  # Calculated delta (positive for warmer, negative for cooler)
     },
     "lights_set": {
-        "action": str,          # "turn_on", "turn_off", "adjust_brightness", "keep_current"
-        "target": str,          # Light device name
-        "on": bool,             # Whether light should be on
-        "brightness": int,      # Brightness level 0-100 (optional)
+        "target": str,          # Light device name (e.g., "desk_light", "zone_main", "meeting_room")
+        "on": bool,             # Whether light should be on (ON/OFF only, no dimming)
     },
     "equipment_set": {
         "equipment_name": str,  # Equipment name (e.g., "laptop_A")
@@ -158,6 +156,29 @@ ActionType = Literal[
     "update_daily_plan",     # Update daily plan based on new circumstances (parameters: updates dict, reason)
 ]
 
+# ---------------------------------------------------------------------------
+# Location Types and Transitions (for 6-step checkpoint flow)
+# ---------------------------------------------------------------------------
+
+LocationType = Literal[
+    "desk_area",
+    "meeting_room",
+    "break_area",
+    "shared_area",
+    "entrance",
+    "outside",
+]
+
+# Valid location transitions - agents can only move between connected locations
+LOCATION_TRANSITIONS: Dict[str, List[str]] = {
+    "desk_area": ["meeting_room", "break_area", "shared_area", "entrance"],
+    "meeting_room": ["desk_area", "break_area", "entrance"],
+    "break_area": ["desk_area", "meeting_room", "entrance"],
+    "shared_area": ["desk_area", "entrance"],
+    "entrance": ["desk_area", "break_area", "outside"],
+    "outside": ["entrance"],
+}
+
 class OccupantAction(BaseModel):
     action_type: ActionType
     parameters: Dict[str, Any] = Field(default_factory=dict)
@@ -196,18 +217,14 @@ class ThermostatDecision(BaseModel):
 
 
 class LightingDecision(BaseModel):
-    """Decision about lighting at current location."""
-    action: Literal["turn_on", "turn_off", "adjust_brightness", "keep_current"] = Field(
-        description="Lighting action to take"
+    """Decision about lighting at current location. Lights are ON/OFF only (no dimming)."""
+    action: Literal["turn_on", "turn_off", "keep_current"] = Field(
+        description="Lighting action to take: turn_on, turn_off, or keep_current"
     )
     reasoning: str = Field(description="Why this lighting action was chosen")
     target_device: Optional[str] = Field(
         default=None,
-        description="Light device name, e.g., 'desk_light' or 'meeting_room_light'"
-    )
-    brightness_level: Optional[int] = Field(
-        default=None, ge=0, le=100,
-        description="Brightness level 0-100% (only for adjust_brightness)"
+        description="Light device name, e.g., 'desk_light', 'zone_main', or 'meeting_room'"
     )
 
 
@@ -282,6 +299,13 @@ class CommitmentDecision(BaseModel):
         description="If deferring, when to try again (HH:MM format). Required if action='defer'."
     )
 
+    @model_validator(mode='after')
+    def validate_defer_requires_time(self) -> 'CommitmentDecision':
+        """Ensure defer_until is provided when deferring."""
+        if self.action == "defer" and not self.defer_until:
+            raise ValueError("defer_until is required when action='defer'")
+        return self
+
 
 class MeetingEquipmentDecision(BaseModel):
     """Decision about equipment at meeting start/end (for meeting host)."""
@@ -291,7 +315,7 @@ class MeetingEquipmentDecision(BaseModel):
     reasoning: str = Field(description="Why this meeting equipment decision was made")
     equipment_changes: Optional[List[str]] = Field(
         default=None,
-        description="List of equipment changes, e.g., ['turn on projector', 'close blinds']"
+        description="List of equipment changes, e.g., ['turn on projector', 'turn on conference phone']"
     )
 
 
@@ -357,6 +381,112 @@ class StepDecisions(BaseModel):
         default=None,
         description="Response to a commitment checkpoint. Use 'not_applicable' for non-commitment checkpoints. Only required when checkpoint_reason starts with 'commitment:'."
     )
+
+
+# ---------------------------------------------------------------------------
+# 6-Step Checkpoint Flow Schemas
+# ---------------------------------------------------------------------------
+# These schemas support the multi-prompt checkpoint approach where each
+# checkpoint is broken into 6 sequential focused steps.
+
+class PlanReviewDecision(BaseModel):
+    """Step 1: Review plan and determine checkpoint priorities."""
+    checkpoint_summary: str = Field(
+        description="Brief summary of what this checkpoint is about"
+    )
+    plan_alignment: Literal["on_track", "need_adjustment", "off_track"] = Field(
+        description="Whether the agent is following their planned schedule"
+    )
+    priorities: List[str] = Field(
+        description="Top 2-3 priorities for this checkpoint",
+        min_length=1,
+        max_length=3
+    )
+    active_commitment: Optional[str] = Field(
+        default=None,
+        description="Description of any active commitment (e.g., 'coffee with bob at 15:00')"
+    )
+    commitment_status: Optional[Literal["not_yet", "approaching", "now", "waiting", "overdue"]] = Field(
+        default=None,
+        description="Status of the active commitment relative to current time"
+    )
+    partner_status: Optional[str] = Field(
+        default=None,
+        description="Location/status of commitment partner (from sync manager)"
+    )
+    reasoning: str = Field(description="Why these priorities were chosen")
+
+
+class CurrentLocationDecision(BaseModel):
+    """Step 2: Decisions about actions at current location BEFORE any move."""
+    thermostat: ThermostatDecision
+    lighting: LightingDecision
+    equipment_decisions: List[EquipmentDecision] = Field(
+        default_factory=list,
+        description="Equipment to turn ON or OFF at current location (use action='turn_on' or 'turn_off')"
+    )
+    break_action: Optional[BreakDecision] = Field(
+        default=None,
+        description="Break action if taking break at current location (not moving)"
+    )
+    commitment_response: Optional[CommitmentDecision] = Field(
+        default=None,
+        description="Response to commitment if checkpoint is commitment-related"
+    )
+    plan_update: Optional[PlanUpdateDecision] = Field(
+        default=None,
+        description="Updates to daily plan if needed"
+    )
+    reasoning: str = Field(description="Overall reasoning for current location decisions")
+
+
+class StepConversationDecision(BaseModel):
+    """Step 3/6: Conversation decision at current or new location."""
+    action: Literal["initiate", "none"] = Field(
+        description="Whether to start a conversation"
+    )
+    target_agent: Optional[str] = Field(
+        default=None,
+        description="Agent ID to talk to (must be present at same location)"
+    )
+    topic: Optional[str] = Field(
+        default=None,
+        description="Conversation topic"
+    )
+    reasoning: str = Field(description="Why this conversation decision was made")
+
+
+class MoveDecision(BaseModel):
+    """Step 4: Whether to move and where."""
+    action: Literal["move", "stay"] = Field(
+        description="Whether to move to a different location"
+    )
+    destination: Optional[str] = Field(
+        default=None,
+        description="Target location (must be in LOCATION_TRANSITIONS[current_location])"
+    )
+    purpose: Optional[str] = Field(
+        default=None,
+        description="Why moving: 'attend meeting', 'fulfill commitment', 'take break', etc."
+    )
+    reasoning: str = Field(description="Why this move decision was made")
+
+
+class NewLocationDecision(BaseModel):
+    """Step 5: Decisions about actions at NEW location AFTER move."""
+    equipment_decisions: List[EquipmentDecision] = Field(
+        default_factory=list,
+        description="Equipment to turn ON or OFF at the new location (use action='turn_on' or 'turn_off')"
+    )
+    meeting_equipment: Optional[MeetingEquipmentDecision] = Field(
+        default=None,
+        description="Meeting equipment setup (if at meeting_room)"
+    )
+    break_action: Optional[BreakDecision] = Field(
+        default=None,
+        description="Break action if taking break at new location"
+    )
+    reasoning: str = Field(description="Overall reasoning for new location decisions")
 
 
 class DeskSelectionDecision(BaseModel):
@@ -445,7 +575,7 @@ class SocialCommitment(BaseModel):
     activity: str = Field(description="What was agreed: 'coffee', 'walk', 'lunch together', etc.")
     time: str = Field(description="When (HH:MM) if specified, or 'unspecified'")
     with_agents: List[str] = Field(description="Agent IDs who agreed to this activity")
-    location: Literal["break_area", "outside", "meeting_room", "unspecified"] = Field(
+    location: Literal["break_area", "outside", "meeting_room", "entrance", "desk_area", "shared_area", "unspecified"] = Field(
         default="unspecified",
         description="Where the activity will happen"
     )
@@ -458,6 +588,15 @@ class SocialCommitment(BaseModel):
     deferred_count: int = Field(default=0, description="How many times this has been deferred")
     last_deferred_at: Optional[str] = Field(default=None, description="ISO timestamp of last deferral")
     original_time: Optional[str] = Field(default=None, description="Original time before any deferrals")
+    # NEW: State tracking for 6-step checkpoint flow
+    state: Literal["pending", "approaching", "active", "waiting", "fulfilled", "failed"] = Field(
+        default="pending",
+        description="Current state in commitment lifecycle"
+    )
+    has_conflict: bool = Field(
+        default=False,
+        description="Whether this commitment conflicts with another event (e.g., meeting)"
+    )
 
 
 class DailyPlan(BaseModel):
@@ -1751,7 +1890,7 @@ IMPORTANT: Return a complete structured decision for ALL categories. Every field
 
 Required decisions:
 - thermostat: "adjust" or "maintain_current"
-- lighting: "turn_on", "turn_off", "adjust_brightness", or "keep_current"
+- lighting: "turn_on", "turn_off", or "keep_current" (lights are ON/OFF only, no dimming)
 - equipment_decisions: A LIST with one entry per equipment item (can be empty if no equipment nearby)
 - location: "move" or "stay"
 - conversation: "initiate" or "none"
@@ -1762,7 +1901,7 @@ Required decisions:
 - meeting_equipment: "set_equipment", "accept_current", or "not_applicable"
   * Use "not_applicable" if you're NOT at a meeting boundary or NOT the meeting host
   * Use "accept_current" if equipment is already set up correctly
-  * Use "set_equipment" with equipment_changes list to adjust projector, phone, blinds, etc.
+  * Use "set_equipment" with equipment_changes list to adjust projector, conference phone, etc.
 
 Each decision MUST include brief reasoning (1-2 sentences max).
 DO NOT omit any decision category - all fields must be present in your response.

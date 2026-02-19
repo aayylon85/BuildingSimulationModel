@@ -334,11 +334,12 @@ def _build_conversation_context(
         history_text = "(This is the start of the conversation)"
 
     # Retrieve relevant memories about the other person and shared experiences
+    # Use focal points that match how conversations are stored in memory
     focal_points = [
-        f"conversations with {listener.first_name}",
-        f"what I know about {listener.first_name}",
-        f"shared experiences with {listener.first_name}",
-        "recent interesting things at work",
+        f"Had a conversation with {listener.first_name}",  # Matches storage format
+        f"agreed with {listener.first_name}",  # Find prior agreements
+        f"my relationship with {listener.first_name}",
+        "recent agreements and commitments",
         "current weather and how it feels outside",  # Weather context for appropriate comments
     ]
     retrieved = retrieve(speaker, focal_points, now, n_count=6)
@@ -356,6 +357,34 @@ def _build_conversation_context(
     # Get weather guidance using actual weather data (from perception module)
     weather_guidance = get_weather_context(now, current_weather, weather_history)
 
+    # Get unfulfilled commitments with this colleague to avoid repeating suggestions
+    unfulfilled_commitments = []
+    # Use get_daily_plan() method - GenerativeAgent doesn't have .daily_plan attribute
+    daily_plan = speaker.get_daily_plan() if hasattr(speaker, 'get_daily_plan') else None
+    if daily_plan:
+        # Handle both dict and Pydantic model formats
+        if isinstance(daily_plan, dict):
+            social_commitments = daily_plan.get('social_commitments', [])
+        else:
+            social_commitments = getattr(daily_plan, 'social_commitments', [])
+        for c in social_commitments:
+            fulfilled = getattr(c, 'fulfilled', False) if hasattr(c, 'fulfilled') else c.get('fulfilled', False)
+            with_agents = getattr(c, 'with_agents', []) if hasattr(c, 'with_agents') else c.get('with_agents', [])
+            if not fulfilled and listener.agent_id in with_agents:
+                activity = getattr(c, 'activity', '') if hasattr(c, 'activity') else c.get('activity', '')
+                time_str = getattr(c, 'time', '') if hasattr(c, 'time') else c.get('time', '')
+                unfulfilled_commitments.append(f"{activity} at {time_str}")
+
+    commitment_context = ""
+    if unfulfilled_commitments:
+        commitment_context = f"""
+<existing_commitments_with_{listener.first_name.lower()}>
+You already have the following plans with {listener.first_name} today:
+{chr(10).join(f"- {c}" for c in unfulfilled_commitments)}
+DO NOT suggest the same activities again. You can reference them or discuss something else.
+</existing_commitments_with_{listener.first_name.lower()}>
+"""
+
     context = f"""
 <identity>
 {identity}
@@ -366,7 +395,7 @@ def _build_conversation_context(
 <relationship_with_colleague>
 {relationship}
 </relationship_with_colleague>
-
+{commitment_context}
 <relevant_memories purpose="context for natural conversation">
 {memories_text}
 </relevant_memories>

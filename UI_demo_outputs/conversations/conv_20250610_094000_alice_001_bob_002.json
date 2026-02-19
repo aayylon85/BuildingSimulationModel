@@ -15,39 +15,29 @@
     {
       "speaker": "alice_001",
       "speaker_name": "Alice",
-      "utterance": "Morning, Bob\u2014nice that it\u2019s finally a bit warmer out today, even if it\u2019s super windy. How\u2019s your morning going?"
+      "utterance": "Morning, Bob\u2014nice change that it\u2019s finally a bit warmer out, even if it\u2019s super windy. How\u2019s your morning going so far?"
     },
     {
       "speaker": "bob_002",
       "speaker_name": "Bob",
-      "utterance": "Morning, Alice. Pretty good\u2014windy but I\u2019ll take the warmer air. I got in on time and I\u2019m just lining things up before the 10:00 check-in; how\u2019s your morning going?"
+      "utterance": "Morning\u2014pretty good so far. The wind\u2019s wild, but I\u2019ll take the warmer air; the office felt a touch nicer when I came in at 9. You all set for the 10:00 sync?"
     },
     {
       "speaker": "alice_001",
       "speaker_name": "Alice",
-      "utterance": "Good so far\u2014just getting a few things squared away before the 10:00 sync too. If you\u2019re up for it, want to do a quick coffee run right after the check-in, like 10:35?"
+      "utterance": "Yeah, I\u2019m set for the 10:00 sync\u2014just doing a quick once-over of my notes now. If you\u2019ve got 5 minutes after it wraps at 10:30, want to do a quick coffee run and then get back to it?"
     },
     {
       "speaker": "bob_002",
       "speaker_name": "Bob",
-      "utterance": "Yeah, 10:35 works for me\u2014I\u2019m free after the 10:00 check-in. Want to meet by the elevators right when it wraps up so we can head out quickly?"
+      "utterance": "Yeah, I\u2019m in\u2014let\u2019s do it right after the sync. If we\u2019re out by 11:00, we can head down at 11:05 and be back by 11:15."
     },
     {
       "speaker": "alice_001",
       "speaker_name": "Alice",
-      "utterance": "Yep, elevators right after the sync works\u2014let\u2019s do 10:35 on the dot. I\u2019ll bring my reusable cup so we can keep it quick and low-waste."
-    },
-    {
-      "speaker": "bob_002",
-      "speaker_name": "Bob",
-      "utterance": "Perfect\u2014I'll grab my cup too and we\u2019ll keep it tight. I\u2019ll try to wrap my notes a minute early so I\u2019m at the elevators ready to go as soon as the 10:00 sync ends."
-    },
-    {
-      "speaker": "alice_001",
-      "speaker_name": "Alice",
-      "utterance": "Sounds good\u2014I\u2019ll aim to join the sync a minute early so we can actually get out on time. See you by the elevators right after, 10:35."
+      "utterance": "Perfect\u201411:05 works for me. I\u2019ll bring my mug so we don\u2019t have to grab a disposable cup, and I\u2019ll see you right after the 10:00 sync."
     }
   ],
-  "duration_minutes": 3,
+  "duration_minutes": 2,
   "summary": "Alice and Bob had a conversation."
 }

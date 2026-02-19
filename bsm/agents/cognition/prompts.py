@@ -16,10 +16,12 @@ from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 from bsm.agents.cognition.retrieval import retrieve, deduplicate_retrieved_memories
 from bsm.agents.cognition.social import format_colleague_context
 from bsm.agents.memory.stream import MemoryNode
+from bsm.agents.skeleton import LOCATION_TRANSITIONS
 
 if TYPE_CHECKING:
     from bsm.agents.generative_agent import GenerativeAgent
     from bsm.agents.skeleton import CalendarStore
+    from bsm.agents.cognition.checkpoint_state import CheckpointState
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +671,940 @@ def _format_comfort_preferences_section(agent: "GenerativeAgent") -> str:
 
 
 # ---------------------------------------------------------------------------
+# 6-Step Checkpoint Prompt Builders
+# ---------------------------------------------------------------------------
+
+def format_step1_prompt(state: "CheckpointState") -> str:
+    """
+    Step 1: Plan Review - understand priorities and commitment status.
+
+    This is the first step of the 6-step checkpoint flow. It focuses on:
+    - Reviewing the daily plan
+    - Identifying current priorities
+    - Checking commitment status (approaching? active? waiting?)
+
+    Args:
+        state: CheckpointState containing agent and simulation context
+
+    Returns:
+        Formatted prompt string for Step 1
+    """
+    agent = state.agent
+
+    # Get commitment info from sync manager if applicable
+    commitment_info = ""
+    if state.daily_plan:
+        # Handle both dict and object access patterns
+        social_commitments = (
+            state.daily_plan.get("social_commitments", [])
+            if isinstance(state.daily_plan, dict)
+            else getattr(state.daily_plan, 'social_commitments', [])
+        )
+
+        for c in social_commitments:
+            # Handle both dict and object access
+            if isinstance(c, dict):
+                fulfilled = c.get("fulfilled", False)
+                activity = c.get("activity", "activity")
+                time_str = c.get("time", "unspecified")
+                with_agents = c.get("with_agents", [])
+                location = c.get("location", "break_area")
+            else:
+                fulfilled = getattr(c, 'fulfilled', False)
+                activity = getattr(c, 'activity', "activity")
+                time_str = getattr(c, 'time', "unspecified")
+                with_agents = getattr(c, 'with_agents', [])
+                location = getattr(c, 'location', "break_area")
+
+            if not fulfilled:
+                partner_names = ", ".join(
+                    a.split("_")[0].capitalize() for a in with_agents
+                )
+                commitment_info += f"\n- {activity} with {partner_names} at {time_str}"
+                commitment_info += f" (location: {location})"
+
+                # Get partner status from sync manager
+                commitment_id = f"{activity}_{time_str}"
+                partner_status = state.sync_manager.get_partner_status(
+                    state.agent_id, commitment_id
+                )
+                if partner_status:
+                    commitment_info += f"\n  Partner status: {partner_status}"
+
+    # Core memory retrieval for reliability traits
+    core_traits = ""
+    if agent.core_memory_store:
+        traits = agent.core_memory_store.retrieve_relevant(
+            "reliability punctuality keeping promises social commitments", n_count=2
+        )
+        if traits:
+            core_traits = "\n".join(f"- {t['description']}" for _, t in traits)
+
+    # Retrieve step-specific memories
+    step_memories = state.retrieve_for_step("plan_review")
+    memories_text = _format_memories_for_step(step_memories, limit=5)
+
+    # Format filtered daily plan (current and future only)
+    filtered_plan = _filter_plan_to_current_and_future(state.daily_plan, state.now)
+    plan_text = _format_filtered_plan(filtered_plan, state.daily_plan)
+
+    # Get physical environment context
+    indoor_temp = state.sim_state.get("indoor_temp_c", 22)
+    thermostat_setpoint = state.sim_state.get("thermostat_setpoint_c", 22)
+    preferred_temp = state.sim_state.get("preferred_temp_c", 22)
+    lighting_conditions = state.sim_state.get("lighting_conditions", {})
+    natural_light = lighting_conditions.get("natural_light_level", "moderate")
+    current_location = state.current_location
+
+    # Get equipment at current location
+    equipment_list = state.get_equipment_at_location(current_location)
+    equipment_summary = ", ".join(
+        f"{eq.get('name')} ({'ON' if eq.get('is_on') else 'OFF'})"
+        for eq in equipment_list
+    ) if equipment_list else "none nearby"
+
+    # Get colleagues at current location
+    colleagues_here = state.get_colleagues_at_current_location()
+    colleagues_text = ", ".join(colleagues_here) if colleagues_here else "none"
+
+    return f"""
+<checkpoint reason="{state.checkpoint_reason}" time="{state.now.strftime('%H:%M')}" />
+
+<current_situation>
+<location>{current_location}</location>
+<indoor_temp>{indoor_temp:.1f}C</indoor_temp>
+<thermostat_setpoint>{thermostat_setpoint:.1f}C</thermostat_setpoint>
+<your_preferred_temp>{preferred_temp:.1f}C</your_preferred_temp>
+<natural_light>{natural_light}</natural_light>
+<equipment_here>{equipment_summary}</equipment_here>
+<colleagues_here>{colleagues_text}</colleagues_here>
+</current_situation>
+
+<your_plan>
+{plan_text}
+</your_plan>
+
+<commitments>
+{commitment_info.strip() if commitment_info else "No active commitments."}
+</commitments>
+
+<your_traits>
+{core_traits if core_traits else "No specific traits retrieved."}
+</your_traits>
+
+<recent_memories>
+{memories_text}
+</recent_memories>
+
+<instructions>
+Review your plan and current physical situation.
+
+Your priorities should focus on ACTIONABLE items in this building simulation:
+- Physical comfort: Is temperature OK? Need thermostat adjustment?
+- Equipment: Need to turn on laptop/monitor? Turn off unused equipment?
+- Lighting: Is natural light sufficient or do you need desk lamp?
+- Location: Should you stay or move somewhere else?
+- Commitments: Any meetings or social plans approaching?
+- Colleagues: Anyone here you should interact with?
+
+DO NOT prioritize imaginary work tasks like "check email" or "review documents".
+Focus on physical environment, equipment, and schedule.
+
+Output a PlanReviewDecision with:
+- checkpoint_summary: Brief description of what's happening now
+- plan_alignment: Are you on_track, need_adjustment, or off_track?
+- priorities: Your top 2-3 ACTIONABLE priorities (comfort, equipment, location, social)
+- active_commitment: If you have an upcoming commitment, describe it
+- commitment_status: not_yet, approaching, now, waiting, or overdue
+- reasoning: Your thought process
+</instructions>
+""".strip()
+
+
+def format_step2_prompt(state: "CheckpointState") -> str:
+    """
+    Step 2: Current Location Decisions - equipment, comfort, breaks.
+
+    Handles decisions at the agent's CURRENT location:
+    - Thermostat adjustments
+    - Lighting adjustments
+    - Equipment ON/OFF decisions
+    - Break actions (if taking break HERE)
+    - Commitment responses
+
+    Args:
+        state: CheckpointState with step1 already completed
+
+    Returns:
+        Formatted prompt string for Step 2
+    """
+    location = state.current_location
+    equipment = state.get_equipment_at_location(location)
+
+    # Format equipment list
+    equipment_lines = []
+    for eq in equipment:
+        name = eq.get("name", "unknown")
+        is_on = eq.get("is_on", False)
+        state_str = "ON" if is_on else "OFF"
+        in_use = eq.get("in_use_by")
+        use_str = f" (in use by {in_use})" if in_use else ""
+        equipment_lines.append(f"- {name}: {state_str}{use_str}")
+    equipment_text = "\n".join(equipment_lines) if equipment_lines else "No equipment at this location."
+
+    # Format lighting state
+    lighting_lines = []
+    lighting_conditions = state.sim_state.get("lighting_conditions", {})
+    natural_light = lighting_conditions.get("natural_light_level", "unknown")
+
+    # Desk light
+    desk_light = state.sim_state.get("desk_light")
+    if desk_light:
+        desk_light_on = desk_light.get("is_on", False)
+        lighting_lines.append(f"- desk_light: {'ON' if desk_light_on else 'OFF'}")
+
+    # Zone lights
+    zone_lights = state.sim_state.get("zone_lights", {})
+    for light_name, light_info in zone_lights.items():
+        if isinstance(light_info, dict):
+            is_on = light_info.get("is_on", False)
+            lighting_lines.append(f"- {light_name}: {'ON' if is_on else 'OFF'}")
+
+    lighting_text = "\n".join(lighting_lines) if lighting_lines else "No controllable lights at this location."
+
+    # Get comfort info
+    indoor_temp = state.sim_state.get("indoor_temp_c", 22)
+    thermostat_setpoint = state.sim_state.get("thermostat_setpoint_c", 22)
+    preferred_temp = state.sim_state.get("preferred_temp_c", 22)
+
+    # Format priorities from step 1
+    priorities = state.get_priorities()
+    priorities_text = "\n".join(f"- {p}" for p in priorities) if priorities else "- Continue with current activities"
+
+    # Commitment status from step 1
+    commitment_status = state.get_commitment_status() or "none"
+
+    # Retrieve step-specific memories
+    step_memories = state.retrieve_for_step("current_location_actions")
+    memories_text = _format_memories_for_step(step_memories, limit=4)
+
+    return f"""
+<location>{location}</location>
+
+<relevant_memories>
+{memories_text}
+</relevant_memories>
+
+<priorities>
+{priorities_text}
+</priorities>
+
+<comfort>
+<indoor_temp>{indoor_temp:.1f}C</indoor_temp>
+<thermostat_setpoint>{thermostat_setpoint:.1f}C</thermostat_setpoint>
+<your_preferred_temp>{preferred_temp:.1f}C</your_preferred_temp>
+</comfort>
+
+<lighting_here>
+<natural_light>{natural_light}</natural_light>
+{lighting_text}
+<note>zone_main is the main overhead light for the ENTIRE office - turning it on/off affects everyone. Desk lights (desk_light_A/B/C) are personal.</note>
+</lighting_here>
+
+<equipment_here>
+{equipment_text}
+</equipment_here>
+
+<commitment_status>{commitment_status}</commitment_status>
+
+<instructions>
+What do you want to do HERE at {location}?
+
+IMPORTANT - Lighting decisions:
+- Check the current state of each light listed above (ON or OFF)
+- If a light is ALREADY ON and you want it on, use "keep_current" - do NOT turn_on again
+- If a light is ALREADY OFF and you want it off, use "keep_current" - do NOT turn_off again
+- Only use "turn_on" or "turn_off" when you want to CHANGE the lighting state
+- Natural light level: {natural_light} (bright/moderate = lights probably not needed; dim/dark = lights may help)
+
+IMPORTANT - Equipment decisions:
+- Check the current state of each device listed above (ON or OFF)
+- If a device is ALREADY ON and you want it on, use "keep_current" - do NOT turn_on again
+- If a device is ALREADY OFF and you want it off, use "keep_current" - do NOT turn_off again
+- Only use "turn_on" or "turn_off" when you want to CHANGE the current state
+- You can only control equipment at YOUR current location ({location})
+
+Consider:
+- Adjust thermostat if uncomfortable (direction: warmer/cooler, amount: small/medium/large)
+- Turn lights/equipment ON or OFF ONLY if you need to CHANGE the current state
+- Take a break here (if not going elsewhere)
+- Respond to commitment (if one is active)
+- Update plan (if needed)
+
+If at break_area:
+- activity="tea" → kettle is used automatically (auto-off after 2 min)
+- activity="coffee" → coffee_machine is used automatically (auto-off after 10 min)
+- You do NOT need to manually turn off kitchen appliances - they have automatic timers
+
+Do NOT decide about moving yet - that comes in Step 4.
+
+Output a CurrentLocationDecision with your choices.
+</instructions>
+""".strip()
+
+
+def format_step3_prompt(state: "CheckpointState") -> Optional[str]:
+    """
+    Step 3: Current Location Conversations.
+
+    Decides whether to initiate a conversation with colleagues
+    at the current location before potentially moving.
+
+    Args:
+        state: CheckpointState with steps 1-2 completed
+
+    Returns:
+        Formatted prompt string, or None if no colleagues present (skip step)
+    """
+    colleagues = state.get_colleagues_at_current_location()
+
+    if not colleagues:
+        return None  # Skip this step - no one to talk to
+
+    # Format priorities
+    priorities = state.get_priorities()
+    priorities_text = "\n".join(f"- {p}" for p in priorities) if priorities else "- Continue with current activities"
+
+    # Format colleagues list
+    colleagues_text = "\n".join(f"- {c}" for c in colleagues)
+
+    # Retrieve step-specific memories
+    step_memories = state.retrieve_for_step("current_location_conversation")
+    memories_text = _format_memories_for_step(step_memories, limit=4)
+
+    return f"""
+<location>{state.current_location}</location>
+
+<colleagues_here>
+{colleagues_text}
+</colleagues_here>
+
+<relevant_memories>
+{memories_text}
+</relevant_memories>
+
+<priorities>
+{priorities_text}
+</priorities>
+
+<instructions>
+Do you want to talk to someone HERE before potentially moving?
+
+Only initiate if there's a good reason:
+- Commitment to fulfill with them
+- Important topic to discuss
+- Haven't chatted recently and want to connect
+
+Don't initiate conversations just to "check in" about existing plans.
+
+Output a StepConversationDecision:
+- action: "initiate" or "none"
+- target_agent: Who to talk to (if initiating)
+- topic: What to discuss (if initiating)
+- reasoning: Your thought process
+</instructions>
+""".strip()
+
+
+def format_step4_prompt(state: "CheckpointState") -> str:
+    """
+    Step 4: Move Decision.
+
+    Decides whether to move to a different location and where.
+    Uses LOCATION_TRANSITIONS to enforce valid moves.
+
+    Args:
+        state: CheckpointState with steps 1-3 completed
+
+    Returns:
+        Formatted prompt string for Step 4
+    """
+    current = state.current_location
+    valid_destinations = state.get_valid_destinations()
+
+    # Format destinations
+    destinations_text = "\n".join(f"- {loc}" for loc in valid_destinations)
+
+    # Format priorities
+    priorities = state.get_priorities()
+    priorities_text = "\n".join(f"- {p}" for p in priorities) if priorities else "- Continue with current activities"
+
+    # Format upcoming events from daily plan
+    upcoming_text = _format_upcoming_events(state.daily_plan, state.now)
+
+    # Get commitment status and partner info
+    commitment_status = state.get_commitment_status() or "none"
+    partner_status = ""
+    if state.step1 and state.step1.active_commitment:
+        # Try to get partner status for the active commitment
+        if state.daily_plan:
+            social_commitments = (
+                state.daily_plan.get("social_commitments", [])
+                if isinstance(state.daily_plan, dict)
+                else getattr(state.daily_plan, 'social_commitments', [])
+            )
+            for c in social_commitments:
+                if isinstance(c, dict):
+                    activity = c.get("activity", "")
+                    time_str = c.get("time", "")
+                else:
+                    activity = getattr(c, 'activity', "")
+                    time_str = getattr(c, 'time', "")
+
+                commitment_id = f"{activity}_{time_str}"
+                ps = state.sync_manager.get_partner_status(state.agent_id, commitment_id)
+                if ps:
+                    partner_status = f"Partner: {ps}"
+                    break
+
+    # Retrieve step-specific memories
+    step_memories = state.retrieve_for_step("move_decision")
+    memories_text = _format_memories_for_step(step_memories, limit=4)
+
+    checkpoint_reason = state.checkpoint_reason
+
+    return f"""
+<checkpoint_reason>{checkpoint_reason}</checkpoint_reason>
+
+<current_location>{current}</current_location>
+
+<relevant_memories>
+{memories_text}
+</relevant_memories>
+
+<can_move_to>
+{destinations_text}
+</can_move_to>
+
+<priorities>
+{priorities_text}
+</priorities>
+
+<upcoming>
+{upcoming_text}
+</upcoming>
+
+<commitment_status>
+Status: {commitment_status}
+{partner_status}
+</commitment_status>
+
+<instructions>
+You are at {current}.
+
+**Staying is the default.** You do NOT need to move unless you have a specific reason.
+
+Reasons to move:
+- A commitment to fulfill at another location
+- A meeting starting soon in another room
+- Equipment you need is only available elsewhere
+- You want to take a break in a different area
+
+**IMPORTANT - Meeting Attendance:**
+If your checkpoint reason indicates a meeting is starting (e.g., "meeting_start:", "meeting_prep:"),
+you MUST move to meeting_room unless you are already there. Meetings happen in meeting_room.
+
+**IMPORTANT - Commitment Fulfillment:**
+If your checkpoint reason indicates a commitment (e.g., "commitment:"), check the commitment_status
+and move to the appropriate location to fulfill it.
+
+If staying: Simply output action="stay" - no justification needed.
+If moving: Specify destination and purpose.
+
+Note: To go outside, you must be at entrance first, then move to outside.
+To return inside: outside → entrance → desk_area (or other locations).
+
+Output a MoveDecision:
+- action: "move" or "stay"
+- destination: Where to go (if moving, must be in can_move_to list)
+- purpose: Why you're moving (if moving)
+- reasoning: Your thought process
+</instructions>
+""".strip()
+
+
+def format_step5_prompt(state: "CheckpointState") -> str:
+    """
+    Step 5: New Location Decisions.
+
+    Only called if agent decided to move in Step 4.
+    Handles decisions at the DESTINATION location:
+    - Equipment ON/OFF decisions
+    - Meeting equipment (if meeting_room)
+    - Break actions at new location
+
+    Args:
+        state: CheckpointState with step4.action == "move"
+
+    Returns:
+        Formatted prompt string for Step 5
+    """
+    location = state.step4.destination
+    purpose = state.step4.purpose or "general activity"
+    equipment = state.get_equipment_at_location(location)
+
+    # Format equipment list
+    equipment_lines = []
+    for eq in equipment:
+        name = eq.get("name", "unknown")
+        is_on = eq.get("is_on", False)
+        state_str = "ON" if is_on else "OFF"
+        in_use = eq.get("in_use_by")
+        use_str = f" (in use by {in_use})" if in_use else ""
+        equipment_lines.append(f"- {name}: {state_str}{use_str}")
+    equipment_text = "\n".join(equipment_lines) if equipment_lines else "No equipment at this location."
+
+    # Format lighting state at new location
+    lighting_lines = []
+    lighting_conditions = state.sim_state.get("lighting_conditions", {})
+    natural_light = lighting_conditions.get("natural_light_level", "unknown")
+
+    # Get zone lights from sim_state (includes lights at all locations)
+    zone_lights = state.sim_state.get("zone_lights", {})
+
+    # Show lights relevant to the destination location
+    if location == "meeting_room":
+        meeting_light = zone_lights.get("meeting_room", {})
+        if isinstance(meeting_light, dict):
+            is_on = meeting_light.get("is_on", False)
+            lighting_lines.append(f"- meeting_room: {'ON' if is_on else 'OFF'}")
+    elif location == "desk_area":
+        # Show desk lights
+        desk_light = state.sim_state.get("desk_light")
+        if desk_light:
+            is_on = desk_light.get("is_on", False)
+            lighting_lines.append(f"- desk_light: {'ON' if is_on else 'OFF'}")
+        zone_main = zone_lights.get("zone_main", {})
+        if isinstance(zone_main, dict):
+            is_on = zone_main.get("is_on", False)
+            lighting_lines.append(f"- zone_main: {'ON' if is_on else 'OFF'}")
+
+    lighting_text = "\n".join(lighting_lines) if lighting_lines else "No controllable lights at this location."
+
+    # Add meeting-specific context
+    meeting_context = ""
+    if location == "meeting_room":
+        meeting_context = """
+<meeting_equipment>
+Available for meetings: projector, conference_phone
+Turn on what you need for your meeting.
+</meeting_equipment>
+"""
+
+    # Retrieve step-specific memories
+    step_memories = state.retrieve_for_step("new_location_actions")
+    memories_text = _format_memories_for_step(step_memories, limit=4)
+
+    return f"""
+<arrived_at>{location}</arrived_at>
+<purpose>{purpose}</purpose>
+
+<relevant_memories>
+{memories_text}
+</relevant_memories>
+
+<lighting_here>
+<natural_light>{natural_light}</natural_light>
+{lighting_text}
+<note>zone_main is the main overhead light for the ENTIRE office - turning it on/off affects everyone. Desk lights (desk_light_A/B/C) are personal.</note>
+</lighting_here>
+
+<equipment_here>
+{equipment_text}
+</equipment_here>
+{meeting_context}
+<instructions>
+You arrived at {location} for: {purpose}
+
+IMPORTANT - Lighting decisions:
+- Check the current state of each light listed above (ON or OFF)
+- If a light is ALREADY ON and you want it on, use "keep_current" - do NOT turn_on again
+- If a light is ALREADY OFF and you want it off, use "keep_current" - do NOT turn_off again
+- Only use "turn_on" or "turn_off" when you want to CHANGE the lighting state
+
+IMPORTANT - Equipment decisions:
+- Check the current state of each device listed above (ON or OFF)
+- If a device is ALREADY ON and you want it on, use "keep_current" - do NOT turn_on again
+- If a device is ALREADY OFF and you want it off, use "keep_current" - do NOT turn_off again
+- Only use "turn_on" or "turn_off" when you want to CHANGE the current state
+- You can only control equipment at THIS location ({location})
+
+What do you need to do here?
+- Turn lights/equipment ON or OFF ONLY if you need to CHANGE the current state
+- Set up meeting equipment (if in meeting_room)
+- Take a break action (if here for a break)
+
+If at break_area:
+- activity="tea" → kettle is used automatically (auto-off after 2 min)
+- activity="coffee" → coffee_machine is used automatically (auto-off after 10 min)
+- You do NOT need to manually turn off kitchen appliances - they have automatic timers
+
+Output a NewLocationDecision:
+- equipment_decisions: List of equipment to turn ON or OFF (or keep_current if no change needed)
+- meeting_equipment: Meeting setup (if applicable)
+- break_action: Break to take (if applicable)
+- reasoning: Your thought process
+</instructions>
+""".strip()
+
+
+def format_step6_prompt(state: "CheckpointState") -> Optional[str]:
+    """
+    Step 6: New Location Conversations.
+
+    Only called if agent moved (Step 4) and there are colleagues
+    at the new location. Decides whether to initiate conversations.
+
+    Args:
+        state: CheckpointState with step4.action == "move"
+
+    Returns:
+        Formatted prompt string, or None if no colleagues present (skip step)
+    """
+    location = state.step4.destination
+    purpose = state.step4.purpose or "general activity"
+
+    # Get colleagues at the new location
+    colleagues_by_location = state.sim_state.get("colleagues_by_location", {})
+    colleagues = colleagues_by_location.get(location, [])
+
+    if not colleagues:
+        return None  # Skip - no one to talk to
+
+    # Format colleagues list
+    colleagues_text = "\n".join(f"- {c}" for c in colleagues)
+
+    # Retrieve step-specific memories
+    step_memories = state.retrieve_for_step("new_location_conversation")
+    memories_text = _format_memories_for_step(step_memories, limit=4)
+
+    return f"""
+<location>{location}</location>
+<purpose>{purpose}</purpose>
+
+<colleagues_here>
+{colleagues_text}
+</colleagues_here>
+
+<relevant_memories>
+{memories_text}
+</relevant_memories>
+
+<instructions>
+You're at {location} for: {purpose}
+
+Do you want to talk to anyone here?
+This is especially relevant if:
+- You came to meet someone for a commitment
+- You have something to discuss with them
+- You haven't talked to them today
+
+Output a StepConversationDecision:
+- action: "initiate" or "none"
+- target_agent: Who to talk to (if initiating)
+- topic: What to discuss (if initiating)
+- reasoning: Your thought process
+</instructions>
+""".strip()
+
+
+# ---------------------------------------------------------------------------
+# Step Prompt Helper Functions
+# ---------------------------------------------------------------------------
+
+def _format_memories_for_step(
+    memories: Dict[str, List[MemoryNode]],
+    limit: int = 5,
+) -> str:
+    """Format memories for inclusion in step prompts."""
+    all_memories = []
+    for focal_pt, mem_list in memories.items():
+        for mem in mem_list[:limit]:
+            all_memories.append(mem)
+
+    if not all_memories:
+        return "No specific memories retrieved."
+
+    # Deduplicate and limit
+    seen = set()
+    unique = []
+    for mem in all_memories:
+        if mem.description not in seen:
+            seen.add(mem.description)
+            unique.append(mem)
+
+    # Format as text
+    lines = []
+    for mem in unique[:limit]:
+        lines.append(f"- {mem.description}")
+
+    return "\n".join(lines)
+
+
+def _format_daily_plan_for_step(daily_plan: Optional[Any]) -> str:
+    """Format daily plan for inclusion in step prompts."""
+    if not daily_plan:
+        return "No daily plan set."
+
+    # Handle both dict and object access
+    if isinstance(daily_plan, dict):
+        arrival = daily_plan.get("arrival_time", "not set")
+        departure = daily_plan.get("departure_time", "not set")
+        morning_break = daily_plan.get("morning_break", "not set")
+        afternoon_break = daily_plan.get("afternoon_break", "not set")
+        lunch_plan = daily_plan.get("lunch_plan", {})
+        lunch_time = lunch_plan.get("time", "not set") if isinstance(lunch_plan, dict) else "not set"
+    else:
+        arrival = getattr(daily_plan, 'arrival_time', "not set")
+        departure = getattr(daily_plan, 'departure_time', "not set")
+        morning_break = getattr(daily_plan, 'morning_break', "not set")
+        afternoon_break = getattr(daily_plan, 'afternoon_break', "not set")
+        lunch_plan = getattr(daily_plan, 'lunch_plan', None)
+        lunch_time = lunch_plan.time if lunch_plan and hasattr(lunch_plan, 'time') else "not set"
+
+    return f"""Arrival: {arrival}
+Morning break: {morning_break}
+Lunch: {lunch_time}
+Afternoon break: {afternoon_break}
+Departure: {departure}"""
+
+
+def _format_upcoming_events(daily_plan: Optional[Any], now: datetime) -> str:
+    """Format upcoming events from daily plan for move decision context."""
+    if not daily_plan:
+        return "No upcoming events."
+
+    events = []
+    current_minutes = now.hour * 60 + now.minute
+
+    # Check social commitments
+    social_commitments = (
+        daily_plan.get("social_commitments", [])
+        if isinstance(daily_plan, dict)
+        else getattr(daily_plan, 'social_commitments', [])
+    )
+
+    for c in social_commitments:
+        if isinstance(c, dict):
+            fulfilled = c.get("fulfilled", False)
+            time_str = c.get("time", "")
+            activity = c.get("activity", "")
+            with_agents = c.get("with_agents", [])
+        else:
+            fulfilled = getattr(c, 'fulfilled', False)
+            time_str = getattr(c, 'time', "")
+            activity = getattr(c, 'activity', "")
+            with_agents = getattr(c, 'with_agents', [])
+
+        if fulfilled or not time_str or time_str == "needs_confirmation":
+            continue
+
+        try:
+            hour, minute = map(int, time_str.split(":"))
+            event_minutes = hour * 60 + minute
+            minutes_until = event_minutes - current_minutes
+
+            if 0 <= minutes_until <= 60:
+                partner_names = ", ".join(a.split("_")[0].capitalize() for a in with_agents)
+                events.append(f"- In {minutes_until} min: {activity} with {partner_names}")
+        except (ValueError, TypeError):
+            continue
+
+    # Check for meetings (if available in daily plan)
+    # This would need meeting_context passed in for full implementation
+
+    if not events:
+        return "No events in the next hour."
+
+    return "\n".join(events)
+
+
+def _filter_plan_to_current_and_future(
+    daily_plan: Optional[Any],
+    now: datetime,
+) -> Dict[str, Any]:
+    """
+    Filter plan to show only relevant items (not past).
+
+    Agents should only see and update parts of their plan that are current
+    or in the future. This prevents cluttering prompts with completed activities.
+
+    Args:
+        daily_plan: The agent's daily plan
+        now: Current simulation datetime
+
+    Returns:
+        Dict with filtered plan elements:
+        - upcoming_meetings: Meetings not yet ended
+        - pending_commitments: Unfulfilled social commitments
+        - remaining_breaks: Future break times
+        - lunch: Lunch plan if not past
+    """
+    if not daily_plan:
+        return {
+            "upcoming_meetings": [],
+            "pending_commitments": [],
+            "remaining_breaks": [],
+            "lunch": None,
+        }
+
+    current_minutes = now.hour * 60 + now.minute
+
+    def _time_str_to_minutes(time_str: str) -> int:
+        """Convert HH:MM to minutes since midnight."""
+        try:
+            hour, minute = map(int, time_str.split(":"))
+            return hour * 60 + minute
+        except (ValueError, TypeError):
+            return 0
+
+    def _is_meeting_past(meeting) -> bool:
+        """Check if meeting has ended."""
+        try:
+            end_dt = datetime.fromisoformat(meeting.end_datetime_iso)
+            end_minutes = end_dt.hour * 60 + end_dt.minute
+            return current_minutes > end_minutes
+        except (ValueError, TypeError, AttributeError):
+            return False
+
+    # Filter meetings
+    meetings = getattr(daily_plan, 'meetings', []) if not isinstance(daily_plan, dict) else daily_plan.get('meetings', [])
+    upcoming_meetings = [m for m in meetings if not _is_meeting_past(m)]
+
+    # Filter social commitments
+    social_commitments = (
+        daily_plan.get("social_commitments", [])
+        if isinstance(daily_plan, dict)
+        else getattr(daily_plan, 'social_commitments', [])
+    )
+    pending_commitments = []
+    for c in social_commitments:
+        if isinstance(c, dict):
+            fulfilled = c.get("fulfilled", False)
+        else:
+            fulfilled = getattr(c, 'fulfilled', False)
+        if not fulfilled:
+            pending_commitments.append(c)
+
+    # Filter breaks
+    remaining_breaks = []
+    if isinstance(daily_plan, dict):
+        morning_break = daily_plan.get("morning_break")
+        afternoon_break = daily_plan.get("afternoon_break")
+    else:
+        morning_break = getattr(daily_plan, 'morning_break', None)
+        afternoon_break = getattr(daily_plan, 'afternoon_break', None)
+
+    if morning_break:
+        break_time = morning_break.get("preferred_time") if isinstance(morning_break, dict) else getattr(morning_break, 'preferred_time', None)
+        if break_time and _time_str_to_minutes(break_time) > current_minutes:
+            remaining_breaks.append(("morning", morning_break))
+
+    if afternoon_break:
+        break_time = afternoon_break.get("preferred_time") if isinstance(afternoon_break, dict) else getattr(afternoon_break, 'preferred_time', None)
+        if break_time and _time_str_to_minutes(break_time) > current_minutes:
+            remaining_breaks.append(("afternoon", afternoon_break))
+
+    # Filter lunch
+    lunch = None
+    if isinstance(daily_plan, dict):
+        lunch_plan = daily_plan.get("lunch_plan")
+    else:
+        lunch_plan = getattr(daily_plan, 'lunch_plan', None)
+
+    if lunch_plan:
+        lunch_time = lunch_plan.get("time") if isinstance(lunch_plan, dict) else getattr(lunch_plan, 'time', None)
+        if lunch_time and _time_str_to_minutes(lunch_time) > current_minutes - 30:  # Include if within 30 min
+            lunch = lunch_plan
+
+    return {
+        "upcoming_meetings": upcoming_meetings,
+        "pending_commitments": pending_commitments,
+        "remaining_breaks": remaining_breaks,
+        "lunch": lunch,
+    }
+
+
+def _format_filtered_plan(filtered: Dict[str, Any], daily_plan: Optional[Any]) -> str:
+    """
+    Format the filtered plan for display in prompts.
+
+    Args:
+        filtered: Output from _filter_plan_to_current_and_future
+        daily_plan: Original daily plan for arrival/departure times
+
+    Returns:
+        Formatted string showing relevant plan items
+    """
+    lines = []
+
+    # Get arrival/departure from original plan
+    if daily_plan:
+        if isinstance(daily_plan, dict):
+            arrival = daily_plan.get("arrival_time", "not set")
+            departure = daily_plan.get("actual_departure_time") or daily_plan.get("departure_time", "not set")
+        else:
+            arrival = getattr(daily_plan, 'arrival_time', "not set")
+            departure = getattr(daily_plan, 'actual_departure_time', None) or getattr(daily_plan, 'departure_time', "not set")
+        lines.append(f"Arrival: {arrival}, Departure: {departure}")
+
+    # Upcoming meetings
+    if filtered["upcoming_meetings"]:
+        lines.append("Upcoming meetings:")
+        for m in filtered["upcoming_meetings"]:
+            title = getattr(m, 'title', 'Meeting') if not isinstance(m, dict) else m.get('title', 'Meeting')
+            start = getattr(m, 'start_datetime_iso', '') if not isinstance(m, dict) else m.get('start_datetime_iso', '')
+            try:
+                start_dt = datetime.fromisoformat(start)
+                time_str = start_dt.strftime("%H:%M")
+            except:
+                time_str = "unknown"
+            lines.append(f"  - {title} at {time_str}")
+
+    # Pending commitments
+    if filtered["pending_commitments"]:
+        lines.append("Pending commitments:")
+        for c in filtered["pending_commitments"]:
+            if isinstance(c, dict):
+                activity = c.get("activity", "activity")
+                time_str = c.get("time", "unspecified")
+                with_agents = c.get("with_agents", [])
+            else:
+                activity = getattr(c, 'activity', "activity")
+                time_str = getattr(c, 'time', "unspecified")
+                with_agents = getattr(c, 'with_agents', [])
+            partners = ", ".join(a.split("_")[0].capitalize() for a in with_agents)
+            lines.append(f"  - {activity} with {partners} at {time_str}")
+
+    # Lunch
+    if filtered["lunch"]:
+        lunch = filtered["lunch"]
+        lunch_time = lunch.get("time") if isinstance(lunch, dict) else getattr(lunch, 'time', "not set")
+        lines.append(f"Lunch: {lunch_time}")
+
+    # Remaining breaks
+    if filtered["remaining_breaks"]:
+        for break_type, brk in filtered["remaining_breaks"]:
+            break_time = brk.get("preferred_time") if isinstance(brk, dict) else getattr(brk, 'preferred_time', "not set")
+            lines.append(f"{break_type.capitalize()} break: {break_time}")
+
+    if not lines:
+        return "No plan set for today."
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Decision Context Builder
 # ---------------------------------------------------------------------------
 
@@ -887,8 +1823,8 @@ EQUIPMENT:
 - Changes happen immediately - you control these devices directly.
 
 LIGHTING:
-- Set lighting.action to turn_on, turn_off, adjust_brightness, or keep_current
-- Desk lights respond immediately to your control.
+- Set lighting.action to turn_on, turn_off, or keep_current
+- Lights are ON/OFF only (no dimming). Desk lights and zone_main respond immediately to your control.
 </direct_controls>
 
 <constraint_spec>
@@ -1715,15 +2651,26 @@ After any break, lunch, or work activity away from your desk, you should return.
 # ---------------------------------------------------------------------------
 
 __all__ = [
+    # Focal point generation
     "get_decision_focal_points",
     "get_planning_focal_points",
+    # Meeting context
     "get_meeting_context",
     "get_meeting_host_equipment_context",
+    # Formatting helpers
     "format_colleague_context",
     "format_device_state",
     "format_meetings_for_prompt",
     "format_pending_invitations_for_prompt",
+    # Legacy monolithic prompt (to be deprecated)
     "format_step_prompt",
     "format_planning_prompt",
     "build_decision_context",
+    # 6-step checkpoint prompts (new)
+    "format_step1_prompt",
+    "format_step2_prompt",
+    "format_step3_prompt",
+    "format_step4_prompt",
+    "format_step5_prompt",
+    "format_step6_prompt",
 ]
