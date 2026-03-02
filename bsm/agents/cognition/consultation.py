@@ -301,7 +301,6 @@ async def generate_consultation_utterance(
         now=now,
         calendar=calendar,
         simulation=None,
-        memory=None,
     )
 
     result = await Runner.run(agent, context, context=sim_context)

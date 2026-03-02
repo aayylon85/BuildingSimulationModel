@@ -191,6 +191,32 @@ def _find_similar_commitment(
     return None
 
 
+def _count_unfulfilled_by_activity(
+    commitments: List[Dict[str, Any]],
+    activity: str
+) -> int:
+    """
+    Count unfulfilled commitments for a specific activity type.
+
+    This is used to enforce per-activity commitment limits (e.g., max 2 coffee breaks).
+
+    Args:
+        commitments: List of commitment dicts
+        activity: Activity type to count (will be normalized)
+
+    Returns:
+        Count of unfulfilled commitments for this activity
+    """
+    activity_norm = _normalize_activity(activity)
+    count = 0
+    for c in commitments:
+        if c.get("fulfilled", False) or c.get("expired", False):
+            continue
+        if _normalize_activity(c.get("activity", "")) == activity_norm:
+            count += 1
+    return count
+
+
 def _merge_commitment(
     existing: Dict[str, Any],
     new_activity: str,
@@ -287,8 +313,9 @@ async def record_decision_to_memory(
                 desc = f"Equipment ({eq_dec.equipment_name}): {eq_dec.action} - {eq_dec.reasoning}"
                 decisions_made.append(desc)
 
-        if decision.location.action == "move":
-            desc = f"Moved to {decision.location.destination}: {decision.location.reasoning}"
+        if decision.location.action == "move" and decision.location.destinations:
+            final_dest = decision.location.destinations[-1]
+            desc = f"Moved to {final_dest}: {decision.location.reasoning}"
             decisions_made.append(desc)
 
         if decision.conversation.action == "initiate":
@@ -682,6 +709,16 @@ async def record_conversation_to_memory(
                 )
                 continue  # Skip adding new entry
 
+            # Check per-activity commitment limit (max 2 unfulfilled per activity type)
+            existing_commitments = daily_plan.get("social_commitments", [])
+            activity_count = _count_unfulfilled_by_activity(existing_commitments, commitment.activity)
+            if activity_count >= 2:
+                logger.info(
+                    f"{agent.agent_id}: SKIP - Already have {activity_count} unfulfilled "
+                    f"'{commitment.activity}' commitments (max 2)"
+                )
+                continue  # Skip adding this commitment
+
             # No similar commitment found - create new entry
             social_commitment_dict = {
                 "activity": commitment.activity,
@@ -714,11 +751,24 @@ async def record_conversation_to_memory(
                 social_commitment_dict["meeting_conflict_details"] = meeting_conflicts[0]
 
             if conflicts:
-                # Non-meeting conflicts (e.g., other commitments) - still add but mark
-                logger.info(f"{agent.agent_id}: CONFLICT detected for '{commitment.activity}' at {commitment.time}:")
-                for conflict in conflicts:
-                    logger.info(f"        - {conflict}")
-                social_commitment_dict["has_conflict"] = True
+                # Check for non-meeting conflicts (e.g., conflicts with other commitments)
+                non_meeting_conflicts = [c for c in conflicts if "Conflicts with meeting" not in c]
+
+                if non_meeting_conflicts:
+                    # BLOCK conflicting commitments - don't add them
+                    logger.warning(
+                        f"{agent.agent_id}: BLOCKING commitment '{commitment.activity}' at {commitment.time} - "
+                        f"conflicts with existing commitment: {non_meeting_conflicts[0]}"
+                    )
+                    print(
+                        f"[COMMITMENT BLOCKED] {agent.agent_id}: {commitment.activity} at {commitment.time} "
+                        f"conflicts with: {non_meeting_conflicts[0]}"
+                    )
+                    continue  # Skip adding this commitment
+
+                # Meeting-only conflicts are logged but commitment is still added
+                # (agent should be aware and reschedule if needed)
+                logger.info(f"{agent.agent_id}: Commitment '{commitment.activity}' at {commitment.time} has meeting conflict - adding anyway")
 
             # Add to the daily_plan dict (it's stored as a dict, not a Pydantic model)
             daily_plan["social_commitments"].append(social_commitment_dict)

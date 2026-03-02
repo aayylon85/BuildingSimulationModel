@@ -18,7 +18,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone, date, time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +437,34 @@ Works weekends: {self.scratch.get('works_weekends', False)}
         """Clear the just_arrived flag."""
         self.scratch["just_arrived"] = False
 
+    # -------------------------
+    # Perception Change Detection
+    # -------------------------
+
+    def get_cached_coworkers(self) -> Set[str]:
+        """Get previously perceived coworker set."""
+        return set(self.scratch.get("_cached_coworkers", []))
+
+    def update_cached_coworkers(self, coworkers: Set[str]) -> None:
+        """Update cached coworker set."""
+        self.scratch["_cached_coworkers"] = list(coworkers)
+
+    def get_cached_outdoor_temp(self) -> Optional[float]:
+        """Get previously perceived outdoor temperature."""
+        return self.scratch.get("_cached_outdoor_temp")
+
+    def update_cached_outdoor_temp(self, temp: float) -> None:
+        """Update cached outdoor temperature."""
+        self.scratch["_cached_outdoor_temp"] = temp
+
+    def get_cached_weather(self) -> Optional[str]:
+        """Get previously perceived weather description."""
+        return self.scratch.get("_cached_weather")
+
+    def update_cached_weather(self, weather: str) -> None:
+        """Update cached weather description."""
+        self.scratch["_cached_weather"] = weather
+
     def get_daily_plan(self) -> Optional[Dict[str, Any]]:
         """Get current daily plan from scratch."""
         return self.scratch.get("daily_plan")
@@ -517,6 +545,36 @@ Works weekends: {self.scratch.get('works_weekends', False)}
 
         # Apply remaining updates
         if updates:
+            # Issue D Fix: Merge social_commitments instead of replacing
+            if "social_commitments" in updates and updates["social_commitments"]:
+                existing_commitments = plan.get("social_commitments", [])
+                new_commitments = updates["social_commitments"]
+
+                for new_c in new_commitments:
+                    # Extract comparison fields from new commitment
+                    new_time = new_c.get("time") if isinstance(new_c, dict) else getattr(new_c, "time", None)
+                    new_agents = new_c.get("with_agents", []) if isinstance(new_c, dict) else getattr(new_c, "with_agents", [])
+                    new_agents_set = set(new_agents) if new_agents else set()
+
+                    # Check for duplicates (same time + same agents)
+                    is_duplicate = False
+                    for existing in existing_commitments:
+                        existing_time = existing.get("time") if isinstance(existing, dict) else getattr(existing, "time", None)
+                        existing_agents = existing.get("with_agents", []) if isinstance(existing, dict) else getattr(existing, "with_agents", [])
+                        existing_agents_set = set(existing_agents) if existing_agents else set()
+
+                        if new_time == existing_time and new_agents_set == existing_agents_set:
+                            is_duplicate = True
+                            break
+
+                    if not is_duplicate:
+                        existing_commitments.append(new_c)
+
+                plan["social_commitments"] = existing_commitments
+                # Remove from updates so it doesn't overwrite in the next line
+                del updates["social_commitments"]
+
+            # Apply non-commitment updates (these replace as before)
             plan.update(updates)
             plan["last_updated"] = now.isoformat()
 

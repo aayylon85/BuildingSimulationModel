@@ -4,12 +4,38 @@
   "actions": [
     {
       "timestamp": "2025-06-10T09:00:00+00:00",
+      "action_type": "arrive",
+      "details": {
+        "location": "desk_area"
+      },
+      "reason": "Agent arrived at office"
+    },
+    {
+      "timestamp": "2025-06-10T09:00:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "laptop_B",
+        "on": true
+      },
+      "reason": "Turned on desk equipment upon arrival at Desk_B"
+    },
+    {
+      "timestamp": "2025-06-10T09:00:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "monitor_B",
+        "on": true
+      },
+      "reason": "Turned on desk equipment upon arrival at Desk_B"
+    },
+    {
+      "timestamp": "2025-06-10T09:00:00+00:00",
       "action_type": "thermostat_adjust",
       "details": {
         "setpoint_delta_c": 0.5,
         "direction": "warmer"
       },
-      "reason": "Checkpoint: hourly | Agent: bob_002 | Time: 09:00 | Location: desk_area | Priorities: Turn on/add task lighting (e.g., desk lamp) to compensate for dim natural light and reduce eye strain., Consider a small thermostat increase (e.g., from 21\u00b0C to 22\u00b0C) to better match preferred temperature, especially while seated., Do a quick check-in with alice_001 (confirm they\u2019re set for the 10:00 project sync and any room/location expectations). | Commitment: approaching | Actions: 2"
+      "reason": "Checkpoint: hourly | Agent: bob_002 | Time: 09:00 | Location: desk_area | Priorities: Increase comfort slightly by raising the thermostat setpoint from 21\u00b0C toward 22\u00b0C (preferred) if allowed for this area., Address dim lighting by turning on/adjusting a desk lamp or increasing monitor brightness to reduce eye strain., Quickly check in with alice_001 in person to confirm they\u2019re set for the 10:00 project sync and align on where/how you\u2019ll meet (stay here vs. move). | Commitment: approaching | Actions: 2"
     },
     {
       "timestamp": "2025-06-10T09:00:00+00:00",
@@ -18,7 +44,65 @@
         "target": "desk_light_B",
         "on": true
       },
-      "reason": "Checkpoint: hourly | Agent: bob_002 | Time: 09:00 | Location: desk_area | Priorities: Turn on/add task lighting (e.g., desk lamp) to compensate for dim natural light and reduce eye strain., Consider a small thermostat increase (e.g., from 21\u00b0C to 22\u00b0C) to better match preferred temperature, especially while seated., Do a quick check-in with alice_001 (confirm they\u2019re set for the 10:00 project sync and any room/location expectations). | Commitment: approaching | Actions: 2"
+      "reason": "Checkpoint: hourly | Agent: bob_002 | Time: 09:00 | Location: desk_area | Priorities: Increase comfort slightly by raising the thermostat setpoint from 21\u00b0C toward 22\u00b0C (preferred) if allowed for this area., Address dim lighting by turning on/adjusting a desk lamp or increasing monitor brightness to reduce eye strain., Quickly check in with alice_001 in person to confirm they\u2019re set for the 10:00 project sync and align on where/how you\u2019ll meet (stay here vs. move). | Commitment: approaching | Actions: 2"
+    },
+    {
+      "timestamp": "2025-06-10T09:15:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "break_area"
+      },
+      "reason": "Checkpoint: take_break:morning | Agent: bob_002 | Time: 09:15 | Location: desk_area | Priorities: Turn on desk_light_B to compensate for dim natural light, At ~09:20, take the planned brief break: quick tea top-up from flask + short stretch (then return to desk), Do a quick pre-meeting setup check before 10:00: confirm laptop_B/monitor_B are ready and audio/video are accessible (no changes needed if already set) | Commitment: approaching | Moving to: break_area | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T09:25:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: return_from_break | Agent: bob_002 | Time: 09:25 | Location: break_area | Priorities: Head back to your desk/work area now so you\u2019re set up before the 10:00 project sync (avoid rushing at the last minute)., Keep the break area as-is: leave coffee machine/kettle/microwave OFF; no changes needed since nothing is running besides the fridge., If your desk area is also dim, turn on a desk lamp/overhead light once you arrive to avoid working in low light. | Commitment: approaching | Moving to: desk_area | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T09:26:00+00:00",
+      "action_type": "accept_conversation",
+      "details": {
+        "initiator": "alice_001",
+        "topic": "Brief hello/good morning while settling back in (no plan/confirmation)"
+      },
+      "reason": "Accepted conversation from alice_001 about: Brief hello/good morning while settling back in (n..."
+    },
+    {
+      "timestamp": "2025-06-10T09:34:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "break_area"
+      },
+      "reason": "Checkpoint: commitment_prep:coffee | Agent: bob_002 | Time: 09:34 | Location: desk_area | Priorities: Wrap up at desk and head to the kitchen/break area by 09:38 to meet Alice on time, Leave laptop_B/monitor_B on for a quick return after coffee (no equipment changes needed right now), No comfort adjustments needed: temperature is already at your preferred 22\u00b0C; lighting is dim but acceptable for the short pre-coffee window (only turn on a lamp if you need to read/write before leaving) | Commitment: approaching | Moving to: break_area | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T09:40:00+00:00",
+      "action_type": "accept_conversation",
+      "details": {
+        "initiator": "alice_001",
+        "topic": "Coordinate starting the coffee machine together (who grabs mugs/sets brew) and then begin brewing."
+      },
+      "reason": "Accepted conversation from alice_001 about: Coordinate starting the coffee machine together (w..."
+    },
+    {
+      "timestamp": "2025-06-10T09:44:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: return_from_break | Agent: bob_002 | Time: 09:44 | Location: break_area | Priorities: Wrap up coffee time with Alice and transition out of the break_area toward your meeting setup location before 10:00, Do a quick environment check: temperature is already at your preferred 22\u00b0C\u2014no thermostat change needed; leave equipment as-is (coffee machine can stay on if actively in use), Ensure you\u2019re physically ready for the next meeting: move to your desk/meeting area and turn on needed work equipment/lighting there if natural light is dim | Commitment: now | Moving to: desk_area | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T09:46:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "break_area"
+      },
+      "reason": "Checkpoint: commitment_waiting:coffee:alice_001 | Agent: bob_002 | Time: 09:46 | Location: desk_area | Priorities: Move from desk_area to the kitchen/break_area immediately to find Alice and start the coffee meet-up, While moving, keep an eye out for Alice en route and be ready to initiate the coffee run right away, Leave laptop_B/monitor_B on for the imminent 10:00 project sync, but avoid starting any new desk setup since I\u2019m stepping away briefly | Commitment: overdue | Moving to: break_area | Actions: 1"
     },
     {
       "timestamp": "2025-06-10T09:54:00+00:00",
@@ -26,25 +110,75 @@
       "details": {
         "destination": "meeting_room"
       },
-      "reason": "Checkpoint: meeting_prep:Project sync | Agent: bob_002 | Time: 09:54 | Location: desk_area | Priorities: Get ready to move into the Project sync at 10:00 (wrap up at desk and be ready to join/leave on time)., Turn on/adjust a desk lamp or increase lighting if available since natural light is dim (reduce eye strain before the meeting)., Keep current equipment as-is (laptop_B/monitor_B already ON); avoid changing thermostat since temperature matches preference. | Commitment: approaching | Moving to: meeting_room | Actions: 1"
+      "reason": "Checkpoint: meeting_prep:Project sync | Agent: bob_002 | Time: 09:54 | Location: break_area | Priorities: Move from break_area toward the project sync location now so you\u2019re in place before 10:00, Check for Alice\u2019s presence/arrival in or near the break_area and, if she\u2019s not here, send a quick ping to confirm whether she\u2019s still joining or already headed out, Leave unused kitchen equipment OFF and avoid changing thermostat (temperature is already at your preferred 22\u00b0C) | Commitment: approaching | Moving to: meeting_room | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T09:55:00+00:00",
+      "action_type": "accept_conversation",
+      "details": {
+        "initiator": "alice_001",
+        "topic": "Quick heads-up: I\u2019m turning on the room lights now for visibility; let me know if you prefer dimmer for slides."
+      },
+      "reason": "Accepted conversation from alice_001 about: Quick heads-up: I\u2019m turning on the room lights now..."
+    },
+    {
+      "timestamp": "2025-06-10T09:55:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: commitment_end:coffee | Agent: bob_002 | Time: 09:55 | Location: meeting_room | Priorities: Confirm with Alice whether the coffee run is concluded and transition into the 10:00 project sync (stay in meeting_room if this is the sync location; otherwise move to the correct room now)., If the coffee chat is finished, turn OFF the projector and conference phone until needed for the 10:00 meeting to avoid leaving equipment running unnecessarily., Lighting is dim: switch on room lights (or closer lighting) to prep for the 10:00 meeting while keeping temperature as-is (22C matches preference and compromise). | Commitment: approaching | Moving to: desk_area | Actions: 1"
     },
     {
       "timestamp": "2025-06-10T09:57:00+00:00",
-      "action_type": "initiate_conversation",
+      "action_type": "move_to",
       "details": {
-        "target_agent": "alice_001",
-        "topic": "Quick confirmation that the 11:05 coffee run is still on and that we\u2019ll wrap the sync on time to transition promptly."
+        "destination": "meeting_room"
       },
-      "reason": "Checkpoint: meeting_start:Project sync | Agent: bob_002 | Time: 09:57 | Location: meeting_room | Priorities: Stay in the meeting room and get physically set for the meeting start (sit/position to see projector, ensure you can hear/speak via conference phone)., Keep room conditions stable: temperature is already at your preferred 22\u00b0C; no thermostat change needed. If the dim light makes note-taking hard, switch on available room lighting (if accessible) rather than changing anything else., Confirm with Alice that the 11:05 coffee run is still on and that you\u2019ll wrap/transition promptly after the sync to stay on schedule. | Commitment: approaching | Actions: 1"
+      "reason": "Checkpoint: meeting_start:Project sync | Agent: bob_002 | Time: 09:57 | Location: desk_area | Priorities: Transition to the Project sync now: join the meeting from desk (or move to the appropriate meeting spot if required) and ensure laptop_B/monitor_B are ready for the call., Improve visibility: turn on a desk lamp or increase task lighting since natural light is dim., Quick schedule scan: confirm next back-to-back meeting at 10:30 and be ready to transition promptly after the 10:00 sync. | Commitment: approaching | Moving to: meeting_room | Actions: 1"
     },
     {
       "timestamp": "2025-06-10T10:00:00+00:00",
       "action_type": "initiate_conversation",
       "details": {
         "target_agent": "alice_001",
-        "topic": "Kick off the 10:00 project sync and confirm she\u2019s aligned on keeping the projector + conference phone on for the duration; quick confirmation near the end about the 11:05 coffee run meetup in break_area."
+        "topic": "Start the 10:00 project sync now (kickoff/agenda) and, only if the 09:40 coffee didn\u2019t happen, set one specific new time after the sync."
       },
-      "reason": "Checkpoint: hourly | Agent: bob_002 | Time: 10:00 | Location: meeting_room | Priorities: Start/participate in the 10:00 Project sync now; keep meeting-room AV (projector + conference phone) on for the duration., Confirm with Alice before the meeting ends that the 11:05 coffee run plan still holds and where to meet (break_area) so timing stays tight., After the sync wraps, turn off projector and/or conference phone if the room won\u2019t be used immediately afterward to avoid leaving equipment running. | Commitment: now | Actions: 1"
+      "reason": "Checkpoint: hourly | Agent: bob_002 | Time: 10:00 | Location: meeting_room | Priorities: Start the 10:00 project sync now: confirm Alice is ready, keep projector/conference phone on, and ensure the room setup supports the meeting., Quickly reconcile the 09:40 coffee commitment with Alice: ask if it already happened; if not, agree on a new specific time after the 10:00 sync (without derailing the current meeting)., Maintain comfort settings: keep thermostat at 22\u00b0C (matches preference) and leave lighting as-is unless screen visibility is affected; turn off projector/phone promptly after the meeting if no longer needed. | Commitment: now | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T10:24:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "alice_001",
+        "topic": "Logistics detail not yet established: whether Charlie is joining in-room or dialing in, and who is responsible for initiating the conference call at 10:30 (only if this hasn\u2019t been decided yet)."
+      },
+      "reason": "Checkpoint: meeting_prep:Charlie: quick blocker check | Agent: bob_002 | Time: 10:24 | Location: meeting_room | Priorities: Confirm the meeting room is set for the 10:30 check-in (stay here, keep conference phone on, ensure projector is only on if needed)., If the projector won\u2019t be used for Charlie, turn it off now to reduce unnecessary equipment use., Quickly align with Alice on logistics: is Charlie joining in-room or dialing in, and do we need to initiate the conference call at 10:30? | Commitment: approaching | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T10:25:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: meeting_end:Project sync | Agent: bob_002 | Time: 10:25 | Location: meeting_room | Priorities: Confirm with Charlie_003 whether the 10:30 quick blocker check will happen here and, if so, stay in the meeting room; otherwise move together to the planned spot, Keep the room set for the next chat: leave projector/conference phone OFF since they\u2019re unused, and avoid turning on any extra equipment, Maintain comfort as-is (22\u00b0C matches preference; moderate natural light is fine) and be ready to transition at 10:30/11:00 without delay | Commitment: approaching | Moving to: desk_area | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T10:27:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "meeting_room"
+      },
+      "reason": "Checkpoint: meeting_start:Charlie: quick blocker check | Agent: bob_002 | Time: 10:27 | Location: desk_area | Priorities: Start the quick blocker check with Charlie now (confirm we\u2019re aligned on location/format since we\u2019re already together at the desks)., Stay in desk_area with current setup (laptop_B/monitor_B already ON); no equipment changes needed., Keep comfort settings as-is (22\u00b0C matches preferred; moderate natural light is sufficient\u2014no lighting/thermostat adjustments). | Commitment: approaching | Moving to: meeting_room | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T10:54:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "alice_001",
+        "topic": "Start logistics: who is leading the 11:00 check-in and whether any attendees are joining remotely (to choose projector vs conference phone setup)."
+      },
+      "reason": "Checkpoint: meeting_prep:Data cleanup / metrics check-in | Agent: bob_002 | Time: 10:54 | Location: meeting_room | Priorities: Confirm the room setup is ready: verify projector input/display is correct and conference phone audio is unmuted/connected for the 11:00 check-in., Coordinate with Alice and Charlie on start logistics: confirm who\u2019s leading and whether anyone else is joining remotely so the right device is used., Keep comfort stable: temperature is already at your preferred 22\u00b0C, so leave thermostat as-is and maintain current lighting unless glare appears on the projector screen. | Commitment: approaching | Actions: 1"
     }
   ]
 }

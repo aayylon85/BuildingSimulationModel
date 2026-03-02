@@ -631,11 +631,12 @@ class MemoryStream:
             if node.node_id not in self.kw_to_nodes[kw]:
                 self.kw_to_nodes[kw].append(node.node_id)
 
-    def _extract_keywords(self, text: str) -> Set[str]:
+    def _extract_keywords(self, text: str, max_keywords: int = 10) -> Set[str]:
         """
         Extract keywords from text for fast retrieval.
 
-        Simple approach: lowercase words, filter stopwords, keep nouns/verbs.
+        Prioritizes meaningful terms: names, times, locations, activities.
+        Limited to max_keywords to prevent bloated memory indices.
         """
         # Simple tokenization
         words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
@@ -654,13 +655,41 @@ class MemoryStream:
             'while', 'although', 'i', 'me', 'my', 'myself', 'we', 'our', 'ours',
             'you', 'your', 'yours', 'he', 'him', 'his', 'she', 'her', 'hers',
             'it', 'its', 'they', 'them', 'their', 'what', 'which', 'who', 'whom',
-            'this', 'that', 'these', 'those', 'am', 'about'
+            'this', 'that', 'these', 'those', 'am', 'about', 'currently',
+            'notice', 'noticed', 'feeling', 'feels', 'think', 'thinking', 'know',
+            'said', 'says', 'asked', 'told', 'wants', 'wanted', 'need', 'needs',
+            'going', 'went', 'come', 'came', 'like', 'likes', 'liked'
+        }
+
+        # High-priority terms (names, locations, activities, times)
+        high_priority_patterns = {
+            'alice', 'bob', 'charlie', 'dave', 'eve',  # Common names
+            'desk', 'meeting', 'break', 'lunch', 'coffee', 'tea',  # Activities
+            'room', 'area', 'outside', 'entrance', 'office',  # Locations
+            'morning', 'afternoon', 'evening',  # Time periods
+            'temperature', 'warm', 'cold', 'hot', 'cool',  # Comfort
+            'light', 'lighting', 'lamp', 'bright', 'dim', 'dark',  # Lighting
+            'equipment', 'laptop', 'monitor', 'projector', 'phone',  # Equipment
         }
 
         # Filter stopwords and short words
-        keywords = {w for w in words if w not in stopwords and len(w) > 2}
+        filtered_words = [w for w in words if w not in stopwords and len(w) > 2]
 
-        return keywords
+        # Prioritize high-priority terms first
+        priority_keywords = [w for w in filtered_words if w in high_priority_patterns]
+        other_keywords = [w for w in filtered_words if w not in high_priority_patterns]
+
+        # Combine with priority keywords first, limited to max_keywords
+        combined = priority_keywords + other_keywords
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_keywords = []
+        for w in combined:
+            if w not in seen:
+                seen.add(w)
+                unique_keywords.append(w)
+
+        return set(unique_keywords[:max_keywords])
 
     def _get_embedding_key(self, text: str) -> str:
         """Generate a consistent key for embedding lookup."""

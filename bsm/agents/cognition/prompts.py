@@ -57,9 +57,9 @@ def get_decision_focal_points(
             "meeting_start": ["how I prepare for meetings", "my meeting habits"],
             "meeting_end": ["what I do after meetings end", "refocusing after meetings"],
             "lunch_time": ["my lunch preferences and habits", "where I like to eat lunch"],
-            "return_from_lunch": ["when I return from lunch", "my post-lunch routine"],
-            "take_break": ["my break habits", "when I take coffee or tea breaks", "staying energized"],
-            "return_from_break": ["returning to work after breaks"],
+            "lunch_end": ["when I return from lunch", "my post-lunch routine"],
+            "break_time": ["my break habits", "when I take coffee or tea breaks", "staying energized"],
+            "break_end": ["returning to work after breaks"],
             # M.1: Enhanced commitment focal points for relationship-aware memory retrieval
             "commitment": [
                 "promises I made to colleagues",
@@ -692,6 +692,8 @@ def format_step1_prompt(state: "CheckpointState") -> str:
     agent = state.agent
 
     # Get commitment info from sync manager if applicable
+    # Build both completed and pending commitment lists
+    completed_info = ""
     commitment_info = ""
     if state.daily_plan:
         # Handle both dict and object access patterns
@@ -705,21 +707,33 @@ def format_step1_prompt(state: "CheckpointState") -> str:
             # Handle both dict and object access
             if isinstance(c, dict):
                 fulfilled = c.get("fulfilled", False)
+                fulfilled_at = c.get("fulfilled_at", "")
                 activity = c.get("activity", "activity")
                 time_str = c.get("time", "unspecified")
                 with_agents = c.get("with_agents", [])
                 location = c.get("location", "break_area")
             else:
                 fulfilled = getattr(c, 'fulfilled', False)
+                fulfilled_at = getattr(c, 'fulfilled_at', "") or ""
                 activity = getattr(c, 'activity', "activity")
                 time_str = getattr(c, 'time', "unspecified")
                 with_agents = getattr(c, 'with_agents', [])
                 location = getattr(c, 'location', "break_area")
 
-            if not fulfilled:
-                partner_names = ", ".join(
-                    a.split("_")[0].capitalize() for a in with_agents
-                )
+            partner_names = ", ".join(
+                a.split("_")[0].capitalize() for a in with_agents
+            )
+
+            if fulfilled:
+                # Show completed activities so agent knows they're done
+                completed_info += f"\n- {activity} with {partner_names} at {time_str} - DONE"
+                if fulfilled_at:
+                    # Extract just the time portion if it's a full timestamp
+                    if "T" in fulfilled_at:
+                        fulfilled_time = fulfilled_at.split("T")[1][:5]  # HH:MM
+                        completed_info += f" (completed at {fulfilled_time})"
+            else:
+                # Pending commitments
                 commitment_info += f"\n- {activity} with {partner_names} at {time_str}"
                 commitment_info += f" (location: {location})"
 
@@ -784,9 +798,15 @@ def format_step1_prompt(state: "CheckpointState") -> str:
 {plan_text}
 </your_plan>
 
-<commitments>
-{commitment_info.strip() if commitment_info else "No active commitments."}
-</commitments>
+<completed_today>
+{completed_info.strip() if completed_info else "Nothing completed yet."}
+
+IMPORTANT: These activities are DONE. Do NOT apologize, reschedule, or discuss "missing" them.
+</completed_today>
+
+<pending_commitments>
+{commitment_info.strip() if commitment_info else "No pending commitments."}
+</pending_commitments>
 
 <your_traits>
 {core_traits if core_traits else "No specific traits retrieved."}
@@ -877,6 +897,11 @@ def format_step2_prompt(state: "CheckpointState") -> str:
     thermostat_setpoint = state.sim_state.get("thermostat_setpoint_c", 22)
     preferred_temp = state.sim_state.get("preferred_temp_c", 22)
 
+    # Get window state
+    window_open_fraction = state.sim_state.get("window_open_fraction", 0.0)
+    window_state = "OPEN" if window_open_fraction > 0 else "CLOSED"
+    outdoor_temp = state.sim_state.get("outdoor_temp_c", 15)
+
     # Format priorities from step 1
     priorities = state.get_priorities()
     priorities_text = "\n".join(f"- {p}" for p in priorities) if priorities else "- Continue with current activities"
@@ -903,6 +928,8 @@ def format_step2_prompt(state: "CheckpointState") -> str:
 <indoor_temp>{indoor_temp:.1f}C</indoor_temp>
 <thermostat_setpoint>{thermostat_setpoint:.1f}C</thermostat_setpoint>
 <your_preferred_temp>{preferred_temp:.1f}C</your_preferred_temp>
+<outdoor_temp>{outdoor_temp:.1f}C</outdoor_temp>
+<window>{window_state}</window>
 </comfort>
 
 <lighting_here>
@@ -934,17 +961,104 @@ IMPORTANT - Equipment decisions:
 - Only use "turn_on" or "turn_off" when you want to CHANGE the current state
 - You can only control equipment at YOUR current location ({location})
 
+**IMPORTANT - Lights vs Equipment (use correct action):**
+- LIGHTS (use lighting_decisions with lights_set): desk_light_A, desk_light_B, desk_light_C, zone_main, meeting_room
+- EQUIPMENT (use equipment_decisions with equipment_set): laptop, monitor, photocopier, projector, conference_phone, coffee_machine, kettle, microwave
+
+If you want to control desk_light, use lighting_decisions NOT equipment_decisions!
+
+**Kitchen Appliances (AUTO-OFF):** coffee_machine, kettle, microwave have automatic shut-off:
+- Kettle: 2 minutes after turning on
+- Coffee machine: 10 minutes after turning on
+- Microwave: 5 minutes after turning on
+
+IMPORTANT - CHECK STATE FIRST: Look at <equipment_here> above before using kitchen appliances:
+- If kettle/coffee_machine/microwave is ALREADY ON: use "keep_current" - do NOT turn_on again
+- Turning on an already-on appliance is pointless - the timer is already running
+- Only use "turn_on" if the appliance is currently OFF
+They turn off automatically - you never need to manually turn them off.
+
 Consider:
 - Adjust thermostat if uncomfortable (direction: warmer/cooler, amount: small/medium/large)
+- Open/close window for fresh air or temperature control
 - Turn lights/equipment ON or OFF ONLY if you need to CHANGE the current state
 - Take a break here (if not going elsewhere)
 - Respond to commitment (if one is active)
 - Update plan (if needed)
 
-If at break_area:
-- activity="tea" → kettle is used automatically (auto-off after 2 min)
-- activity="coffee" → coffee_machine is used automatically (auto-off after 10 min)
-- You do NOT need to manually turn off kitchen appliances - they have automatic timers
+**Window Control:**
+- Window is currently {window_state}
+- Use window.action = "open" | "close" | "keep_current"
+- Open the window for fresh air when indoor temp is comfortable but air feels stuffy
+- Open when outdoor temp is pleasant and you want natural ventilation
+- Close if outdoor temp is extreme (too hot/cold) or if using heating/cooling
+- If window is already in desired state, use action="keep_current"
+
+**COFFEE/TEA BREAKS - USE THE BREAK ROOM (break_area):**
+The office has a break_area with coffee_machine and kettle. USE IT for coffee/tea!
+You do NOT need to go outside for routine coffee or tea.
+
+For COFFEE:
+1. move_to destination="break_area"
+2. Turn on coffee_machine (auto-off in 10 min)
+3. When done: move_to destination="desk_area"
+
+For TEA:
+1. move_to destination="break_area"
+2. Turn on kettle (auto-off in 2 min)
+3. When done: move_to destination="desk_area"
+
+DO NOT go outside for coffee/tea unless:
+- You want a walk or fresh air (not just coffee)
+- You are meeting someone at an external cafe
+- Your daily plan specifically says outdoor break
+
+Going outside requires: destinations=["entrance", "outside"]
+Returning requires: destinations=["entrance", "desk_area"]
+
+**AT BREAK_AREA - CHECK EQUIPMENT STATE FIRST:**
+If you are at break_area for coffee/tea:
+1. CHECK <equipment_here> to see if kettle/coffee_machine is already ON
+2. If it's ON: use "keep_current" (timer is already running, water is heating)
+3. If it's OFF: use "turn_on" to start it
+   - equipment_decision: equipment_name="coffee_machine", action="turn_on" (for coffee)
+   - equipment_decision: equipment_name="kettle", action="turn_on" (for tea)
+Don't just stand in break_area - make your drink, then return to desk_area within 10-15 minutes.
+
+**BREAK COOLDOWN - MANDATORY:**
+After ANY break, you MUST work for at least 1 HOUR before another break.
+- TWO breaks in one hour is UNREALISTIC - do not do this
+- If you just returned from break_area or outside, WORK for 60+ minutes
+- If checkpoint reason includes "break_end", you JUST had a break - work now
+- Exception: scheduled meetings or commitments with colleagues
+
+**Breaks - Realistic behavior:**
+- You are an office worker in a normal office
+- ONE morning break and ONE afternoon break is typical
+- Do NOT take multiple coffee breaks in quick succession
+
+**BREAK DURATION - Choose the Right Location:**
+- Quick break (5-15 minutes): USE THE BREAK ROOM (break_area)
+  * Short on time? break_area is right there - no need to leave the building
+  * The break room has coffee, tea, and everything you need for a quick break
+- Outside break (20+ minutes): Leave the building for a longer break
+  * Going outside takes more time (travel to entrance, go out, return)
+  * Only go outside if you have 20+ minutes for the break
+- Lunch: 30-45 minutes (your daily plan specifies)
+
+**SCHEDULED BREAKS - You MUST follow them:**
+If you have a scheduled break in your daily plan that is NOW or within the next 5 minutes:
+- Move to the break location (break_area or outside via entrance)
+- Turn on equipment if needed (coffee_machine for coffee, kettle for tea)
+- Do NOT skip scheduled breaks for "admin", "email", or "small tasks"
+- Your daily plan exists for a reason - follow it
+- If the checkpoint_reason includes "break" or "morning_break" or "afternoon_break", TAKE THE BREAK
+
+**Plan Updates:**
+- Update your plan when you agree to a NEW commitment with a colleague (coffee, lunch, walk)
+- Record: what activity, when (time), who (colleague), where (location)
+- Do NOT output plan updates with all None/empty values
+- If you have nothing to update, omit plan_update entirely (action="no_change")
 
 Do NOT decide about moving yet - that comes in Step 4.
 
@@ -1000,12 +1114,25 @@ def format_step3_prompt(state: "CheckpointState") -> Optional[str]:
 <instructions>
 Do you want to talk to someone HERE before potentially moving?
 
-Only initiate if there's a good reason:
-- Commitment to fulfill with them
-- Important topic to discuss
-- Haven't chatted recently and want to connect
+**CRITICAL - Do NOT initiate conversations to:**
+- "Confirm" or "verify" plans that are already agreed
+- "Check in" about existing commitments
+- "Make sure" times/locations are still good
+- "Quick confirm" of anything already discussed
 
-Don't initiate conversations just to "check in" about existing plans.
+Once you agree to something with a colleague, TRUST it will happen. Do not re-discuss.
+If a commitment is shown in your priorities, you already have it recorded - no need to confirm.
+
+**Only initiate if there's a GENUINELY NEW reason:**
+- A NEW topic you haven't discussed today
+- A PROBLEM requiring plan changes (need to reschedule)
+- Important work-related information to share
+- You need to MAKE a new plan (not confirm an existing one)
+
+**COMMITMENT LIMITS:**
+You may agree to AT MOST ONE new activity plan per conversation.
+If you already have a pending commitment with this person, do not create another until the first is completed.
+Focus on your existing plans rather than creating new ones.
 
 Output a StepConversationDecision:
 - action: "initiate" or "none"
@@ -1042,11 +1169,13 @@ def format_step4_prompt(state: "CheckpointState") -> str:
     # Format upcoming events from daily plan
     upcoming_text = _format_upcoming_events(state.daily_plan, state.now)
 
-    # Get commitment status and partner info
+    # Get commitment status, location, and partner info
     commitment_status = state.get_commitment_status() or "none"
     partner_status = ""
+    commitment_location = ""
+    commitment_activity = ""
     if state.step1 and state.step1.active_commitment:
-        # Try to get partner status for the active commitment
+        # Try to get partner status and location for the active commitment
         if state.daily_plan:
             social_commitments = (
                 state.daily_plan.get("social_commitments", [])
@@ -1057,14 +1186,18 @@ def format_step4_prompt(state: "CheckpointState") -> str:
                 if isinstance(c, dict):
                     activity = c.get("activity", "")
                     time_str = c.get("time", "")
+                    location = c.get("location", "unspecified")
                 else:
                     activity = getattr(c, 'activity', "")
                     time_str = getattr(c, 'time', "")
+                    location = getattr(c, 'location', "unspecified")
 
                 commitment_id = f"{activity}_{time_str}"
                 ps = state.sync_manager.get_partner_status(state.agent_id, commitment_id)
                 if ps:
-                    partner_status = f"Partner: {ps}"
+                    partner_status = f"Partner status: {ps}"
+                    commitment_location = location
+                    commitment_activity = activity
                     break
 
     # Retrieve step-specific memories
@@ -1096,6 +1229,8 @@ def format_step4_prompt(state: "CheckpointState") -> str:
 
 <commitment_status>
 Status: {commitment_status}
+{f"Activity: {commitment_activity}" if commitment_activity else ""}
+{f"Location: {commitment_location}" if commitment_location else ""}
 {partner_status}
 </commitment_status>
 
@@ -1109,6 +1244,51 @@ Reasons to move:
 - A commitment checkpoint (checkpoint indicates "commitment_prep:" or "commitment_start:")
 - Equipment you need is only available elsewhere
 
+**Coffee/Tea:** To get coffee or tea, move to break_area here in Step 4.
+Then in Step 5 (or Step 2 if before moving), use equipment_decisions to turn on coffee_machine or kettle.
+Kitchen appliances auto-turn-off after a few minutes - no need to turn them off manually.
+
+**LOCATION ROUTING - READ CAREFULLY:**
+- "desk_area" = Your workstation with laptop, monitor
+- "break_area" = Kitchen with coffee machine, kettle, fridge - USE THIS for coffee/tea
+- "meeting_room" = For scheduled meetings only
+- "shared_area" = Photocopier/printer only - NOT for breaks
+- "entrance" = TRANSIT ONLY - gateway to outside
+- "outside" = Courtyard, outdoor space
+
+**ENTRANCE IS TRANSIT ONLY - DO NOT STAY THERE:**
+The entrance is a gateway, NOT a destination. You should NEVER stay at entrance.
+- If you are at entrance, IMMEDIATELY continue to your actual destination
+- Valid moves FROM entrance: desk_area, break_area, outside
+- INVALID moves FROM entrance: meeting_room, shared_area (go via desk_area)
+
+ONLY go to entrance if:
+- You are about to LEAVE THE BUILDING (then continue to outside)
+- You are RETURNING from outside (then continue to desk_area or break_area)
+
+**EXPECTED ACTION SEQUENCES:**
+
+COFFEE/TEA BREAK (normal - use break_area):
+1. move_to destination="break_area"
+2. equipment_decision: equipment_name="coffee_machine" or "kettle", action="turn_on"
+3. (enjoy break, socialize)
+4. move_to destination="desk_area"
+
+OUTSIDE WALK/FRESH AIR (not for routine coffee):
+1. move_to destinations=["entrance", "outside"]
+2. (walk, fresh air)
+3. move_to destinations=["entrance", "desk_area"]
+
+Do NOT:
+- Go to entrance and stop there
+- Go outside just for coffee (use break_area instead)
+- Stay at entrance waiting for people (they're at their desks)
+
+When you have a social commitment:
+1. Check the commitment's LOCATION field above
+2. Move to THAT location, not where you assume the activity happens
+3. If commitment says "entrance", go to entrance - even for coffee
+
 **IMPORTANT - Timing for Social Commitments:**
 - Do NOT move to break_area or other locations just because you have a future commitment there
 - If a commitment (coffee run, break with colleague) is more than 15 minutes away, STAY at your current location
@@ -1120,19 +1300,71 @@ Reasons to move:
 If your checkpoint reason indicates a meeting is starting (e.g., "meeting_start:", "meeting_prep:"),
 you MUST move to meeting_room unless you are already there. Meetings happen in meeting_room.
 
+**IMPORTANT - After Meetings End:**
+If your checkpoint reason indicates "meeting_end:", you MUST return to desk_area.
+Do NOT stay in the meeting room between meetings - others may need it.
+Turn off any meeting equipment you turned on (projector, conference phone).
+
+**IMPORTANT - After Breaks/Lunch End:**
+If your checkpoint reason is "lunch_end", "break_end:morning", or "break_end:afternoon":
+- Your break/lunch time is over - return to work
+- Check your schedule for upcoming meetings or commitments
+- Go to meeting_room if you have a meeting soon
+- Go to break_area if you have a social commitment there
+- Otherwise use move_to with destination="desk_area" to return
+- From outside: use destinations=["entrance", "desk_area"]
+Breaks are temporary - always return to productive work afterward.
+
+**IMPORTANT - End of Work Day:**
+If your checkpoint reason is "departure_prep:" or "departure:", you MUST prepare to leave:
+1. If at desk_area: Turn off your equipment (laptop, monitor) and desk light
+2. Move toward entrance (then outside) - this is your scheduled departure time
+3. Leaving at your departure time is mandatory - do not stay late
+
+Your work day has ended. Complete any final shutdown tasks and leave the building.
+
 **IMPORTANT - Commitment Fulfillment:**
-If your checkpoint reason indicates a commitment (e.g., "commitment_prep:", "commitment_start:"),
-check the commitment_status and move to the appropriate location to fulfill it.
+If your checkpoint reason indicates a commitment (e.g., "commitment_prep:", "commitment_start:"):
+1. Look at the commitment_status section above for the LOCATION
+2. Move to that EXACT location - do not assume based on activity type
+3. If location is "entrance", go to entrance (not break_area)
 
 If staying: Simply output action="stay" - no justification needed.
 If moving: Specify destination and purpose.
 
-Note: To go outside, you must be at entrance first, then move to outside.
-To return inside: outside → entrance → desk_area (or other locations).
+**OUTSIDE ACTIVITY PROTOCOL - MULTI-STEP MOVES:**
+You can specify a PATH of locations to traverse in one decision.
+This avoids needing to wait for multiple checkpoints.
+
+To go outside for a break/walk:
+- Use destinations: ["entrance", "outside"]
+- This moves you to entrance THEN outside in one step
+- Example: action="move", destinations=["entrance", "outside"], purpose="going outside for walk"
+
+To return from outside:
+- Use destinations: ["entrance", "desk_area"]
+- This brings you back through entrance to your desk
+- Example: action="move", destinations=["entrance", "desk_area"], purpose="returning to work"
+
+For single-location moves (e.g., to meeting room):
+- Use destinations: ["meeting_room"]
+- Just put the single location in the list
+
+**ACTIVITY DURATION AND RETURN:**
+When you have an outside commitment with an end_time:
+- Meet your partner at entrance at the agreed start time
+- Go outside together: destinations=["entrance", "outside"]
+- Return by the end_time: destinations=["entrance", "desk_area"]
+- BOTH partners return to desk_area immediately after
+
+You MUST return to your desk after activities end unless:
+- You have a meeting starting within 10 minutes
+- You have another commitment at a different location
 
 Output a MoveDecision:
 - action: "move" or "stay"
-- destination: Where to go (if moving, must be in can_move_to list)
+- destinations: LIST of locations to traverse (if moving, each must be valid)
+  Examples: ["meeting_room"], ["entrance", "outside"], ["entrance", "desk_area"]
 - purpose: Why you're moving (if moving)
 - reasoning: Your thought process
 </instructions>
@@ -1155,7 +1387,8 @@ def format_step5_prompt(state: "CheckpointState") -> str:
     Returns:
         Formatted prompt string for Step 5
     """
-    location = state.step4.destination
+    # Get final destination from multi-step path
+    location = state.get_final_destination()
     purpose = state.step4.purpose or "general activity"
     equipment = state.get_equipment_at_location(location)
 
@@ -1245,21 +1478,28 @@ IMPORTANT - Equipment decisions:
 - Only use "turn_on" or "turn_off" when you want to CHANGE the current state
 - You can only control equipment at THIS location ({location})
 
+**IMPORTANT - Lights vs Equipment (use correct action):**
+- LIGHTS (use lighting_decisions): desk_light_A, desk_light_B, desk_light_C, zone_main, meeting_room
+- EQUIPMENT (use equipment_decisions): laptop, monitor, photocopier, projector, conference_phone, coffee_machine, kettle, microwave
+If you want to control a desk_light, that goes in lighting_decisions NOT equipment_decisions!
+
 What do you need to do here?
 - Turn lights/equipment ON or OFF ONLY if you need to CHANGE the current state
 - Set up meeting equipment (if in meeting_room)
 - Take a break action (if here for a break)
 
-If at break_area:
-- activity="tea" → kettle is used automatically (auto-off after 2 min)
-- activity="coffee" → coffee_machine is used automatically (auto-off after 10 min)
-- You do NOT need to manually turn off kitchen appliances - they have automatic timers
+If at break_area for tea or coffee - TURN ON THE APPLIANCE:
+- For tea: Add equipment_decision with equipment_name="kettle", action="turn_on"
+- For coffee: Add equipment_decision with equipment_name="coffee_machine", action="turn_on"
+- These appliances auto-turn-off after 2-10 minutes, so you don't need to turn them off manually
 
 Output a NewLocationDecision:
-- equipment_decisions: List of equipment to turn ON or OFF (or keep_current if no change needed)
-- meeting_equipment: Meeting setup (if applicable)
-- break_action: Break to take (if applicable)
+- equipment_decisions: List of equipment to turn ON or OFF (use for coffee_machine, kettle, etc.)
+- meeting_equipment: Meeting setup (if in meeting_room)
 - reasoning: Your thought process
+
+Note: For breaks, use equipment_decisions to control appliances (coffee_machine, kettle).
+The break_action field is metadata only - actual break activities use equipment_decisions.
 </instructions>
 """.strip()
 
@@ -1277,7 +1517,8 @@ def format_step6_prompt(state: "CheckpointState") -> Optional[str]:
     Returns:
         Formatted prompt string, or None if no colleagues present (skip step)
     """
-    location = state.step4.destination
+    # Get final destination from multi-step path
+    location = state.get_final_destination()
     purpose = state.step4.purpose or "general activity"
 
     # Get colleagues at the new location
@@ -1710,7 +1951,7 @@ def format_step_prompt(
     agreements_section = _extract_agreements_from_memories(retrieved_memories, now)
 
     # Build social commitments section
-    social_commitments_section = _format_social_commitments_section(agent)
+    social_commitments_section = _format_social_commitments_section(agent, now)
 
     # Build upcoming commitments section (M.4 - anticipatory awareness)
     upcoming_commitments_section = _format_upcoming_commitments_section(agent, now, checkpoint_reason)
@@ -1848,18 +2089,25 @@ MEETINGS:
 - Pending invitations: Use 'respond_to_invitation' to accept or decline
 
 BREAKS:
-Use 'take_break' with location="break_area" and specify your activity:
-- activity="tea" → kettle will be turned on automatically for you
-- activity="coffee" → coffee_machine will be turned on automatically for you
-- activity="snack" or other → equipment as needed
+For breaks, use move_to and equipment_set:
+- Inside break: move_to destination="break_area"
+- For coffee: turn on coffee_machine using equipment_set
+- For tea: turn on kettle using equipment_set
+- For outside break: move_to destinations=["entrance", "outside"]
 
-The break room appliances have automatic timers:
-- Kettle: auto-off after 2 minutes
-- Coffee machine: auto-off after 10 minutes
-- Microwave: auto-off after 5 minutes
-You do NOT need to turn them off manually.
+Kitchen appliances have automatic timers (auto-turn-off):
+- Kettle: 2 minutes
+- Coffee machine: 10 minutes
+- Microwave: 5 minutes
 
-When done, use 'return_from_break' to go back to your desk.
+IMPORTANT - CHECK STATE BEFORE USING: Look at <equipment_here> first:
+- If the appliance is ALREADY ON: use "keep_current" - do NOT turn_on again
+- Turning on an already-on appliance is pointless - the timer is already running
+- Only use "turn_on" if the appliance is currently OFF
+They turn off automatically - you never need to manually turn them off.
+
+When done, use move_to with destination="desk_area" to return.
+From outside: move_to destinations=["entrance", "desk_area"]
 
 BREAK AWARENESS:
 - Consider your recent break history before taking another break
@@ -1868,9 +2116,25 @@ BREAK AWARENESS:
 - Balance your need for breaks with your work responsibilities
 
 LUNCH:
-- Use 'go_to_lunch' (stay at break_area) or 'go_out_for_lunch' (leave building)
-- If food needs heating, use the microwave in break_area
-- When done, use 'return_from_lunch' to return to your desk
+- Inside lunch: move_to destination="break_area"
+- Outside lunch: move_to destinations=["entrance", "outside"]
+- If food needs heating: turn on microwave using equipment_set (auto-off in 5 min)
+- When done: move_to destination="desk_area" to return
+
+OUTSIDE RULES - IMPORTANT:
+If you are currently OUTSIDE:
+- You are already out - just stay outside or return inside
+- To return: move_to destinations=["entrance", "desk_area"]
+- The entrance is your gateway back into the building
+
+To go OUTSIDE from inside:
+- Use move_to with destinations=["entrance", "outside"]
+- This routes through the entrance to get outside
+
+LOCATION ROUTING - CRITICAL:
+- break_area = Kitchen (coffee, tea, food, fridge) - GO HERE for all breaks
+- shared_area = Photocopier ONLY - NEVER go here for coffee/breaks/social
+When you have a coffee/tea commitment, your destination MUST be break_area, NOT shared_area.
 
 WORK ACTIVITIES (photocopying, filing, etc. in shared_area):
 1. Use 'move_to' with destination="shared_area"
@@ -1931,10 +2195,14 @@ BEFORE INITIATING A CONVERSATION, CHECK:
     return prompt.strip()
 
 
-def _format_social_commitments_section(agent: "GenerativeAgent") -> str:
+def _format_social_commitments_section(agent: "GenerativeAgent", now: datetime = None) -> str:
     """Format social commitments section.
 
     Note: daily_plan is stored as a dict (from model_dump()), not a DailyPlan object.
+
+    Args:
+        agent: The generative agent
+        now: Current datetime (for filtering past commitments)
     """
     daily_plan = agent.get_daily_plan() if hasattr(agent, 'get_daily_plan') else None
     if not daily_plan:
@@ -1946,17 +2214,34 @@ def _format_social_commitments_section(agent: "GenerativeAgent") -> str:
         else getattr(daily_plan, 'social_commitments', [])
     )
 
+    # Calculate current time in minutes for filtering
+    current_minutes = now.hour * 60 + now.minute if now else None
+
     if social_commitments:
-        # Filter to unfulfilled commitments
+        # Filter to unfulfilled commitments that are not past
         unfulfilled = []
         for c in social_commitments:
             # Handle both dict and object access
             if isinstance(c, dict):
-                if not c.get("fulfilled", False):
-                    unfulfilled.append(c)
+                if c.get("fulfilled", False) or c.get("expired", False):
+                    continue
+                comm_time = c.get("time", "unspecified")
             else:
-                if not getattr(c, 'fulfilled', False):
-                    unfulfilled.append(c)
+                if getattr(c, 'fulfilled', False) or getattr(c, 'expired', False):
+                    continue
+                comm_time = getattr(c, 'time', "unspecified")
+
+            # Skip commitments that are > 15 min past their scheduled time
+            if current_minutes and comm_time not in ("unspecified", "needs_confirmation"):
+                try:
+                    h, m = map(int, comm_time.split(":"))
+                    comm_minutes = h * 60 + m
+                    if comm_minutes < current_minutes - 15:
+                        continue  # Skip past commitments
+                except (ValueError, TypeError):
+                    pass
+
+            unfulfilled.append(c)
 
         if unfulfilled:
             # Separate confirmed and unconfirmed commitments
@@ -1999,7 +2284,7 @@ def _format_social_commitments_section(agent: "GenerativeAgent") -> str:
                     if has_conflict:
                         line += " (CONFLICT - may overlap with other plans)"
                     commitment_lines.append(line)
-                commitment_lines.append(">>> At the scheduled time, use take_break or go_out_for_break to fulfill these!")
+                commitment_lines.append(">>> At the scheduled time, move to the commitment location and turn on equipment if needed!")
 
             # Show unconfirmed commitments (need time confirmation)
             if needs_time:
@@ -2022,6 +2307,12 @@ def _format_social_commitments_section(agent: "GenerativeAgent") -> str:
                     commitment_lines.append(line)
                 commitment_lines.append(">>> YOU AGREED but no time was set! Suggest a specific time (e.g., '10:30') and invite them!")
                 commitment_lines.append(">>> Use conversation.action='initiate' to coordinate the time with your colleague.")
+
+            # Add guidance about not making more plans
+            if confirmed or needs_time:
+                commitment_lines.append("")
+                commitment_lines.append("IMPORTANT: Do NOT make new break plans while you have unfulfilled ones above.")
+                commitment_lines.append("If a commitment time has passed by 15+ minutes, consider it expired.")
 
             return "\n".join(commitment_lines)
 
@@ -2193,9 +2484,9 @@ def _format_checkpoint_reason(checkpoint_reason: str) -> str:
         "meeting_start": "A meeting is starting",
         "meeting_end": "A meeting is ending",
         "lunch_time": "It's time for your planned lunch",
-        "return_from_lunch": "Time to return from lunch",
-        "take_break": "It's time for a break",
-        "return_from_break": "Time to return from break",
+        "lunch_end": "Time to return from lunch",
+        "break_time": "It's time for a break",
+        "break_end": "Time to return from break",
         "interval": "Regular decision interval",
         "first_decision": "First decision of the day",
         "forced": "Decision requested",
@@ -2230,39 +2521,41 @@ def _format_checkpoint_specific_guidance(
                 guidance += "\nIf your food needs heating (leftovers, soup, etc.), use the microwave in break_area."
 
     # Return from lunch guidance
-    if checkpoint_reason == "return_from_lunch":
+    if checkpoint_reason == "lunch_end" or checkpoint_reason == "return_from_lunch":
         current_desk = sim_state.get('current_desk', 'your assigned desk')
+        current_location = sim_state.get('location', 'unknown')
         guidance += f"""
 
 <lunch_return>
 Your lunch break is over. Return to YOUR assigned desk: {current_desk}
 
-ACTION REQUIRED: Set break_decision.action to "return_from_lunch"
+ACTION REQUIRED: Use move_to to return to desk_area
+- If currently outside: location.destinations = ["entrance", "desk_area"]
+- If inside (break_area): location.destinations = ["desk_area"]
 
 IMPORTANT:
 - You already have a desk assigned ({current_desk}). Do NOT try to select a new desk.
 - Your desk equipment is still there waiting for you.
-- Turn your equipment back on (laptop, monitor) when you return.
-
-This action will move you back to desk_area and set your status to at_desk.
+- Turn your equipment back on (laptop, monitor) when you return using equipment_decisions.
 </lunch_return>
 """
 
     # Return from break guidance
-    if checkpoint_reason == "return_from_break":
+    if checkpoint_reason == "break_end" or checkpoint_reason == "return_from_break":
         current_desk = sim_state.get('current_desk', 'your assigned desk')
+        current_location = sim_state.get('location', 'unknown')
         guidance += f"""
 
 <break_return>
 Your break is over. Return to YOUR assigned desk: {current_desk}
 
-ACTION REQUIRED: Set break_decision.action to "return_from_break"
+ACTION REQUIRED: Use move_to to return to desk_area
+- If currently outside: location.destinations = ["entrance", "desk_area"]
+- If inside (break_area): location.destinations = ["desk_area"]
 
 IMPORTANT:
 - You already have a desk assigned ({current_desk}). Do NOT try to select a new desk.
 - Your desk equipment is still there waiting for you.
-
-This action will move you back to desk_area and set your status to at_desk.
 </break_return>
 """
 
@@ -2414,9 +2707,9 @@ critical, now is the time to go. {partner_str} is waiting.
 
         guidance += f"""
 TO FULFILL THIS COMMITMENT:
-- Go to break_area using move_to or take_break action
-- Use take_break with activity="{activity}"
-- For outside activities: use go_out_for_break
+- Move to break_area: location.action = "move", location.destinations = ["break_area"]
+- For coffee/tea: turn on coffee_machine or kettle using equipment_decisions
+- For outside activities: location.destinations = ["entrance", "outside"]
 
 If you absolutely cannot go (real emergency, critical deadline):
 - Set commitment_response.action = "defer" with a specific defer_until time
@@ -2459,7 +2752,7 @@ YOUR OPTIONS:
    - This is natural - you're not being pushy, just checking in
 
 3. **Head back to work**: If you've been waiting a while and have things to do.
-   - Use return_from_break to go back to your desk
+   - Use move_to with destination="desk_area" to go back to your desk
    - You can try to catch up with {partner_name} later
 
 It's okay to feel a bit disappointed if someone doesn't show up as planned.

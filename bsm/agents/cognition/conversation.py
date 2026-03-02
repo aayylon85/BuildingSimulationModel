@@ -40,6 +40,53 @@ from bsm.agents.cognition.perception import get_weather_context, WeatherDict
 
 
 # ---------------------------------------------------------------------------
+# Activity Name Sanitization
+# ---------------------------------------------------------------------------
+
+# Valid activity keywords for matching
+VALID_ACTIVITY_KEYWORDS = [
+    "coffee", "tea", "lunch", "walk", "break", "meeting", "chat",
+    "snack", "water", "fresh air", "stretch", "catch up", "discuss"
+]
+
+
+def sanitize_activity_name(activity: str) -> str:
+    """
+    Clean up LLM-generated activity names to prevent hallucinations.
+
+    Handles cases like "coffee break with door minute" by extracting
+    the valid activity portion.
+    """
+    if not activity:
+        return "break"
+
+    activity_lower = activity.lower().strip()
+
+    # Check for known valid patterns
+    for keyword in VALID_ACTIVITY_KEYWORDS:
+        if keyword in activity_lower:
+            # If it's a simple match, return the keyword
+            if activity_lower == keyword:
+                return keyword
+            # If it contains the keyword + "break" or similar, allow compound
+            if f"{keyword} break" in activity_lower or f"{keyword} with" in activity_lower:
+                # Truncate to max 25 chars to prevent garbage
+                cleaned = activity_lower[:25].strip()
+                # Remove trailing garbage like "minute", "door", numbers
+                for garbage in [" minute", " door", " with door", " second"]:
+                    cleaned = cleaned.replace(garbage, "")
+                return cleaned.strip()
+            return keyword
+
+    # Fallback: truncate and clean
+    cleaned = activity_lower[:20]
+    # Remove any colons, numbers, or obvious garbage
+    for char in ":0123456789":
+        cleaned = cleaned.replace(char, "")
+    return cleaned.strip() or "break"
+
+
+# ---------------------------------------------------------------------------
 # Decline Check
 # ---------------------------------------------------------------------------
 
@@ -90,15 +137,66 @@ async def _check_target_willingness(
     agent_status = target_agent.scratch.get("current_status", {})
     in_meeting = agent_status.get("in_meeting", False)
     on_break = agent_status.get("on_break", False)
+    at_lunch = agent_status.get("at_lunch", False)
+    out_of_office = agent_status.get("out_of_office", False)
 
-    # Build context prompt
+    # Hard refusal when in a meeting - no LLM decision needed
+    if in_meeting:
+        return DeclineDecisionOutput(
+            action="decline",
+            reason="Currently in a meeting and cannot have side conversations."
+        )
+
+    # Build context prompt with MORE context for better decisions
     context_parts = [f"{initiator_id} wants to talk with you."]
     if topic:
         context_parts.append(f"Topic: {topic}")
     if in_meeting:
         context_parts.append("You are currently in a meeting.")
     if on_break:
-        context_parts.append("You are currently on break.")
+        context_parts.append("You are currently on a break (relaxing, available for chat).")
+    if at_lunch:
+        context_parts.append("You are currently at lunch (social time, available for chat).")
+    if out_of_office:
+        context_parts.append("You are currently outside the building.")
+
+    # Add information about any pending commitments with the initiator
+    daily_plan = target_agent.scratch.get("daily_plan")
+    if daily_plan:
+        social_commitments = []
+        if isinstance(daily_plan, dict):
+            social_commitments = daily_plan.get("social_commitments", [])
+        else:
+            social_commitments = getattr(daily_plan, 'social_commitments', [])
+
+        for c in social_commitments:
+            if isinstance(c, dict):
+                with_agents = c.get("with_agents", [])
+                activity = c.get("activity", "")
+                time_str = c.get("time", "")
+                fulfilled = c.get("fulfilled", False)
+            else:
+                with_agents = getattr(c, 'with_agents', [])
+                activity = getattr(c, 'activity', "")
+                time_str = getattr(c, 'time', "")
+                fulfilled = getattr(c, 'fulfilled', False)
+
+            if initiator_id in with_agents and not fulfilled:
+                context_parts.append(
+                    f"NOTE: You have a pending commitment with {initiator_id}: "
+                    f"{activity} at {time_str}. They may want to coordinate this."
+                )
+                break
+
+    # Add guidance based on context
+    if on_break or at_lunch:
+        context_parts.append(
+            "Since you're on break/lunch, you're in a social context and should generally ACCEPT casual conversations."
+        )
+    elif in_meeting:
+        context_parts.append(
+            "Since you're in a meeting, only ACCEPT if this is urgent or directly related to the meeting."
+        )
 
     prompt = "\n".join(context_parts) + "\nDo you want to have this conversation?"
 
@@ -286,7 +384,7 @@ def _format_schedule_for_conversation(speaker: "GenerativeAgent", now: datetime)
         lines.append("  (No meetings or commitments scheduled)")
 
     lines.append("")
-    lines.append("⚠️ Do NOT suggest times that overlap with your meetings!")
+    lines.append("⚠️ Do NOT suggest times that overlap with your meetings or existing commitments!")
     lines.append("</your_schedule>")
 
     return "\n".join(lines)
@@ -464,7 +562,6 @@ async def generate_one_utterance(
         now=now,
         calendar=calendar,
         simulation=None,
-        memory=None,
     )
 
     # Generate utterance
@@ -688,26 +785,42 @@ async def extract_conversation_commitments(
 
 <task>
 Read the conversation and identify if the participants agreed to do any activity together.
-Extract commitments in TWO tiers:
+Extract commitments with PRECISE location information from the conversation text.
 </task>
+
+<location_mapping>
+CRITICAL: Map conversation language to these exact locations:
+- "elevators", "lobby", "entrance", "front door", "reception" → location: "entrance"
+- "kitchen", "break room", "coffee machine", "kettle", "fridge" → location: "break_area"
+- "outside", "walk", "fresh air", "courtyard", "parking lot", "garden" → location: "outside"
+- "meeting room", "conference room", "boardroom" → location: "meeting_room"
+- "photocopier", "printer", "shared area", "copy room" → location: "shared_area"
+- "desk", "workstation", "my desk", "your desk" → location: "desk_area"
+
+IMPORTANT: Extract the ACTUAL location from the conversation.
+DO NOT default to break_area for coffee! If they say "meet by the elevators for coffee",
+the location is "entrance", not "break_area".
+If no specific location is mentioned, use "unspecified".
+</location_mapping>
 
 <tier_1_specific>
 For commitments with SPECIFIC times:
 - activity: SHORT description (max 4 words) - "coffee", "lunch", "walk", or combined like "coffee break with walk"
 - time: HH:MM format (e.g., "10:30", "12:00", "14:15")
-- location: break_area, outside, or meeting_room (use FINAL destination for combined activities)
+- location: Extract from conversation using the mapping above (entrance, break_area, outside, meeting_room, shared_area, desk_area, or unspecified)
 </tier_1_specific>
 
 <tier_2_loose>
 For agreements WITHOUT specific times (both parties agreed but no exact time):
 - activity: What they agreed to do (max 4 words)
 - time: Use "needs_confirmation" (exactly this string)
-- location: Best guess - break_area for coffee/tea, outside for walk/lunch out, meeting_room for work discussions
+- location: Extract from conversation if mentioned, otherwise "unspecified"
 
 Examples that should use "needs_confirmation":
-- "Want to grab coffee later?" "Sure, sounds good!" → time: "needs_confirmation"
-- "Let's do lunch sometime" "Great idea!" → time: "needs_confirmation"
-- "We should take a walk after lunch" "I'd like that" → time: "needs_confirmation"
+- "Want to grab coffee later?" "Sure, sounds good!" → time: "needs_confirmation", location: "unspecified"
+- "Let's do lunch sometime" "Great idea!" → time: "needs_confirmation", location: "unspecified"
+- "We should take a walk after lunch" "I'd like that" → time: "needs_confirmation", location: "outside"
+- "Meet you in the lobby for coffee" "Sounds good!" → time: "needs_confirmation", location: "entrance"
 </tier_2_loose>
 
 <compound_activities>
@@ -736,6 +849,13 @@ The key insight: if activities are discussed as part of the SAME outing/break, t
 - Past activities they already did
 </do_not_extract>
 
+<critical_limit>
+IMPORTANT: Extract AT MOST ONE commitment per conversation.
+If the conversation contains multiple potential agreements, extract ONLY the most concrete one
+(the one with a specific time, or the most clearly agreed upon activity).
+Multiple separate commitments from a single conversation create scheduling conflicts.
+</critical_limit>
+
 <conversation>
 {transcript}
 </conversation>
@@ -753,6 +873,9 @@ The key insight: if activities are discussed as part of the SAME outing/break, t
         output_type=AgentOutputSchema(CommitmentsExtractionOutput),
     )
 
+    # Issue C Fix: Limit to 1 commitment per conversation to prevent checkpoint explosion
+    MAX_COMMITMENTS_PER_CONVERSATION = 1
+
     try:
         result = await Runner.run(agent, "Extract any commitments from this conversation.")
         if result.final_output:
@@ -760,7 +883,24 @@ The key insight: if activities are discussed as part of the SAME outing/break, t
             logger.debug(f"Extraction returned {len(commitments)} commitments")
             for c in commitments:
                 logger.debug(f"  - activity='{c.activity}' time='{c.time}' location='{c.location}'")
+
+            # Sanitize activity names to prevent LLM hallucinations
+            for c in commitments:
+                original_activity = c.activity
+                c.activity = sanitize_activity_name(c.activity)
+                if c.activity != original_activity:
+                    logger.info(
+                        f"Sanitized activity name: '{original_activity}' → '{c.activity}'"
+                    )
+
             if commitments:
+                # Limit to MAX_COMMITMENTS_PER_CONVERSATION to prevent checkpoint explosion
+                if len(commitments) > MAX_COMMITMENTS_PER_CONVERSATION:
+                    logger.info(
+                        f"Limiting commitments from {len(commitments)} to {MAX_COMMITMENTS_PER_CONVERSATION} "
+                        f"(discarding: {[c.activity for c in commitments[MAX_COMMITMENTS_PER_CONVERSATION:]]})"
+                    )
+                    commitments = commitments[:MAX_COMMITMENTS_PER_CONVERSATION]
                 return commitments
         else:
             logger.debug("Extraction returned no output (final_output is None)")

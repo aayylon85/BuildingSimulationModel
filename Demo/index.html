@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Building OS | Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://pixijs.download/v7.x/pixi.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+    
+    <style>
+        body { background-color: #F5F5F7; font-family: 'Inter', sans-serif; overflow: hidden; transition: background-color 1s; }
+        .glass-panel { background: rgba(255, 255, 255, 0.95); border-left: 1px solid rgba(0,0,0,0.05); box-shadow: -10px 0 30px rgba(0,0,0,0.02); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        body.night-mode { background-color: #0f172a; color: #cbd5e1; }
+        .night-mode .glass-panel { background: rgba(15, 23, 42, 0.95); border-left: 1px solid rgba(255,255,255,0.05); }
+        .night-mode .text-gray-900 { color: #f1f5f9; }
+        .night-mode .text-gray-800 { color: #e2e8f0; }
+        #loading-screen {
+            position: fixed; inset: 0; z-index: 50; background: #F5F5F7;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.5s;
+        }
+        .loader {
+            border: 4px solid #e2e8f0; border-top: 4px solid #3b82f6; border-radius: 50%;
+            width: 40px; height: 40px; animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="flex h-screen w-screen">
+
+    <div id="loading-screen">
+        <div class="loader mb-4"></div>
+        <h2 class="text-xl font-bold text-gray-700">Connecting Systems...</h2>
+        <p class="text-xs text-gray-400 mt-2" id="loading-status">Syncing Timelines</p>
+    </div>
+
+    <div id="canvas-container" class="flex-1 relative overflow-hidden">
+        
+        <div class="absolute top-6 left-6 z-10 bg-white/90 backdrop-blur px-6 py-4 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4 transition-all" id="status-box">
+             <div class="w-4 h-4 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_#22c55e]" id="status-dot"></div>
+             <div>
+                 <h1 class="text-lg font-extrabold tracking-tight text-gray-900" id="status-title">OFFICE <span class="text-blue-500">LIVE</span></h1>
+                 <p class="text-xs text-gray-500 font-mono font-bold" id="sim-clock">LOADING...</p>
+             </div>
+        </div>
+
+
+        <div class="absolute bottom-6 left-6 z-10 bg-white/90 backdrop-blur px-4 py-3 rounded-xl shadow-sm border border-gray-100 flex gap-5 text-[10px] font-bold text-gray-500 uppercase tracking-widest transition-all night-mode:bg-slate-800/90 night-mode:border-slate-700">
+            <div class="flex items-center gap-2"><div class="w-2.5 h-2.5 rounded-full bg-[#22c55e]"></div><span>Equipment Active</span></div>
+            <div class="flex items-center gap-2"><div class="w-3 h-3 rounded-full bg-[#fde047] opacity-70"></div><span>Lights On</span></div>
+            <div class="flex items-center gap-2 border-l pl-4 border-gray-200 night-mode:border-slate-600">
+                <div class="px-2 py-0.5 rounded-full bg-white border border-blue-200 text-blue-700 font-bold night-mode:bg-slate-700 night-mode:border-slate-600 night-mode:text-blue-300">50W</div>
+                <span>Power</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="w-96 h-full glass-panel flex flex-col z-20 shadow-2xl transition-colors duration-1000 flex-none">
+        <div class="p-8 border-b border-gray-100 transition-colors">
+            <p class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Environment</p>
+            <div class="flex items-baseline justify-between mb-8">
+                <div>
+                    <span class="text-6xl font-bold text-gray-800 tracking-tighter" id="stat-temp">--°</span>
+                    <span class="text-xl font-medium text-gray-400">C</span>
+                    <p class="text-xs font-bold text-gray-400 mt-1">INDOOR</p>
+                </div>
+                <div class="text-right">
+                    <span class="text-3xl font-bold text-gray-600 tracking-tighter" id="stat-outside">--°</span>
+                    <span class="text-xl font-medium text-gray-300">C</span>
+                    <p class="text-xs font-bold text-gray-400 mt-1">OUTDOOR</p>
+                </div>
+            </div>
+            <div class="bg-gray-50 p-4 rounded-xl transition-colors border border-gray-100 flex flex-col gap-2">
+                <div class="flex justify-between items-end">
+                    <div>
+                        <p class="text-[10px] font-bold text-gray-400 uppercase flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-500"></span>Total Load</p>
+                        <p class="text-xl font-bold text-gray-800" id="stat-power">-- W</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-end gap-1"><span class="w-2 h-2 rounded-full bg-amber-500"></span>HVAC Load</p>
+                        <p class="text-xl font-bold text-gray-800" id="stat-hvac">-- W</p>
+                    </div>
+                </div>
+                <div class="h-32 w-full relative">
+                    <canvas id="powerChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex-1 overflow-hidden flex flex-col bg-gray-50/30">
+            <div class="p-6 pb-2">
+                <p class="text-xs font-bold text-gray-400 uppercase tracking-widest">Live Activity</p>
+            </div>
+            <div id="chat-feed" class="overflow-y-auto px-6 pb-6 space-y-4"></div>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // CONFIGURATION & COORDINATES
+        // ==========================================
+        const CONFIG = {
+            pollInterval: 1000,        // Poll every 1 second
+            walkingSpeed: 10.0,
+            // Use absolute paths (starting with /) to resolve from server root, not page directory
+            svgFile: '/Demo/floorplan.svg?v=' + new Date().getTime(),
+            dbFile: '/UI_demo_outputs/simulation_state.db',
+            agentActionsDir: '/UI_demo_outputs/agent_actions/',
+            conversationsDir: '/UI_demo_outputs/conversations/',
+            agentIds: ['alice_001', 'bob_002', 'charlie_003', 'system'],
+        };
+
+        const LOCS = {
+            A: {x: 670, y: 700}, B: {x: 1070, y: 700}, C: {x: 420, y: 200},        
+            MEETING_Alice: {x: 880, y: 120}, MEETING_Bob: {x: 950, y: 120}, MEETING_Charlie: {x: 1020, y: 120},
+            BREAK_Alice: {x: 180, y: 550}, BREAK_Bob: {x: 320, y: 550}, BREAK_Charlie: {x: 250, y: 480}, 
+            COPIER_Alice: {x: 1080, y: 580}, COPIER_Bob: {x: 1040, y: 580}, COPIER_Charlie: {x: 1000, y: 580},
+            ENTRANCE: {x: 500, y: 750} 
+        };
+
+        const DEVICE_LOCS = {
+            desk_light_A: {x: 715, y: 625, type: 'light', radius: 40, lx: 35, ly: -25}, 
+            desk_light_B: {x: 1115, y: 625, type: 'light', radius: 40, lx: 35, ly: -25}, 
+            desk_light_C: {x: 465, y: 125, type: 'light', radius: 40, lx: 35, ly: -25},
+            zone_main: {x: 600, y: 300, type: 'light', radius: 100, lx: 0, ly: -30}, 
+            meeting_room: {x: 950, y: 100, type: 'light', radius: 40, lx: 0, ly: -30},
+            laptop_A: {x: 652, y: 630, type: 'device', lx: -25, ly: 25}, 
+            monitor_A: {x: 670, y: 615, type: 'device', lx: -35, ly: -20},
+            laptop_B: {x: 1052, y: 630, type: 'device', lx: -25, ly: 25}, 
+            monitor_B: {x: 1070, y: 615, type: 'device', lx: -35, ly: -20},
+            laptop_C: {x: 402, y: 130, type: 'device', lx: -25, ly: 25}, 
+            monitor_C: {x: 420, y: 115, type: 'device', lx: -35, ly: -20},
+            photocopier: {x: 1080, y: 530, type: 'device', lx: 30, ly: -20}, 
+            projector: {x: 950, y: 165, type: 'device', lx: 30, ly: -15}, 
+            conference_phone: {x: 950, y: 200, type: 'device', lx: 35, ly: 15},
+            fridge: {x: 82, y: 455, type: 'device', lx: 35, ly: 0}, 
+            coffee_machine: {x: 80, y: 565, type: 'device', lx: 35, ly: 0}, 
+            kettle: {x: 85, y: 620, type: 'device', lx: 35, ly: 0}, 
+            microwave: {x: 82, y: 682, type: 'device', lx: 35, ly: 0}
+        };
+
+        // --- DISPLAY STATE ---
+        let agentsMap = new Map();
+        let envMap = new Map();
+        let livePowerChart = null;
+
+        // --- POLLING STATE ---
+        let lastProcessedTimestepId = 0;
+        let lastProcessedSimTime = null;
+        let processedActionIndices = new Map();  // agent_id -> last action index
+        let seenConversationIds = new Set();
+        let isPolling = false;
+        let pollTimeoutId = null;
+
+        // --- ACTION QUEUE FOR DELAYED VISUALIZATION ---
+        let actionQueue = [];              // [{type, agentName, action/data, timestamp}, ...]
+        let isProcessingQueue = false;     // Lock for sequential processing
+        const ACTION_DELAY_MS = 2500;      // Time between displaying actions
+        const MOVE_COMPLETE_CHECK_MS = 100; // Check interval for movement completion
+
+        // ==========================================
+        // INITIALIZATION
+        // ==========================================
+        async function init() {
+            const statusEl = document.getElementById('loading-status');
+            try {
+                statusEl.innerText = "Loading SQL.js Engine...";
+                const SQL = await initSqlJs({
+                    locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+                });
+                window.SQL = SQL;
+
+                statusEl.innerText = "Initializing Display...";
+                initChart();
+                initPixi();  // This will call startPolling()
+            } catch (e) {
+                console.error("Critical Init Error:", e);
+                statusEl.innerText = "Failed to initialize: " + e.message;
+            }
+        }
+
+        // ==========================================
+        // DATA TRANSFORMATION (for pivoted DB schema)
+        // ==========================================
+        function transformDeviceState(result) {
+            if (!result || !result.values || result.values.length === 0) return [];
+            const cols = result.columns;
+            const row = result.values[0];
+            const deviceNames = ['laptop_A', 'laptop_B', 'laptop_C', 'monitor_A', 'monitor_B',
+                                 'monitor_C', 'photocopier', 'projector', 'conference_phone',
+                                 'coffee_machine', 'kettle', 'microwave', 'fridge'];
+            return deviceNames.map(name => ({
+                name,
+                is_on: row[cols.indexOf(`${name}_on`)],
+                power: row[cols.indexOf(`${name}_power`)] || 0
+            })).filter(d => d.is_on !== undefined);
+        }
+
+        function transformLightState(result) {
+            if (!result || !result.values || result.values.length === 0) return [];
+            const cols = result.columns;
+            const row = result.values[0];
+            const lightNames = ['desk_light_A', 'desk_light_B', 'desk_light_C', 'zone_main', 'meeting_room'];
+            return lightNames.map(name => ({
+                name,
+                is_on: row[cols.indexOf(`${name}_on`)],
+                power: row[cols.indexOf(`${name}_power`)] || 0
+            })).filter(l => l.is_on !== undefined);
+        }
+
+        // ==========================================
+        // POLLING INFRASTRUCTURE
+        // ==========================================
+        function startPolling() {
+            if (isPolling) return;
+            isPolling = true;
+            document.getElementById('loading-screen').style.opacity = '0';
+            setTimeout(() => document.getElementById('loading-screen').style.display = 'none', 500);
+            poll();
+        }
+
+        async function poll() {
+            try {
+                await fetchLatestState();
+                await fetchNewAgentActions();
+                await fetchNewConversations();
+                if (lastProcessedTimestepId > 0) {
+                    updateConnectionStatus('connected');
+                }
+            } catch (e) {
+                console.warn("Poll error:", e);
+                updateConnectionStatus('error');
+            }
+            pollTimeoutId = setTimeout(poll, CONFIG.pollInterval);
+        }
+
+        async function fetchLatestState() {
+            // Re-fetch database with cache-busting
+            const response = await fetch(`${CONFIG.dbFile}?t=${Date.now()}`);
+
+            if (!response.ok) {
+                if (lastProcessedTimestepId === 0) {
+                    updateConnectionStatus('waiting');
+                }
+                return;
+            }
+
+            const buffer = await response.arrayBuffer();
+            const db = new window.SQL.Database(new Uint8Array(buffer));
+
+            // Query latest timestep
+            const timestepResult = db.exec(`
+                SELECT id, simulation_time, external_temp_c, building_temp_c,
+                       total_power_w, hvac_power_w
+                FROM timestep_state ORDER BY id DESC LIMIT 1
+            `);
+
+            if (timestepResult.length === 0 || timestepResult[0].values.length === 0) {
+                updateConnectionStatus('waiting');
+                return;
+            }
+
+            const cols = timestepResult[0].columns;
+            const row = timestepResult[0].values[0];
+            const timestepId = row[cols.indexOf('id')];
+            const simTime = row[cols.indexOf('simulation_time')];
+
+            // Skip if we've already processed this timestep
+            if (timestepId <= lastProcessedTimestepId) {
+                db.close();
+                return;
+            }
+
+            // Build data object
+            const data = {
+                id: timestepId,
+                simulation_time: simTime,
+                tout: row[cols.indexOf('external_temp_c')],
+                tin: row[cols.indexOf('building_temp_c')],
+                total_power: row[cols.indexOf('total_power_w')],
+                hvac_power: row[cols.indexOf('hvac_power_w')],
+            };
+
+            // Get device state
+            const deviceResult = db.exec(`SELECT * FROM device_state WHERE simulation_time = '${simTime}'`);
+            if (deviceResult.length > 0) {
+                data.devices = transformDeviceState(deviceResult[0]);
+            }
+
+            // Get light state
+            const lightResult = db.exec(`SELECT * FROM light_state WHERE simulation_time = '${simTime}'`);
+            if (lightResult.length > 0) {
+                data.lights = transformLightState(lightResult[0]);
+            }
+
+            db.close();
+
+            // Update display
+            updateDisplayWithLatestState(data);
+
+            lastProcessedTimestepId = timestepId;
+            lastProcessedSimTime = simTime;
+        }
+
+        async function fetchNewAgentActions() {
+            for (const agentId of CONFIG.agentIds) {
+                try {
+                    const response = await fetch(
+                        `${CONFIG.agentActionsDir}${agentId}_actions.json?t=${Date.now()}`
+                    );
+                    if (!response.ok) continue;
+
+                    const agentLog = await response.json();
+                    if (!agentLog || !agentLog.actions) continue;
+
+                    const lastIdx = processedActionIndices.get(agentId) || 0;
+
+                    // Queue new actions (don't process immediately)
+                    for (let i = lastIdx; i < agentLog.actions.length; i++) {
+                        const action = agentLog.actions[i];
+                        // Skip actions that don't need visualization
+                        if (action.action_type === 'no_op' ||
+                            action.action_type === 'initiate_conversation' ||
+                            action.action_type === 'accept_conversation' ||
+                            action.action_type === 'respond_to_conversation') continue;
+
+                        actionQueue.push({
+                            type: 'action',
+                            agentName: agentLog.agent_name,
+                            action: action,
+                            timestamp: new Date(action.timestamp).getTime()
+                        });
+                    }
+                    processedActionIndices.set(agentId, agentLog.actions.length);
+                } catch (e) {
+                    // File doesn't exist yet (404) or JSON parse error
+                    if (e.name === 'SyntaxError') {
+                        console.warn(`Invalid JSON in ${agentId} actions file:`, e.message);
+                    }
+                    // 404 errors are expected until agents arrive - silently continue
+                }
+            }
+
+            // Sort queue by timestamp
+            actionQueue.sort((a, b) => a.timestamp - b.timestamp);
+
+            // Start processing if not already running
+            if (!isProcessingQueue && actionQueue.length > 0) {
+                processActionQueue();
+            }
+        }
+
+        async function fetchNewConversations() {
+            // Use manifest file for reliable conversation discovery
+            // This avoids the time-window guessing that could miss conversations
+            try {
+                const response = await fetch(
+                    `${CONFIG.conversationsDir}manifest.json?t=${Date.now()}`
+                );
+                if (!response.ok) return; // Manifest doesn't exist yet
+
+                const manifest = await response.json();
+
+                // Process any conversations not yet seen
+                for (const convId of manifest.conversations) {
+                    if (seenConversationIds.has(convId)) continue;
+
+                    try {
+                        const convResponse = await fetch(
+                            `${CONFIG.conversationsDir}${convId}.json?t=${Date.now()}`
+                        );
+                        if (!convResponse.ok) continue;
+
+                        const convData = await convResponse.json();
+
+                        // Only queue if conversation has dialogue content
+                        if (convData.dialogue && convData.dialogue.length > 0) {
+                            seenConversationIds.add(convId);
+
+                            // Add to queue with timestamp
+                            actionQueue.push({
+                                type: 'conversation',
+                                data: convData,
+                                timestamp: new Date(convData.start_time).getTime()
+                            });
+
+                            // Re-sort queue by timestamp
+                            actionQueue.sort((a, b) => a.timestamp - b.timestamp);
+
+                            // Start processing if not already running
+                            if (!isProcessingQueue) {
+                                processActionQueue();
+                            }
+                        }
+                    } catch (e) {
+                        // Conversation file error - JSON parse or fetch issue
+                        if (e.name === 'SyntaxError') {
+                            console.warn(`Invalid JSON in conversation ${convId}:`, e.message);
+                        }
+                    }
+                }
+            } catch (e) {
+                // Manifest doesn't exist yet or fetch error - no conversations recorded
+            }
+        }
+
+        // ==========================================
+        // DISPLAY UPDATE FUNCTIONS
+        // ==========================================
+        function updateDisplayWithLatestState(data) {
+            // Update clock
+            const date = new Date(data.simulation_time);
+            const hour = date.getUTCHours();
+            const min = date.getUTCMinutes();
+            const timeStr = `${hour}:${min.toString().padStart(2,'0')}`;
+            const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                                'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+            const monthStr = monthNames[date.getUTCMonth()];
+            const dayStr = date.getUTCDate();
+
+            document.getElementById('sim-clock').innerText = `${monthStr} ${dayStr} • ${timeStr}`;
+
+            // Update temperature displays
+            document.getElementById('stat-temp').innerText = parseFloat(data.tin).toFixed(1);
+            document.getElementById('stat-outside').innerText = parseFloat(data.tout).toFixed(1);
+
+            // Update power displays
+            const currentTotal = Math.round(data.total_power);
+            const currentHvac = Math.round(Math.abs(data.hvac_power));
+            document.getElementById('stat-power').innerText = currentTotal + " W";
+            document.getElementById('stat-hvac').innerText = currentHvac + " W";
+
+            // Update chart (append new data point)
+            if (livePowerChart) {
+                livePowerChart.data.labels.push(timeStr);
+                livePowerChart.data.datasets[0].data.push(currentTotal);
+                livePowerChart.data.datasets[1].data.push(currentHvac);
+
+                // Keep only last 60 data points
+                if (livePowerChart.data.labels.length > 60) {
+                    livePowerChart.data.labels.shift();
+                    livePowerChart.data.datasets[0].data.shift();
+                    livePowerChart.data.datasets[1].data.shift();
+                }
+                livePowerChart.update('none');  // 'none' disables animation for smoother updates
+            }
+
+            // Update device indicators
+            if (data.devices) {
+                data.devices.forEach(dev => {
+                    const gfx = envMap.get(dev.name);
+                    if (gfx) {
+                        gfx.visible = (dev.is_on === 1 || dev.is_on === true);
+                        if (gfx.visible) gfx.updatePower(dev.power);
+                    }
+                });
+            }
+
+            // Update light indicators
+            if (data.lights) {
+                data.lights.forEach(light => {
+                    const gfx = envMap.get(light.name);
+                    if (gfx) {
+                        gfx.visible = (light.is_on === 1 || light.is_on === true);
+                        if (gfx.visible) gfx.updatePower(light.power);
+                    }
+                });
+            }
+
+            // Handle night mode
+            if (hour < 6 || hour > 19) {
+                document.body.classList.add('night-mode');
+            } else {
+                document.body.classList.remove('night-mode');
+            }
+        }
+
+        // ==========================================
+        // ACTION QUEUE PROCESSOR
+        // ==========================================
+        async function processActionQueue() {
+            if (isProcessingQueue || actionQueue.length === 0) return;
+            isProcessingQueue = true;
+
+            while (actionQueue.length > 0) {
+                const item = actionQueue.shift();
+
+                if (item.type === 'action') {
+                    await displayAction(item.agentName, item.action);
+                } else if (item.type === 'conversation') {
+                    await displayConversation(item.data);
+                }
+
+                // Wait before next action for visual separation
+                if (actionQueue.length > 0) {
+                    await sleep(ACTION_DELAY_MS);
+                }
+            }
+
+            isProcessingQueue = false;
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return `${date.getUTCHours()}:${date.getUTCMinutes().toString().padStart(2,'0')}`;
+        }
+
+        async function displayAction(agentName, action) {
+            const agent = agentsMap.get(agentName);
+            const timeStr = formatTime(action.timestamp);
+
+            // Handle movement actions - animate and wait for completion
+            if (action.action_type === 'move_to') {
+                const destCoords = LOCS[mapLocation(action.details.destination, agentName)];
+                if (agent && destCoords) {
+                    const status = (action.details.destination || '').replace(/_/g, ' ');
+                    agent.setTarget(destCoords, status, false);
+                    addLog(agentName, `Moving to ${status}`, timeStr, 'text-gray-500');
+
+                    // Wait for movement animation to complete
+                    await waitForMovement(agent);
+                }
+            }
+            // Handle arrive action - move agent to their desk
+            else if (action.action_type === 'arrive') {
+                const location = action.details.location || 'desk_area';
+                const destCoords = LOCS[mapLocation(location, agentName)];
+                if (agent && destCoords) {
+                    agent.setTarget(destCoords, 'At Desk', false);
+                    addLog(agentName, `Arrived at office`, timeStr, 'text-green-600');
+                    await waitForMovement(agent);
+                }
+            }
+            // Handle depart action - move agent to entrance and fade out
+            else if (action.action_type === 'depart') {
+                const destCoords = LOCS['ENTRANCE'];
+                if (agent && destCoords) {
+                    agent.setTarget(destCoords, 'Left Office', false);
+                    addLog(agentName, `Left the office`, timeStr, 'text-gray-500');
+                    await waitForMovement(agent);
+                }
+            }
+            // Handle equipment/lighting actions
+            else if (action.action_type === 'lights_set') {
+                const actionText = action.details.action || (action.details.on ? 'on' : 'off');
+                addLog(agentName, `Turned lights ${actionText}`, timeStr, 'text-amber-600');
+            }
+            else if (action.action_type === 'equipment_set') {
+                addLog(agentName, `Turned ${action.details.equipment_name} ${action.details.on ? 'ON' : 'OFF'}`, timeStr, 'text-amber-600');
+            }
+            else if (action.action_type === 'equipment_auto_off') {
+                addLog(agentName, `${action.details.equipment_name} auto-off (timer expired)`, timeStr, 'text-orange-500');
+            }
+            else if (action.action_type === 'thermostat_adjust') {
+                addLog(agentName, `Adjusted thermostat ${action.details.direction}`, timeStr, 'text-amber-600');
+            }
+            // Handle window action
+            else if (action.action_type === 'window_set') {
+                const state = action.details.open ? 'Opened' : 'Closed';
+                addLog(agentName, `${state} window`, timeStr, 'text-cyan-600');
+            }
+        }
+
+        async function waitForMovement(agent) {
+            return new Promise(resolve => {
+                const check = () => {
+                    const dx = agent.targetX - agent.container.x;
+                    const dy = agent.targetY - agent.container.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 5) {
+                        resolve();
+                    } else {
+                        setTimeout(check, MOVE_COMPLETE_CHECK_MS);
+                    }
+                };
+                check();
+            });
+        }
+
+        async function displayConversation(convData) {
+            const timeStr = formatTime(convData.start_time);
+
+            // Update status to TALK
+            updateConnectionStatus('talking');
+
+            // Display each utterance with timing delays
+            for (const line of convData.dialogue) {
+                const speakerName = line.speaker_name || line.speaker;
+                const agentName = ['Alice', 'Bob', 'Charlie'].find(
+                    n => speakerName.toLowerCase().includes(n.toLowerCase())
+                ) || speakerName;
+
+                const agent = agentsMap.get(agentName);
+
+                if (agent) {
+                    agent.showChat(line.utterance, 4000);
+                }
+                addLog(agentName, `"${line.utterance}"`, timeStr, 'text-blue-600');
+
+                // Wait between utterances
+                await sleep(3000);
+            }
+
+            // Restore LIVE status
+            updateConnectionStatus('connected');
+        }
+
+        // ==========================================
+        // CONNECTION STATUS
+        // ==========================================
+        function updateConnectionStatus(status) {
+            const dot = document.getElementById('status-dot');
+            const title = document.getElementById('status-title');
+
+            switch (status) {
+                case 'connected':
+                    dot.className = "w-4 h-4 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_#22c55e]";
+                    title.innerHTML = `OFFICE <span class="text-blue-500">LIVE</span>`;
+                    break;
+                case 'waiting':
+                    dot.className = "w-4 h-4 rounded-full bg-yellow-400 animate-pulse shadow-[0_0_10px_#facc15]";
+                    title.innerHTML = `OFFICE <span class="text-yellow-500">WAITING</span>`;
+                    break;
+                case 'talking':
+                    dot.className = "w-4 h-4 rounded-full bg-yellow-400 animate-pulse shadow-[0_0_10px_#facc15]";
+                    title.innerHTML = `OFFICE <span class="text-yellow-500">TALK</span>`;
+                    break;
+                case 'error':
+                    dot.className = "w-4 h-4 rounded-full bg-red-500 shadow-[0_0_10px_#ef4444]";
+                    title.innerHTML = `OFFICE <span class="text-red-500">OFFLINE</span>`;
+                    break;
+            }
+        }
+
+        function initChart() {
+            const ctx = document.getElementById('powerChart').getContext('2d');
+            const gradientTotal = ctx.createLinearGradient(0, 0, 0, 150);
+            gradientTotal.addColorStop(0, 'rgba(59, 130, 246, 0.3)'); gradientTotal.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+            
+            const gradientHVAC = ctx.createLinearGradient(0, 0, 0, 150);
+            gradientHVAC.addColorStop(0, 'rgba(245, 158, 11, 0.3)'); gradientHVAC.addColorStop(1, 'rgba(245, 158, 11, 0.0)');
+
+            livePowerChart = new Chart(ctx, {
+                type: 'line',
+                data: { 
+                    labels: [], 
+                    datasets: [
+                        { label: 'Total Power (W)', data: [], borderColor: '#3b82f6', backgroundColor: gradientTotal, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, fill: true, tension: 0.4 },
+                        { label: 'HVAC Power (W)', data: [], borderColor: '#f59e0b', backgroundColor: gradientHVAC, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, fill: true, tension: 0.4 }
+                    ] 
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: { duration: 150 }, 
+                    plugins: { legend: { display: false }, tooltip: { enabled: true } },
+                    scales: {
+                        x: { display: true, grid: { display: false, drawBorder: false }, ticks: { font: { size: 9 }, color: '#94a3b8', maxTicksLimit: 5 } },
+                        y: { display: true, grid: { color: '#f1f5f9', drawBorder: false }, ticks: { font: { size: 9 }, color: '#94a3b8', maxTicksLimit: 4 } }
+                    }
+                }
+            });
+        }
+
+        function mapLocation(dest, agentName) {
+            if (!dest) return "ENTRANCE"; const d = dest.toLowerCase();
+            if (d.includes("office_main") || d.includes("desk")) { if (agentName === "Bob") return "B"; if (agentName === "Charlie") return "C"; return "A"; }
+            if (d.includes("meeting")) return `MEETING_${agentName}`; if (d.includes("break")) return `BREAK_${agentName}`; if (d.includes("shared") || d.includes("copier")) return `COPIER_${agentName}`;
+            if (d.includes("entrance") || d.includes("out") || d.includes("leave")) return "ENTRANCE"; return "A";
+        }
+
+        // ==========================================
+        // VISUAL ENGINE (PIXI.JS)
+        // ==========================================
+        function initPixi() {
+            const container = document.getElementById('canvas-container');
+            app = new PIXI.Application({ resizeTo: container, backgroundAlpha: 0, antialias: true });
+            container.appendChild(app.view);
+            world = new PIXI.Container(); app.stage.addChild(world);
+            floorLayer = new PIXI.Container(); envLayer = new PIXI.Container(); 
+            agentLayer = new PIXI.Container(); bubbleLayer = new PIXI.Container();
+            world.addChild(floorLayer, envLayer, agentLayer, bubbleLayer);
+
+            // Set up world scaling BEFORE async load - ensures agents render correctly even if SVG fails
+            const scale = Math.min((container.clientWidth*0.95)/1200, (container.clientHeight*0.95)/800);
+            world.scale.set(scale);
+            world.x = (container.clientWidth - 1200*scale)/2;
+            world.y = (container.clientHeight - 800*scale)/2;
+
+            PIXI.Assets.load(CONFIG.svgFile).then((texture) => {
+                const bg = new PIXI.Sprite(texture);
+                bg.width = 1200;
+                bg.height = 800;
+                floorLayer.addChild(bg);
+            }).catch((err) => {
+                console.error('Failed to load floorplan SVG:', err);
+                // Draw a placeholder rectangle so agents are still visible
+                const placeholder = new PIXI.Graphics();
+                placeholder.beginFill(0xE5E7EB);
+                placeholder.drawRect(0, 0, 1200, 800);
+                placeholder.endFill();
+                floorLayer.addChild(placeholder);
+            });
+
+            Object.keys(DEVICE_LOCS).forEach(key => {
+                const info = DEVICE_LOCS[key];
+                const gfx = new PIXI.Graphics(); gfx.x = info.x; gfx.y = info.y;
+                
+                if (info.type === 'light') { gfx.beginFill(0xFDE047, 0.35); gfx.drawCircle(0, 0, info.radius); gfx.endFill(); } 
+                else if (info.type === 'device') { gfx.lineStyle(2, 0xFFFFFF); gfx.beginFill(0x22C55E); gfx.drawCircle(0, 0, 5); gfx.endFill(); }
+                
+                const badge = new PIXI.Container();
+                badge.position.set(info.lx || 15, info.ly || -15);
+                
+                const badgeBg = new PIXI.Graphics();
+                const powerText = new PIXI.Text("0W", { fontFamily: 'Inter', fontWeight: '800', fontSize: 11, fill: '#1d4ed8' });
+                powerText.anchor.set(0.5); 
+                
+                badge.addChild(badgeBg, powerText);
+                gfx.addChild(badge);
+                
+                gfx.updatePower = function(watts) {
+                    powerText.text = `${Math.round(watts)}W`;
+                    const bgWidth = powerText.width + 12; 
+                    badgeBg.clear();
+                    badgeBg.beginFill(0xFFFFFF, 0.95);
+                    badgeBg.lineStyle(1, 0xbfdbfe, 1); 
+                    badgeBg.drawRoundedRect(-bgWidth/2, -11, bgWidth, 22, 11); 
+                    badgeBg.endFill();
+                };
+
+                gfx.visible = false; 
+                envMap.set(key, gfx); envLayer.addChild(gfx);
+            });
+
+            ["Alice", "Bob", "Charlie"].forEach(name => {
+                const agent = new Agent(name, LOCS.ENTRANCE);
+                agentsMap.set(name, agent);
+            });
+            
+            app.ticker.add(delta => agentsMap.forEach(agent => agent.update(delta)));
+
+            // Start polling for real-time updates
+            startPolling(); 
+        }
+
+        class Agent {
+            constructor(name, startPos) {
+                this.name = name; this.targetX = startPos.x; this.targetY = startPos.y;
+                this.container = new PIXI.Container(); this.container.x = startPos.x; this.container.y = startPos.y; this.container.alpha = 0.5; 
+                
+                this.activeBubble = null;
+                this.bubbleTimeout = null;
+
+                const circle = new PIXI.Graphics(); circle.lineStyle(3, 0xFFFFFF);
+                circle.beginFill(name === "Alice" ? 0x3B82F6 : name === "Bob" ? 0x10B981 : 0xF59E0B).drawCircle(0,0,22).endFill();
+                const label = new PIXI.Text(name.substring(0,2).toUpperCase(), { fontFamily: 'Inter', fontWeight: '800', fontSize: 14, fill: 'white' }); label.anchor.set(0.5);
+                this.statusText = new PIXI.Text("Away", { fontFamily: 'Inter', fontWeight: '600', fontSize: 12, fill: 0x94A3B8, align: 'center' });
+                this.statusText.anchor.set(0.5); this.statusText.y = 35;
+                this.container.addChild(this.statusText, circle, label); agentLayer.addChild(this.container);
+            }
+
+            update(delta) {
+                const dx = this.targetX - this.container.x; const dy = this.targetY - this.container.y; const dist = Math.sqrt(dx*dx + dy*dy);
+                const stepSize = CONFIG.walkingSpeed * delta;
+                
+                if (dist > stepSize) { this.container.x += (dx / dist) * stepSize; this.container.y += (dy / dist) * stepSize; } 
+                else if (dist > 0) { this.container.x = this.targetX; this.container.y = this.targetY; }
+                
+                if (this.activeBubble) { 
+                    if (this.activeBubble.isRightSide) { this.activeBubble.x = this.container.x - 260 + 10; } 
+                    else { this.activeBubble.x = this.container.x + 25; }
+                    this.activeBubble.y = this.container.y - this.activeBubble.bgHeight - 15; 
+                }
+            }
+
+            setTarget(pos, status, instant = false) {
+                if(!pos) return; 
+                this.targetX = pos.x; this.targetY = pos.y;
+                
+                if (instant) {
+                    this.container.x = pos.x;
+                    this.container.y = pos.y;
+                }
+
+                this.statusText.text = status.replace("Checkpoint:", "").trim().substring(0, 18);
+                if(status.toLowerCase().includes("away") || status.toLowerCase().includes("entrance") || status.toLowerCase().includes("left building")) {
+                    this.container.alpha = 0.4; this.statusText.style.fill = 0x94A3B8;
+                } else { this.container.alpha = 1.0; this.statusText.style.fill = 0x333333; }
+            }
+
+            showChat(msg, durationMs = 6000) {
+                if (this.activeBubble) bubbleLayer.removeChild(this.activeBubble);
+                if (this.bubbleTimeout) clearTimeout(this.bubbleTimeout);
+
+                const bubble = new PIXI.Container();
+                const text = new PIXI.Text(msg, { fontFamily: 'Inter', fontSize: 11, fill: '#1F2937', wordWrap: true, wordWrapWidth: 240, fontWeight: '500', lineHeight: 16 });
+                text.position.set(10, 10);
+                
+                const bgWidth = 260;
+                const bgHeight = text.height + 20; 
+                bubble.bgHeight = bgHeight; 
+                const isRightSide = this.container.x > 700;
+                bubble.isRightSide = isRightSide;
+
+                const bg = new PIXI.Graphics();
+                bg.beginFill(0xFFFFFF).lineStyle(1, 0xE5E7EB).drawRoundedRect(0, 0, bgWidth, bgHeight, 12).endFill();
+                
+                const pointer = new PIXI.Graphics();
+                pointer.beginFill(0xFFFFFF).lineStyle(1, 0xE5E7EB).moveTo(0,0).lineTo(10,10).lineTo(20,0);
+                pointer.y = bgHeight - 1; 
+
+                if (isRightSide) { pointer.x = bgWidth - 30; bubble.x = this.container.x - bgWidth + 10; } 
+                else { pointer.x = 10; bubble.x = this.container.x + 25; }
+                bubble.y = this.container.y - bgHeight - 15;
+                
+                bubble.addChild(bg, pointer, text); bubbleLayer.addChild(bubble); this.activeBubble = bubble;
+                
+                bubble.scale.set(0); let scale = 0;
+                const pop = () => { if(scale<1){ scale+=0.1; bubble.scale.set(scale); requestAnimationFrame(pop); }}; pop();
+                
+                this.bubbleTimeout = setTimeout(() => { 
+                    if(this.activeBubble === bubble) {
+                        bubbleLayer.removeChild(bubble); 
+                        this.activeBubble = null;
+                    }
+                }, durationMs); 
+            }
+        }
+
+        // ==========================================
+        // ACTIVITY LOG
+        // ==========================================
+        function addLog(name, msg, timeStr, colorClass) {
+            if(!msg || msg.trim() === "") return;
+            const feed = document.getElementById('chat-feed');
+            const div = document.createElement('div');
+            div.className = "bg-white p-3 rounded-lg shadow-sm border border-gray-100 mb-2 slide-in";
+            div.innerHTML = `
+                <div class="flex items-center justify-between mb-1">
+                    <div class="font-bold text-xs text-gray-800">${name}</div>
+                    <div class="text-[10px] text-gray-400 font-mono">${timeStr}</div>
+                </div>
+                <p class="text-xs ${colorClass || 'text-gray-700'} leading-snug">${msg}</p>
+            `;
+            feed.prepend(div);
+        }
+
+        init();
+    </script>
+</body>
+</html>

@@ -6,8 +6,11 @@ Manages per-desk and zone lighting state and power tracking for the building sim
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Default power consumption values (Watts)
@@ -325,6 +328,7 @@ class LightingManager:
                 desk_light_name = f"desk_light_{desk_suffix}"
                 if desk_light_name in self._lights:
                     return self.set_light_state(desk_light_name, on_state)
+            logger.warning(f"[LIGHTING] Light target not found: '{target}'")
             return False
 
         # Specific light by name

@@ -19,6 +19,7 @@ from bsm.agents.skeleton import (
     OccupantStepDecision,
     OccupantAction,
     StepDecisions,
+    LOCATION_TRANSITIONS,
 )
 from bsm.agents.equipment_manager import EquipmentManager
 from bsm.agents.lighting_manager import LightingManager
@@ -29,7 +30,8 @@ from bsm.agents.desk_manager import DeskManager
 # StepDecisions to OccupantAction Converter
 # ---------------------------------------------------------------------------
 
-# Kitchen appliances that use use_appliance action type
+# Kitchen appliances with auto-off timers (managed by EquipmentManager)
+# These can be controlled via equipment_set like any other equipment
 KITCHEN_APPLIANCES = {"kettle", "coffee_machine", "microwave"}
 
 
@@ -84,21 +86,14 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
     after_move_equipment = [eq for eq in decision.equipment_decisions if not getattr(eq, 'before_move', False)]
 
     # Helper function to convert equipment decision to action
+    # All equipment (including kitchen appliances) use equipment_set
     def _add_equipment_action(eq_decision) -> None:
         if eq_decision.action == "turn_on":
-            equipment_name = eq_decision.equipment_name
-            if equipment_name.lower() in KITCHEN_APPLIANCES:
-                actions.append(OccupantAction(
-                    action_type="use_appliance",
-                    parameters={"appliance_name": equipment_name},
-                    confidence=0.8,
-                ))
-            else:
-                actions.append(OccupantAction(
-                    action_type="equipment_set",
-                    parameters={"equipment_name": equipment_name, "on": True},
-                    confidence=0.8,
-                ))
+            actions.append(OccupantAction(
+                action_type="equipment_set",
+                parameters={"equipment_name": eq_decision.equipment_name, "on": True},
+                confidence=0.8,
+            ))
         elif eq_decision.action == "turn_off":
             actions.append(OccupantAction(
                 action_type="equipment_set",
@@ -138,21 +133,26 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
                         confidence=0.8,
                     ))
 
-    # 3. Location move
-    if decision.location.action == "move" and decision.location.destination:
-        actions.append(OccupantAction(
-            action_type="move_to",
-            parameters={"destination": decision.location.destination},
-            confidence=0.8,
-        ))
+    # 3. Location move (multi-step path support)
+    #    Agent can specify a path like ["entrance", "outside"] for outside trips
+    if decision.location.action == "move" and decision.location.destinations:
+        for dest in decision.location.destinations:
+            actions.append(OccupantAction(
+                action_type="move_to",
+                parameters={"destination": dest},
+                confidence=0.8,
+            ))
 
     # 3. Lighting (after location move, at new location) - ON/OFF only
     if decision.lighting.action in ("turn_on", "turn_off"):
         light_on = decision.lighting.action == "turn_on"
+        # Use target_device if specified, otherwise default to desk_light_A
+        # Valid light names: desk_light_A, desk_light_B, desk_light_C, zone_main, meeting_room
+        target = decision.lighting.target_device or "desk_light_A"
         actions.append(OccupantAction(
             action_type="lights_set",
             parameters={
-                "target": decision.lighting.target_device or "desk_light",
+                "target": target,
                 "on": light_on,
             },
             confidence=0.8,
@@ -205,68 +205,16 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
                 confidence=0.8,
             ))
 
-    # Break decision (always present; check action for actual break requests)
-    if decision.break_decision.action not in ("not_applicable", "continue_working"):
-        if decision.break_decision.action == "take_break":
-            actions.append(OccupantAction(
-                action_type="take_break",
-                parameters={
-                    "location": decision.break_decision.break_type,
-                    "activity": decision.break_decision.activity,
-                },
-                confidence=0.8,
-            ))
-            # Auto-add appliance use for tea/coffee breaks
-            # Equipment is auto-added regardless of location since agent will move to break_area
-            activity = (decision.break_decision.activity or "").lower()
-            # Check if agent already included equipment decisions for these appliances
-            existing_equipment = {
-                eq.equipment_name.lower()
-                for eq in decision.equipment_decisions
-                if eq.action == "turn_on"
-            }
-            if activity == "tea" and "kettle" not in existing_equipment:
-                print(f"  [AUTO] Adding kettle for {decision.occupant_id}'s tea break")
-                actions.append(OccupantAction(
-                    action_type="use_appliance",
-                    parameters={"appliance_name": "kettle"},
-                    confidence=0.8,
-                ))
-            elif activity == "coffee" and "coffee_machine" not in existing_equipment:
-                print(f"  [AUTO] Adding coffee_machine for {decision.occupant_id}'s coffee break")
-                actions.append(OccupantAction(
-                    action_type="use_appliance",
-                    parameters={"appliance_name": "coffee_machine"},
-                    confidence=0.8,
-                ))
-        elif decision.break_decision.action == "go_out_for_break":
-            actions.append(OccupantAction(
-                action_type="go_out_for_break",
-                parameters={
-                    "activity": decision.break_decision.activity or "fresh_air",
-                },
-                confidence=0.8,
-            ))
-        elif decision.break_decision.action == "return_from_lunch":
-            actions.append(OccupantAction(
-                action_type="return_from_lunch",
-                parameters={},
-                confidence=0.8,
-            ))
-        elif decision.break_decision.action == "return_from_break":
-            actions.append(OccupantAction(
-                action_type="return_from_break",
-                parameters={},
-                confidence=0.8,
-            ))
-        # "continue_working" and "not_applicable" don't generate actions
+    # Break decision is now metadata only - no actions generated
+    # Agents use move_to + equipment_set directly for breaks/lunch
+    # break_decision.action can be: "on_break", "continue_working", "not_applicable"
 
     # NOTE: Meeting equipment is now processed BEFORE location move (see step 2 above)
     # This ensures equipment can be turned off before leaving meeting_room
 
     # Deduplicate equipment actions - keep only the last action for each equipment
     # This prevents duplicate projector ON, projector ON at meeting start/end
-    seen_equipment: dict[str, int] = {}  # equipment_name -> last index
+    seen_equipment: Dict[str, int] = {}  # equipment_name -> last index
     for i, action in enumerate(actions):
         if action.action_type == "equipment_set":
             equipment_name = action.parameters.get("equipment_name", "").lower()
@@ -326,6 +274,46 @@ def convert_step_decisions_to_actions(decision: StepDecisions) -> List[OccupantA
                 f"to after move_to meeting_room"
             )
 
+    # --- Reorder actions for break_area arrival ---
+    # When moving TO break_area, ensure move happens BEFORE turning on kitchen appliances
+    # (Kitchen appliances can only be controlled from break_area)
+    moving_to_break_area = any(
+        a.action_type == "move_to" and a.parameters.get("destination") == "break_area"
+        for a in actions
+    )
+
+    if moving_to_break_area:
+        # Kitchen appliances at break_area
+        kitchen_equipment_names = {"kettle", "coffee_machine", "microwave"}
+
+        kitchen_equipment_on = [
+            a for a in actions
+            if a.action_type == "equipment_set"
+            and a.parameters.get("on") is True
+            and a.parameters.get("equipment_name") in kitchen_equipment_names
+        ]
+
+        if kitchen_equipment_on:
+            # Remove from current position
+            actions = [a for a in actions if a not in kitchen_equipment_on]
+
+            # Find move_to break_area and insert equipment AFTER it
+            move_idx = next(
+                (i for i, a in enumerate(actions)
+                 if a.action_type == "move_to" and a.parameters.get("destination") == "break_area"),
+                len(actions)
+            )
+
+            # Insert kitchen equipment actions right after the move
+            for eq_action in kitchen_equipment_on:
+                move_idx += 1
+                actions.insert(move_idx, eq_action)
+
+            logger.debug(
+                f"[REORDER] Moved {len(kitchen_equipment_on)} kitchen equipment ON actions "
+                f"to after move_to break_area"
+            )
+
     # If no actions, add explicit no_op
     if not actions:
         actions.append(OccupantAction(
@@ -367,6 +355,12 @@ DEFAULT_OFFICE_LOCATIONS = {
     "entrance": {
         "name": "Entrance",
         "description": "Main entrance, near Desk_A",
+    },
+    "outside": {
+        "name": "Outside",
+        "description": "Outside the building - agent has left the office",
+        "is_outside_building": True,  # Special flag - agent not present in building
+        "equipment_access": [],  # No equipment available outside
     },
 }
 
@@ -430,11 +424,15 @@ class ZoneStateProvider:
             "weather_data_available": weather_data_available,
         }
 
-    def get_weather_description(self) -> str:
+    def get_weather_description(self, month: int = None) -> str:
         """Get human-readable weather description.
 
         Returns 'weather data unavailable' if outdoor temperature is missing,
         rather than generating a potentially misleading description.
+
+        Args:
+            month: Month (1-12) for season-aware temperature descriptions.
+                   If None, uses absolute thresholds.
         """
         weather = self._get_weather()
         temp_raw = weather.get("air_temp_c")
@@ -447,15 +445,47 @@ class ZoneStateProvider:
         wind = weather.get("wind_speed_local_ms", 0.0)
         solar = weather.get("solar_irradiance_w_m2", 0.0)
 
+        # Season-aware temperature descriptions
         desc_parts = []
-        if temp < 5:
-            desc_parts.append("cold")
-        elif temp < 15:
-            desc_parts.append("cool")
-        elif temp < 25:
-            desc_parts.append("mild")
+        is_summer = month is not None and 6 <= month <= 8
+        is_winter = month is not None and month in (12, 1, 2)
+
+        if is_summer:
+            # Summer: 15-25°C is pleasant, not "cool" or "mild"
+            if temp < 10:
+                desc_parts.append("unusually cold")
+            elif temp < 15:
+                desc_parts.append("cool for summer")
+            elif temp < 22:
+                desc_parts.append("pleasant")
+            elif temp < 28:
+                desc_parts.append("warm")
+            else:
+                desc_parts.append("hot")
+        elif is_winter:
+            # Winter: 5-15°C is mild, <5°C is expected cold
+            if temp < 0:
+                desc_parts.append("freezing")
+            elif temp < 5:
+                desc_parts.append("cold")
+            elif temp < 10:
+                desc_parts.append("mild for winter")
+            elif temp < 15:
+                desc_parts.append("unusually warm")
+            else:
+                desc_parts.append("very warm for winter")
         else:
-            desc_parts.append("warm")
+            # Spring/Fall or no month provided - standard thresholds
+            if temp < 5:
+                desc_parts.append("cold")
+            elif temp < 12:
+                desc_parts.append("cool")
+            elif temp < 18:
+                desc_parts.append("mild")
+            elif temp < 24:
+                desc_parts.append("warm")
+            else:
+                desc_parts.append("hot")
 
         if solar > 500:
             desc_parts.append("sunny")
@@ -644,11 +674,19 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         }
 
         # Build other occupants list with status
+        # FIX: Use location-based awareness instead of desk-only view
+        # This ensures agents can see each other at break_area, entrance, outside, etc.
         other_occupants = []
         other_occupants_at_lunch = []
         other_occupants_on_break = []
-        for occ in occupancy.get("other_occupants", []):
-            occ_id = occ["id"]
+
+        # Get ALL other agents at the SAME location as this agent
+        current_location = self.get_agent_location(occupant_id)
+        agents_here = self.get_agents_at_location(current_location)
+
+        for occ_id in agents_here:
+            if occ_id == occupant_id:
+                continue  # Skip self
             if self._present_occupants.get(occ_id, False):
                 status = self.get_agent_status(occ_id)
                 other_occupants.append(occ_id)
@@ -676,7 +714,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             # Thermal state
             "indoor_temp_c": thermal["indoor_temp_c"],
             "outdoor_temp_c": thermal["outdoor_temp_c"],
-            "weather_description": self.zone_state.get_weather_description(),
+            "weather_description": self.zone_state.get_weather_description(now.month),
             "is_sunny": thermal["is_sunny"],
 
             # Control states
@@ -759,23 +797,32 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             ][-3:],  # Only show last 3 errors
         }
 
-    def apply_decision(self, decision: OccupantStepDecision) -> None:
+    def apply_decision(
+        self,
+        decision: OccupantStepDecision,
+        current_time: Optional[datetime] = None,
+    ) -> None:
         """
         Apply agent decision to simulation state.
 
         Handles all action types and collects votes for shared controls.
+
+        Args:
+            decision: The agent's decision containing actions to apply
+            current_time: Current simulation time (for equipment auto-off tracking)
         """
         occupant_id = decision.occupant_id
         current_desk = self.desks.get_desk_for_occupant(occupant_id)
 
         for action in decision.actions:
-            self._apply_action(action, occupant_id, current_desk)
+            self._apply_action(action, occupant_id, current_desk, current_time)
 
     def _apply_action(
         self,
         action: OccupantAction,
         occupant_id: str,
-        current_desk: Optional[str]
+        current_desk: Optional[str],
+        current_time: Optional[datetime] = None,
     ) -> None:
         """Apply a single action."""
         action_type = action.action_type
@@ -840,7 +887,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 if self._desk_chosen_today.get(occupant_id, False):
                     # Agent already chose a desk today - ignore the request
                     current_desk = self.desks.get_desk_for_occupant(occupant_id)
-                    print(f"[DESK] {occupant_id} tried to change desk but already has {current_desk} for today")
+                    logger.warning(f"[DESK] {occupant_id}: Attempted desk change but already assigned {current_desk}")
                     return
                 # Assign desk and mark as chosen for today
                 self.desks.assign_desk(occupant_id, desk_name)
@@ -857,13 +904,14 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 )
                 valid_names = [eq["name"] for eq in location_equipment]
 
-                # Also include desk equipment directly if not already included
-                agent_desk = self.desks.get_desk_for_occupant(occupant_id) if current_desk else None
-                if agent_desk:
-                    desk_equipment = self.get_equipment_at_location(agent_desk)
-                    for eq in desk_equipment:
-                        if eq["name"] not in valid_names:
-                            valid_names.append(eq["name"])
+                # Only include desk equipment when agent is at their desk
+                if current_location == "desk_area":
+                    agent_desk = self.desks.get_desk_for_occupant(occupant_id) if current_desk else None
+                    if agent_desk:
+                        desk_equipment = self.get_equipment_at_location(agent_desk)
+                        for eq in desk_equipment:
+                            if eq["name"] not in valid_names:
+                                valid_names.append(eq["name"])
 
                 # Check if equipment is valid for this agent
                 if equipment_name not in valid_names:
@@ -891,7 +939,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                     )
                     return
 
-            self.equipment.apply_equipment_action(params, occupant_id)
+            self.equipment.apply_equipment_action(params, occupant_id, current_time)
 
         elif action_type == "attend_meeting":
             self.desks.enter_meeting_room(occupant_id)
@@ -900,8 +948,8 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
             # Turn on meeting room lights and equipment if first person
             if self.desks.get_meeting_room().get_occupant_count() == 1:
                 self.lighting.turn_on_light("meeting_room")
-                self.equipment.turn_on_equipment("projector", occupant_id)
-                self.equipment.turn_on_equipment("conference_phone", occupant_id)
+                self.equipment.turn_on_equipment_with_time("projector", occupant_id, current_time)
+                self.equipment.turn_on_equipment_with_time("conference_phone", occupant_id, current_time)
 
         elif action_type == "leave_meeting":
             self.desks.leave_meeting_room(occupant_id)
@@ -916,7 +964,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         elif action_type == "use_photocopier":
             is_using = params.get("using", True)
             if is_using:
-                self.equipment.turn_on_equipment("photocopier", occupant_id)
+                self.equipment.turn_on_equipment_with_time("photocopier", occupant_id, current_time)
             else:
                 self.equipment.turn_off_equipment("photocopier")
 
@@ -940,55 +988,48 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
 
         elif action_type == "move_to":
             # Move agent to a different location
-            location = params.get("destination")  # Matches LocationDecision.destination field
+            # Note: set_agent_location() handles presence updates for "outside" transitions
+            location = params.get("destination")  # Single destination from OccupantAction parameters
             if location:
-                self.set_agent_location(occupant_id, location)
-                # Auto-clear lunch/break status if returning to desk area
-                # This handles the case where agent moves to desk without explicit return action
-                if location == "desk_area":
-                    status = self.get_agent_status(occupant_id)
-                    if status.get("at_lunch"):
-                        self.set_agent_status(occupant_id, "at_lunch", False)
-                        self.set_agent_status(occupant_id, "at_desk", True)
-                    if status.get("on_break"):
-                        self.set_agent_status(occupant_id, "on_break", False)
-                        self.set_agent_status(occupant_id, "at_desk", True)
+                current_location = self.get_agent_location(occupant_id)
 
-        # Handle break/lunch actions with location tracking
-        elif action_type == "go_to_lunch":
-            self.set_agent_status(occupant_id, "at_lunch", True)
-            self.set_agent_status(occupant_id, "at_desk", False)
-            self.set_agent_location(occupant_id, "break_area")
+                # Full validation using LOCATION_TRANSITIONS
+                valid_destinations = LOCATION_TRANSITIONS.get(current_location, [])
 
-        elif action_type == "go_out_for_lunch":
-            self.set_agent_status(occupant_id, "at_lunch", True)
-            self.set_agent_status(occupant_id, "at_desk", False)
-            self.set_agent_status(occupant_id, "out_of_office", True)
-            self.set_agent_location(occupant_id, "outside")  # Outside the building
+                if location not in valid_destinations:
+                    # Invalid transition - log and track for agent feedback
+                    reason = f"Invalid move: {current_location} -> {location}. Valid destinations from {current_location}: {valid_destinations}"
+                    logger.warning(f"[MOVEMENT] {occupant_id}: {reason}")
 
-        elif action_type == "return_from_lunch":
-            self.set_agent_status(occupant_id, "at_lunch", False)
-            self.set_agent_status(occupant_id, "at_desk", True)
-            self.set_agent_status(occupant_id, "out_of_office", False)
-            self.set_agent_location(occupant_id, "desk_area")
+                    # Track error for agent feedback
+                    if not hasattr(self, '_dropped_actions'):
+                        self._dropped_actions = {}
+                    if occupant_id not in self._dropped_actions:
+                        self._dropped_actions[occupant_id] = []
+                    self._dropped_actions[occupant_id].append({
+                        "action": "move_to",
+                        "params": {"destination": location},
+                        "reason": reason,
+                    })
+                    # Don't execute invalid move
+                else:
+                    # Valid transition - set_agent_location handles presence for outside
+                    success = self.set_agent_location(occupant_id, location)
+                    if not success:
+                        logger.warning(f"[LOCATION] {occupant_id}: Failed to move to '{location}'")
 
-        elif action_type == "take_break":
-            self.set_agent_status(occupant_id, "on_break", True)
-            self.set_agent_status(occupant_id, "at_desk", False)
-            self.set_agent_location(occupant_id, "break_area")
+                    # Auto-clear lunch/break status if returning to desk area
+                    if location == "desk_area" and success:
+                        status = self.get_agent_status(occupant_id)
+                        if status.get("at_lunch"):
+                            self.set_agent_status(occupant_id, "at_lunch", False)
+                            self.set_agent_status(occupant_id, "at_desk", True)
+                        if status.get("on_break"):
+                            self.set_agent_status(occupant_id, "on_break", False)
+                            self.set_agent_status(occupant_id, "at_desk", True)
 
-        elif action_type == "go_out_for_break":
-            # Leave building for a short break (walk, coffee run, fresh air)
-            self.set_agent_status(occupant_id, "on_break", True)
-            self.set_agent_status(occupant_id, "at_desk", False)
-            self.set_agent_status(occupant_id, "out_of_office", True)
-            self.set_agent_location(occupant_id, "outside")
-
-        elif action_type == "return_from_break":
-            self.set_agent_status(occupant_id, "on_break", False)
-            self.set_agent_status(occupant_id, "at_desk", True)
-            self.set_agent_status(occupant_id, "out_of_office", False)  # Clear in case was outside
-            self.set_agent_location(occupant_id, "desk_area")
+        # NOTE: Break/lunch action types removed. Agents use move_to + equipment_set directly.
+        # Status is inferred from location (break_area = on break, outside = out of office)
 
         elif action_type == "use_appliance":
             # Use an appliance at current location
@@ -1000,8 +1041,8 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 equipment_names = [eq["name"] for eq in location_equipment]
 
                 if appliance_name in equipment_names:
-                    # Turn on the appliance (will auto-off after duration or next timestep)
-                    self.equipment.turn_on_equipment(appliance_name, occupant_id)
+                    # Turn on the appliance (will auto-off after duration - kettle 2min, etc.)
+                    self.equipment.turn_on_equipment_with_time(appliance_name, occupant_id, current_time)
 
         elif action_type == "initiate_conversation":
             # Record conversation intent - actual conversation handled by manager
@@ -1012,17 +1053,38 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 # Store the conversation request for manager to process
                 if not hasattr(self, '_pending_conversations'):
                     self._pending_conversations = []
-                self._pending_conversations.append({
-                    "initiator": occupant_id,
-                    "target": target_agent,
-                    "topic": topic,
-                })
+
+                # Deduplication: Check if conversation between these agents is already pending
+                # This prevents both Alice->Bob and Bob->Alice from queueing the same conversation
+                already_pending = False
+                for pending in self._pending_conversations:
+                    if (pending["initiator"] == occupant_id and pending["target"] == target_agent) or \
+                       (pending["initiator"] == target_agent and pending["target"] == occupant_id):
+                        already_pending = True
+                        logger.debug(
+                            f"[CONV] Skipping duplicate conversation: {occupant_id} -> {target_agent} "
+                            f"(already pending: {pending['initiator']} -> {pending['target']})"
+                        )
+                        break
+
+                if not already_pending:
+                    self._pending_conversations.append({
+                        "initiator": occupant_id,
+                        "target": target_agent,
+                        "topic": topic,
+                    })
 
         elif action_type == "update_daily_plan":
             # Record plan update intent - actual update handled by manager
             # Manager has access to GenerativeAgent.update_daily_plan()
             updates = params.get("updates", {})
             reason = params.get("reason", "Agent requested plan update")
+
+            # Filter out None values at this level too (defensive)
+            if isinstance(updates, dict):
+                updates = {k: v for k, v in updates.items() if v is not None}
+
+            # Only record if there's actual content
             if updates:
                 if not hasattr(self, '_pending_plan_updates'):
                     self._pending_plan_updates = []
@@ -1042,7 +1104,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
                 f"location={location} | status={status_flags} | params={params}"
             )
 
-    def get_pending_conversations(self) -> list:
+    def get_pending_conversations(self) -> List[Dict[str, Any]]:
         """Get and clear pending conversation requests."""
         if not hasattr(self, '_pending_conversations'):
             return []
@@ -1050,7 +1112,7 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         self._pending_conversations = []
         return conversations
 
-    def get_pending_plan_updates(self) -> list:
+    def get_pending_plan_updates(self) -> List[Dict[str, Any]]:
         """Get and clear pending plan update requests."""
         if not hasattr(self, '_pending_plan_updates'):
             return []
@@ -1275,9 +1337,12 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         """
         Set agent's current location.
 
-        Note: This only updates location, NOT status flags. Status should be
-        updated by explicit action handlers to keep behavior memory-driven
-        rather than automatically prescribed.
+        Handles special cases:
+        - Moving to "outside": Sets presence=False and out_of_office=True
+        - Returning from "outside": Sets presence=True and out_of_office=False
+
+        Note: Other status flags (on_break, at_lunch, at_desk) should be
+        updated by explicit action handlers to keep behavior memory-driven.
 
         Args:
             occupant_id: Agent ID
@@ -1288,6 +1353,23 @@ class ProductionSimulationAdapter(BuildingSimulationAdapter):
         """
         if location not in self._office_locations:
             return False
+
+        loc_info = self._office_locations.get(location, {})
+        old_location = self._agent_locations.get(occupant_id, "desk_area")
+
+        # Handle leaving building (location has is_outside_building flag)
+        if loc_info.get("is_outside_building"):
+            self._present_occupants[occupant_id] = False
+            self.set_agent_status(occupant_id, "out_of_office", True)
+            self.set_agent_status(occupant_id, "at_desk", False)
+            logger.info(f"[LOCATION] {occupant_id}: {old_location} → {location} (left building)")
+        # Handle entering building from outside
+        elif old_location == "outside":
+            self._present_occupants[occupant_id] = True
+            self.set_agent_status(occupant_id, "out_of_office", False)
+            logger.info(f"[LOCATION] {occupant_id}: {old_location} → {location} (entered building)")
+        else:
+            logger.debug(f"[LOCATION] {occupant_id}: {old_location} → {location}")
 
         self._agent_locations[occupant_id] = location
         return True

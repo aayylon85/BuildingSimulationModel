@@ -81,18 +81,11 @@ ACTION_PARAMS = {
         "target_agent": str,    # Agent ID to talk to
         "topic": str,           # Conversation topic
     },
-    "take_break": {
-        "location": str,        # Where to take break (at_desk, break_area)
-        "activity": str,        # Break activity (tea, coffee, walk, etc.)
+    # NOTE: Break/lunch action types removed - agents use move_to + equipment_set
+    "go_out_for_break": {       # Legacy: leave building for break
+        "activity": str,        # Break activity (walk, fresh_air)
     },
-    "go_to_lunch": {},          # No parameters needed
-    "go_out_for_lunch": {},     # No parameters needed
-    "return_from_lunch": {},    # No parameters needed
-    "return_from_break": {},    # No parameters needed
     "no_op": {},                # No parameters needed
-    "use_appliance": {
-        "appliance_name": str,  # Appliance to use (kettle, microwave, etc.)
-    },
     "update_daily_plan": {
         "updates": dict,        # Plan updates
         "reason": str,          # Why the update
@@ -139,17 +132,9 @@ ActionType = Literal[
     "arrive",
     "depart",
     "respond_to_invitation",  # Accept/decline meeting invitation
-    # Lunch and break actions
-    "go_to_lunch",           # Leave desk for lunch (in building cafeteria/kitchen)
-    "go_out_for_lunch",      # Leave building for lunch (cafe, restaurant, etc.)
-    "return_from_lunch",     # Come back from lunch
-    "take_break",            # Short break (coffee, stretch, walk) - stay in building
-    "go_out_for_break",      # Leave building for break (walk, fresh air, coffee run)
-    "return_from_break",     # Come back from short break
-    # Navigation
+    # Movement (breaks/lunch use move_to + equipment_set)
     "move_to",               # Move to a different location (parameters: location)
-    # Location-specific equipment
-    "use_appliance",         # Use an appliance at current location (parameters: appliance_name, duration_minutes)
+    "go_out_for_break",      # Legacy: leave building for break
     # Social
     "initiate_conversation", # Start a conversation with a colleague (parameters: agent_id, topic)
     # Plan management
@@ -216,22 +201,59 @@ class ThermostatDecision(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Strict Enum Types for LLM Structured Output Validation
+# ---------------------------------------------------------------------------
+# These Literal types create JSON schema enums that OpenAI validates server-side.
+# With strict_json_schema=True, the LLM MUST choose from these values.
+
+ValidLightName = Literal[
+    "desk_light_A", "desk_light_B", "desk_light_C",
+    "zone_main", "meeting_room"
+]
+
+ValidEquipmentName = Literal[
+    "laptop_A", "laptop_B", "laptop_C",
+    "monitor_A", "monitor_B", "monitor_C",
+    "photocopier", "projector", "conference_phone",
+    "coffee_machine", "kettle", "microwave", "fridge",
+    "whiteboard_light"  # Meeting room whiteboard illumination
+]
+
+
 class LightingDecision(BaseModel):
-    """Decision about lighting at current location. Lights are ON/OFF only (no dimming)."""
+    """Decision about lighting at current location. Lights are ON/OFF only (no dimming).
+
+    STRICT VALIDATION: target_device must be from ValidLightName enum.
+    """
     action: Literal["turn_on", "turn_off", "keep_current"] = Field(
         description="Lighting action to take: turn_on, turn_off, or keep_current"
     )
     reasoning: str = Field(description="Why this lighting action was chosen")
-    target_device: Optional[str] = Field(
+    target_device: Optional[ValidLightName] = Field(
         default=None,
-        description="Light device name, e.g., 'desk_light', 'zone_main', or 'meeting_room'"
+        description="Light device from enum: desk_light_A, desk_light_B, desk_light_C, zone_main, or meeting_room"
+    )
+
+
+class WindowDecision(BaseModel):
+    """Decision about window state at current location."""
+    action: Literal["open", "close", "keep_current"] = Field(
+        description="Window action: open, close, or keep_current"
+    )
+    reasoning: str = Field(
+        description="Why this window decision was made (temperature, fresh air, etc.)"
     )
 
 
 class EquipmentDecision(BaseModel):
-    """Decision about a single piece of equipment. Create one entry per equipment item."""
-    equipment_name: str = Field(
-        description="Single equipment item name, e.g., 'laptop_A' or 'monitor_A'. Do NOT combine names."
+    """Decision about a single piece of equipment. Create one entry per equipment item.
+
+    STRICT VALIDATION: equipment_name must be from ValidEquipmentName enum.
+    Lights (desk_light, zone_main, meeting_room) are NOT equipment - use LightingDecision.
+    """
+    equipment_name: ValidEquipmentName = Field(
+        description="Equipment from enum - NOT lights. Lights use lighting_decisions."
     )
     action: Literal["turn_on", "turn_off", "keep_current"] = Field(
         description="What to do: turn_on (if OFF and needed), turn_off (if ON and not needed), keep_current (no change needed)"
@@ -246,13 +268,25 @@ class EquipmentDecision(BaseModel):
 
 
 class LocationDecision(BaseModel):
-    """Decision about moving to a different location."""
+    """Decision about moving to a different location (supports multi-step paths).
+
+    STRICT VALIDATION: Each destination must be from LocationType enum.
+    For outside trips, use destinations=["entrance", "outside"].
+    For returning, use destinations=["entrance", "desk_area"].
+    """
     action: Literal["move", "stay"] = Field(description="Whether to move to a different location or stay")
     reasoning: str = Field(description="Why this location decision was made")
-    destination: Optional[str] = Field(
-        default=None,
-        description="Target location: desk_area, meeting_room, break_area, shared_area"
+    destinations: List[LocationType] = Field(
+        default_factory=list,
+        description="Path of locations to traverse. Examples: ['entrance', 'outside'], ['meeting_room'], ['entrance', 'desk_area']"
     )
+
+    @model_validator(mode='after')
+    def validate_destinations(self) -> 'LocationDecision':
+        """Ensure destinations is provided when action is 'move'."""
+        if self.action == "move" and not self.destinations:
+            raise ValueError("destinations list is required when action='move'")
+        return self
 
 
 class ConversationDecision(BaseModel):
@@ -267,18 +301,29 @@ class ConversationDecision(BaseModel):
 
 
 class BreakDecision(BaseModel):
-    """Decision about taking a break or returning from break/lunch."""
-    action: Literal["take_break", "go_out_for_break", "continue_working", "return_from_lunch", "return_from_break", "not_applicable"] = Field(
-        description="Whether to take a break (inside or outside), continue working, return from break/lunch, or 'not_applicable' if break decision not relevant for this checkpoint"
+    """
+    Break/lunch metadata for tracking.
+
+    NOTE: Actual movement and equipment control use move_to and equipment_set.
+    This schema is for metadata/tracking only.
+    """
+    action: Literal[
+        "on_break",          # Currently on a break
+        "continue_working",  # Keep working, no break needed
+        "not_applicable"     # Not relevant for this checkpoint
+    ] = Field(
+        default="not_applicable",
+        description=(
+            "Break status metadata: "
+            "'on_break' if taking a break/lunch, "
+            "'continue_working' to keep working, "
+            "'not_applicable' if break decision not relevant"
+        )
     )
-    reasoning: str = Field(description="Why this break decision was made")
-    break_type: Optional[Literal["at_desk", "break_area", "outside"]] = Field(
-        default=None,
-        description="Where to take the break (only for take_break/go_out_for_break actions)"
-    )
+    reasoning: str = Field(default="", description="Why this break decision was made")
     activity: Optional[str] = Field(
         default=None,
-        description="Break activity: tea, coffee, snack, stretch, walk, fresh_air, etc."
+        description="Break activity: tea, coffee, snack, stretch, walk, fresh_air, water, lunch"
     )
 
 
@@ -421,6 +466,10 @@ class CurrentLocationDecision(BaseModel):
     """Step 2: Decisions about actions at current location BEFORE any move."""
     thermostat: ThermostatDecision
     lighting: LightingDecision
+    window: Optional[WindowDecision] = Field(
+        default=None,
+        description="Window action if windows are available at this location"
+    )
     equipment_decisions: List[EquipmentDecision] = Field(
         default_factory=list,
         description="Equipment to turn ON or OFF at current location (use action='turn_on' or 'turn_off')"
@@ -457,19 +506,31 @@ class StepConversationDecision(BaseModel):
 
 
 class MoveDecision(BaseModel):
-    """Step 4: Whether to move and where."""
+    """Step 4: Whether to move and where (supports multi-step paths).
+
+    STRICT VALIDATION: Each destination must be from LocationType enum.
+    For outside trips, use destinations=["entrance", "outside"].
+    For returning, use destinations=["entrance", "desk_area"].
+    """
     action: Literal["move", "stay"] = Field(
         description="Whether to move to a different location"
     )
-    destination: Optional[str] = Field(
-        default=None,
-        description="Target location (must be in LOCATION_TRANSITIONS[current_location])"
+    destinations: List[LocationType] = Field(
+        default_factory=list,
+        description="Path of locations to traverse. Examples: ['entrance', 'outside'], ['meeting_room'], ['entrance', 'desk_area']"
     )
     purpose: Optional[str] = Field(
         default=None,
         description="Why moving: 'attend meeting', 'fulfill commitment', 'take break', etc."
     )
     reasoning: str = Field(description="Why this move decision was made")
+
+    @model_validator(mode='after')
+    def validate_destinations(self) -> 'MoveDecision':
+        """Ensure destinations is provided when action is 'move'."""
+        if self.action == "move" and not self.destinations:
+            raise ValueError("destinations list is required when action='move'")
+        return self
 
 
 class NewLocationDecision(BaseModel):
@@ -542,7 +603,8 @@ class MeetingPlan(BaseModel):
 class LunchPlan(BaseModel):
     """Lunch planning details decided during daily planning."""
     location: Literal["at_desk", "break_area", "go_out"]
-    time: str = Field(description="Planned lunch time in HH:MM format")
+    time: str = Field(description="Planned lunch start time in HH:MM format")
+    end_time: Optional[str] = Field(default=None, description="Planned lunch end time in HH:MM format")
     reasoning: str = Field(description="Why this location/time was chosen based on preferences and schedule")
 
 
@@ -550,7 +612,8 @@ class BreakPlan(BaseModel):
     """Break planning details decided during daily planning."""
     location: Literal["at_desk", "break_area"]
     activity: str = Field(description="tea, coffee, walk, stretch, etc.")
-    preferred_time: str = Field(description="Planned break time in HH:MM format")
+    preferred_time: str = Field(description="Planned break start time in HH:MM format")
+    end_time: Optional[str] = Field(default=None, description="Planned break end time in HH:MM format")
     reasoning: str = Field(description="Why this break was planned based on habits and schedule")
 
 
@@ -573,11 +636,16 @@ class WorkActivity(BaseModel):
 class SocialCommitment(BaseModel):
     """A commitment made with a colleague during conversation."""
     activity: str = Field(description="What was agreed: 'coffee', 'walk', 'lunch together', etc.")
-    time: str = Field(description="When (HH:MM) if specified, or 'unspecified'")
+    time: str = Field(description="Start time (HH:MM) if specified, or 'unspecified'")
+    end_time: Optional[str] = Field(default=None, description="End time (HH:MM) if specified")
     with_agents: List[str] = Field(description="Agent IDs who agreed to this activity")
     location: Literal["break_area", "outside", "meeting_room", "entrance", "desk_area", "shared_area", "unspecified"] = Field(
         default="unspecified",
         description="Where the activity will happen"
+    )
+    location_raw: Optional[str] = Field(
+        default=None,
+        description="Original location phrase from conversation (e.g., 'by the elevators') for debugging"
     )
     source: str = Field(default="conversation", description="How this commitment was created")
     # Fulfillment tracking
@@ -1419,18 +1487,19 @@ class SimContext:
     """
     Context passed to tools at runtime.
 
-    Supports both old (memory-based) and new (simulation-based) approaches:
-    - Old: memory is SQLiteVectorMemory for retrieval tools
-    - New: simulation is BuildingSimulationAdapter for applying decisions
+    Contains:
+    - occupant_id: The agent making decisions
+    - now: Current simulation time
+    - calendar: Shared calendar for scheduling
+    - simulation: BuildingSimulationAdapter for applying decisions
+    - configured_agent_ids: All valid agent IDs from config
 
-    For the new GenerativeAgent architecture, memory is handled by
-    MemoryStream in cognitive_modules.py, so memory can be None.
+    Memory is handled by GenerativeAgent.memory_stream (not stored here).
     """
     occupant_id: str
     now: datetime
     calendar: CalendarStore
-    memory: Optional[Any] = None  # Legacy, unused in new architecture
-    simulation: Optional["BuildingSimulationAdapter"] = None  # For new architecture
+    simulation: Optional["BuildingSimulationAdapter"] = None
     configured_agent_ids: List[str] = None  # All valid agent IDs from config
 
     def __post_init__(self):
@@ -1767,13 +1836,12 @@ Meetings:
 - attend_meeting: physically go to meeting room (parameters: meeting_title)
 - leave_meeting: return to your desk from meeting room
 
-Lunch & Breaks:
-- go_to_lunch: have lunch in the break room (stay in building)
-- go_out_for_lunch: leave building for lunch (cafe, restaurant, walk)
-- return_from_lunch: return to work after lunch (REQUIRED after going out)
-- take_break: take a short break inside (parameters: location - "at_desk" or "break_area")
-- go_out_for_break: leave building for a short break (walk, fresh air, coffee run)
-- return_from_break: return to work after break (REQUIRED after going outside)
+Lunch & Breaks (use move_to + equipment_set):
+- Quick break (5-15 min): move_to break_area - coffee, tea, everything you need
+- Outside break (20+ min): move_to ["entrance", "outside"] - only if you have time
+- Return to work: move_to desk_area (from outside: ["entrance", "desk_area"])
+- Kitchen appliances auto-off: kettle 2min, coffee_machine 10min, microwave 5min
+- ENTRANCE IS TRANSIT ONLY - never stay there, always continue to destination
 
 Social:
 - initiate_conversation: start a conversation with a colleague (parameters: agent_id, topic)
@@ -1805,32 +1873,34 @@ EQUIPMENT - Be mindful of energy:
 - Meeting room equipment (projector, phone) should be off when room is empty
 
 KITCHEN EQUIPMENT (in break_area):
-- For tea: use_appliance(appliance_name="kettle") - auto-off after 2 minutes
-- For coffee: use_appliance(appliance_name="coffee_machine") - auto-off after 10 minutes
-- For heating food: use_appliance(appliance_name="microwave") - auto-off after 5 minutes
+- For tea: equipment_set(equipment_name="kettle", on=True) - auto-off after 2 minutes
+- For coffee: equipment_set(equipment_name="coffee_machine", on=True) - auto-off after 10 minutes
+- For heating food: equipment_set(equipment_name="microwave", on=True) - auto-off after 5 minutes
 - These appliances turn off automatically, you don't need to turn them off manually
 
-BREAKS - Follow your daily plan and preferences:
-- At break checkpoints, consider taking a break based on your planned schedule
-- You have THREE options:
-  1. "take_break" with location="at_desk": Quick break at your desk
-  2. "take_break" with location="break_area": Go to kitchen (make tea/coffee, social)
-  3. "go_out_for_break": Leave the building for fresh air, walk, or coffee run
-- IMPORTANT: If you go outside (go_out_for_break), you MUST use "return_from_break" to come back
-- Your core memories about tea/coffee preferences should guide break behavior
-- Consider social commitments - if you agreed to take a break with a colleague, honor it!
+BREAKS - CHOOSE THE RIGHT LOCATION:
+- Quick break (5-15 min): move_to break_area, turn on coffee_machine or kettle
+  * The break room has coffee, tea, and everything you need
+- Outside break (20+ min): move_to ["entrance", "outside"] - only if you have time
+  * Going outside takes more time, so only go if you have 20+ minutes
+- If outside: return via ["entrance", "desk_area"]
+- BREAK COOLDOWN: After any break, work for 1 HOUR before another break
+- ONE morning break and ONE afternoon break is normal - not multiple
+- ENTRANCE IS TRANSIT ONLY - never stay there, continue to your destination
+- Honor social commitments
+- AT BREAK_AREA: Actually USE the equipment (coffee_machine, kettle) - don't just stand there
 
 SOCIAL COMMITMENTS:
 - If you made agreements with colleagues during conversations (e.g., "let's grab coffee at 10"),
   these will be shown in <social_commitments> section of your prompt
 - Honor your commitments! If you agreed to an activity with someone, follow through
-- Use the appropriate action (take_break, go_out_for_break) to fulfill social commitments
+- Use move_to to go to the commitment location
 
 LUNCH - Follow your daily plan:
 - At lunch checkpoint, take lunch according to your plan
 - "at_desk": Stay and eat at your desk
-- "break_area": Eat in the kitchen/break area (social)
-- "go_out": Leave the building (nice weather, need fresh air, get food)
+- "break_area": Use move_to to go to break_area
+- "go_out": Use move_to with destinations=["entrance", "outside"]
 - Your daily plan includes what food you brought today
 - If your food needs heating (leftovers, soup, etc.), use the microwave in break_area
 - If your food is cold (salad, sandwich), no heating needed
@@ -1895,8 +1965,9 @@ Required decisions:
 - location: "move" or "stay"
 - conversation: "initiate" or "none"
 - plan_update: "update" or "keep_current"
-- break_decision: "take_break", "go_out_for_break", "continue_working", "return_from_lunch", "return_from_break", or "not_applicable"
+- break_decision: "on_break", "continue_working", or "not_applicable" (metadata only)
   * Use "not_applicable" if this checkpoint is NOT about breaks/lunch
+  * Use "on_break" if taking a break (actual movement via location decision)
   * Use "continue_working" if it's a break-eligible time but you choose not to take a break
 - meeting_equipment: "set_equipment", "accept_current", or "not_applicable"
   * Use "not_applicable" if you're NOT at a meeting boundary or NOT the meeting host

@@ -3,13 +3,81 @@
   "agent_name": "Charlie",
   "actions": [
     {
-      "timestamp": "2025-06-10T10:20:00+00:00",
-      "action_type": "lights_set",
+      "timestamp": "2025-06-10T10:10:00+00:00",
+      "action_type": "arrive",
       "details": {
-        "target": "desk_light",
+        "location": "desk_area"
+      },
+      "reason": "Agent arrived at office"
+    },
+    {
+      "timestamp": "2025-06-10T10:10:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "laptop_C",
         "on": true
       },
-      "reason": "Checkpoint: hourly | Agent: charlie_003 | Time: 10:20 | Location: desk_area | Priorities: Confirm whether the 10:00 Project sync already happened; if it\u2019s still ongoing/missed, move to the meeting location or ping to reschedule/ask for notes, Stay at the desk_area for now (environment is comfortable); no thermostat change needed, If you step away before the next checkpoint, dim/sleep monitor_C (and/or laptop_C) to reduce unnecessary on-time | Commitment: overdue | Actions: 1"
+      "reason": "Turned on desk equipment upon arrival at Desk_C"
+    },
+    {
+      "timestamp": "2025-06-10T10:10:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "monitor_C",
+        "on": true
+      },
+      "reason": "Turned on desk equipment upon arrival at Desk_C"
+    },
+    {
+      "timestamp": "2025-06-10T10:10:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "desk light_C",
+        "on": true
+      },
+      "reason": "Turned on desk equipment upon arrival at Desk_C"
+    },
+    {
+      "timestamp": "2025-06-10T10:24:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "meeting_room"
+      },
+      "reason": "Checkpoint: meeting_prep:Charlie: quick blocker check | Agent: charlie_003 | Time: 10:24 | Location: desk_area | Priorities: Stay at desk_area and keep laptop_C/monitor_C on; ensure audio/video and notifications are ready for the 10:30 meeting, Maintain comfort: temperature is already at preferred 22\u00b0C, so no thermostat changes; keep current setup as-is, Use available moderate natural light; only add a desk lamp if glare/strain starts during the call | Commitment: approaching | Moving to: meeting_room | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T10:25:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "desk_area"
+      },
+      "reason": "Checkpoint: meeting_end:Project sync | Agent: charlie_003 | Time: 10:25 | Location: meeting_room | Priorities: Power down/leave the meeting room tidy: ensure projector and conference phone remain OFF and take any personal items with you., Relocate now to the next meeting location (or a nearby spot) so you\u2019re ready to start the 10:30 quick blocker check on time., Quick comfort check before moving: cardigan/scarf as needed, since room temp matches preference (22\u00b0C) and no thermostat change is needed. | Commitment: approaching | Moving to: desk_area | Actions: 1"
+    },
+    {
+      "timestamp": "2025-06-10T10:27:00+00:00",
+      "action_type": "initiate_conversation",
+      "details": {
+        "target_agent": "alice_001",
+        "topic": "Brief hello and mention you\u2019re about to focus for the 10:30 blocker check; ask if she needs anything urgent shared before you go heads-down."
+      },
+      "reason": "Checkpoint: meeting_start:Charlie: quick blocker check | Agent: charlie_003 | Time: 10:27 | Location: desk_area | Priorities: Head to (or confirm you\u2019re in) the correct meeting spot for the 10:30 blocker check and be ready to start on time, Keep comfort steady: temperature is already at your preferred 22\u00b0C, so no thermostat changes needed, Quickly acknowledge Alice_001 (brief hello/check-in) before the meeting starts, then minimize distractions (keep only needed screens active) | Commitment: approaching | Moving to: meeting_room | Actions: 3"
+    },
+    {
+      "timestamp": "2025-06-10T10:27:00+00:00",
+      "action_type": "move_to",
+      "details": {
+        "destination": "meeting_room"
+      },
+      "reason": "Checkpoint: meeting_start:Charlie: quick blocker check | Agent: charlie_003 | Time: 10:27 | Location: desk_area | Priorities: Head to (or confirm you\u2019re in) the correct meeting spot for the 10:30 blocker check and be ready to start on time, Keep comfort steady: temperature is already at your preferred 22\u00b0C, so no thermostat changes needed, Quickly acknowledge Alice_001 (brief hello/check-in) before the meeting starts, then minimize distractions (keep only needed screens active) | Commitment: approaching | Moving to: meeting_room | Actions: 3"
+    },
+    {
+      "timestamp": "2025-06-10T10:27:00+00:00",
+      "action_type": "equipment_set",
+      "details": {
+        "equipment_name": "conference_phone",
+        "on": true
+      },
+      "reason": "Checkpoint: meeting_start:Charlie: quick blocker check | Agent: charlie_003 | Time: 10:27 | Location: desk_area | Priorities: Head to (or confirm you\u2019re in) the correct meeting spot for the 10:30 blocker check and be ready to start on time, Keep comfort steady: temperature is already at your preferred 22\u00b0C, so no thermostat changes needed, Quickly acknowledge Alice_001 (brief hello/check-in) before the meeting starts, then minimize distractions (keep only needed screens active) | Commitment: approaching | Moving to: meeting_room | Actions: 3"
     }
   ]
 }

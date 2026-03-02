@@ -28,3 +28,4 @@ Documentation/architecture.md
 test_configs/run_llm_experiments.py
 test_configs/analyze_energy_results.py
 test_configs/run_llm_experiments_2.py
+UI_demo_outputs/

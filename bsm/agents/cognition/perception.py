@@ -146,24 +146,86 @@ async def get_importance(
 # ---------------------------------------------------------------------------
 
 
-def _describe_temperature(temp_c: float) -> str:
-    """Describe a temperature in human terms."""
-    if temp_c < 0:
-        return "freezing"
-    elif temp_c < 5:
-        return "very cold"
-    elif temp_c < 10:
-        return "cold"
-    elif temp_c < 15:
-        return "cool"
-    elif temp_c < 20:
-        return "mild"
-    elif temp_c < 25:
-        return "warm"
-    elif temp_c < 30:
-        return "hot"
+def _describe_temperature(temp_c: float, month: int = None) -> str:
+    """
+    Describe a temperature in human terms, adjusted for season.
+
+    Summer (Jun-Aug): 15-25°C is "pleasant", <15°C is "cool for summer"
+    Winter (Dec-Feb): 5-15°C is "mild for winter", <5°C is "cold"
+    Spring/Fall: Standard thresholds
+
+    Args:
+        temp_c: Temperature in Celsius
+        month: Month (1-12) for seasonal adjustment. If None, uses absolute thresholds.
+    """
+    if month is None:
+        # Fallback to absolute thresholds if no month provided
+        if temp_c < 0:
+            return "freezing"
+        elif temp_c < 5:
+            return "very cold"
+        elif temp_c < 10:
+            return "cold"
+        elif temp_c < 15:
+            return "cool"
+        elif temp_c < 20:
+            return "mild"
+        elif temp_c < 25:
+            return "warm"
+        elif temp_c < 30:
+            return "hot"
+        else:
+            return "very hot"
+
+    is_summer = 6 <= month <= 8
+    is_winter = month in (12, 1, 2)
+
+    if is_summer:
+        # In summer, 15-25°C is normal/pleasant, not "cool" or "mild"
+        if temp_c < 0:
+            return "freezing"
+        elif temp_c < 10:
+            return "unusually cold"
+        elif temp_c < 15:
+            return "cool for summer"
+        elif temp_c < 22:
+            return "pleasant"
+        elif temp_c < 28:
+            return "warm"
+        elif temp_c < 33:
+            return "hot"
+        else:
+            return "very hot"
+    elif is_winter:
+        # In winter, 5-15°C is mild, <5°C is expected cold
+        if temp_c < -5:
+            return "bitterly cold"
+        elif temp_c < 0:
+            return "freezing"
+        elif temp_c < 5:
+            return "cold"
+        elif temp_c < 10:
+            return "mild for winter"
+        elif temp_c < 15:
+            return "unusually warm"
+        else:
+            return "very warm for winter"
     else:
-        return "very hot"
+        # Spring/Fall - moderate thresholds
+        if temp_c < 0:
+            return "freezing"
+        elif temp_c < 5:
+            return "cold"
+        elif temp_c < 12:
+            return "cool"
+        elif temp_c < 18:
+            return "mild"
+        elif temp_c < 24:
+            return "warm"
+        elif temp_c < 30:
+            return "hot"
+        else:
+            return "very hot"
 
 
 def _describe_sky_conditions(cloud_cover: float, is_sunny: bool) -> str:
@@ -213,7 +275,8 @@ def _get_seasonal_context(date: datetime, outdoor_temp: float) -> str:
     """
     Generate seasonal interpretation of temperature for perception events.
 
-    Simplified version that uses shared temperature description helper.
+    Uses season-aware temperature description to avoid misleading descriptions
+    like "cool summer day" when 17°C is actually pleasant for summer.
 
     Args:
         date: Current date (to determine season)
@@ -222,8 +285,14 @@ def _get_seasonal_context(date: datetime, outdoor_temp: float) -> str:
     Returns:
         Human-readable seasonal weather description
     """
-    temp_desc = _describe_temperature(outdoor_temp)
+    temp_desc = _describe_temperature(outdoor_temp, date.month)
     season = _get_season_name(date.month)
+
+    # Avoid redundant season text if temp_desc already includes seasonal context
+    # e.g., "cool for summer" shouldn't become "cool for summer summer day"
+    if "for summer" in temp_desc or "for winter" in temp_desc:
+        return f"It's a {temp_desc} day at {outdoor_temp:.0f}°C"
+
     return f"It's a {temp_desc} {season} day at {outdoor_temp:.0f}°C"
 
 
@@ -400,19 +469,35 @@ async def perceive(
         potential_perceptions.append((
             5.0,  # Medium priority - factual observation
             f"The room temperature is {temp:.1f}C",
-            "room", "temperature is", f"{temp:.1f}C", 3.0
+            "room_temperature", "is", f"{temp:.1f}C", 3.0
         ))
 
-    # Perceive other occupants present
+    # Perceive other occupants present - only record CHANGES
     other_occupants = sim_state.get("other_occupants_present", [])
-    for other_id in other_occupants:
-        if not agent.recently_perceived(other_id, now, within_minutes=120):
-            # Haven't noticed them recently - medium priority
-            potential_perceptions.append((
-                5.0,
-                f"{other_id} is in the office",
-                other_id, "is present in", "office", 4.0
-            ))
+    current_coworkers = set(other_occupants)
+    previous_coworkers = agent.get_cached_coworkers()
+
+    # Detect arrivals (new people we haven't seen)
+    arrived = current_coworkers - previous_coworkers
+    for other_id in arrived:
+        potential_perceptions.append((
+            6.0,  # Higher priority - new arrival is notable
+            f"{other_id} arrived in the office",
+            other_id, "arrived", "office", 5.0
+        ))
+
+    # Detect departures (people who left)
+    left = previous_coworkers - current_coworkers
+    for other_id in left:
+        potential_perceptions.append((
+            5.0,
+            f"{other_id} left the office",
+            other_id, "left", "office", 4.0
+        ))
+
+    # Update cached coworkers after detecting changes
+    if arrived or left:
+        agent.update_cached_coworkers(current_coworkers)
 
     # Track just_arrived state (will clear flag at end of function)
     just_arrived = agent.has_just_arrived()
@@ -427,7 +512,7 @@ async def perceive(
             potential_perceptions.append((
                 3.0,  # Lower priority - let agent decide based on their needs
                 f"The {equipment_name} is currently off",
-                "I", "notice", f"{equipment_name} is off", 3.0
+                equipment_name, "is", "off", 3.0
             ))
 
     # Perceive lighting conditions (also continuous, low priority)
@@ -440,28 +525,33 @@ async def perceive(
             potential_perceptions.append((
                 3.0,  # Lower priority - observational
                 f"The lighting is {natural_light} and the desk light is off",
-                "workspace", "has", f"{natural_light} lighting", 3.0
+                "lighting", "is", natural_light, 3.0
             ))
 
     # Perceive outdoor conditions as raw data
     weather_desc = sim_state.get("weather_description", "")
     outdoor_temp = sim_state.get("outdoor_temp_c", 10.0)
 
-    # Outdoor temperature - separate from indoor for comparison
-    if not agent.recently_perceived("outdoor_temp", now, within_minutes=60):
+    # Outdoor temperature - only record significant changes (>2°C)
+    previous_outdoor_temp = agent.get_cached_outdoor_temp()
+    if previous_outdoor_temp is None or abs(outdoor_temp - previous_outdoor_temp) > 2.0:
         potential_perceptions.append((
             4.0,  # Medium priority - useful context for comfort decisions
-            f"Outside it is {outdoor_temp:.1f}C",
-            "outdoor", "temperature is", f"{outdoor_temp:.1f}C", 3.0
+            f"Outside temperature changed to {outdoor_temp:.1f}C",
+            "outdoor_temperature", "changed_to", f"{outdoor_temp:.1f}C", 3.0
         ))
+        agent.update_cached_outdoor_temp(outdoor_temp)
 
-    # Weather conditions
-    if weather_desc and not agent.recently_perceived("weather", now, within_minutes=180):
-        potential_perceptions.append((
-            3.5,
-            f"The weather outside is {weather_desc}",
-            "weather", "is", weather_desc, 3.0
-        ))
+    # Weather conditions - only record if weather changed
+    if weather_desc:
+        previous_weather = agent.get_cached_weather()
+        if previous_weather != weather_desc:
+            potential_perceptions.append((
+                3.5,
+                f"The weather changed to {weather_desc}",
+                "weather", "changed_to", weather_desc, 3.0
+            ))
+            agent.update_cached_weather(weather_desc)
 
     # Seasonal context - helps agents interpret temperature appropriately for the season
     if not agent.recently_perceived("seasonal_weather", now, within_minutes=240):
@@ -469,7 +559,7 @@ async def perceive(
         potential_perceptions.append((
             4.5,  # Higher priority than raw weather - provides interpretation
             seasonal_context,
-            "weather", "feels like", seasonal_context, 3.5
+            "seasonal_weather", "is", seasonal_context, 3.5
         ))
 
     # Perceive equipment at current location (higher priority when at non-desk locations)
@@ -489,7 +579,7 @@ async def perceive(
                 potential_perceptions.append((
                     5.5,  # Higher priority - new location equipment is interesting
                     f"At {current_location}, I notice: {', '.join(equipment_states)}",
-                    "I", "notice equipment at", current_location, 4.0
+                    current_location, "has_equipment", ", ".join(equipment_names), 4.0
                 ))
 
     # Sort by priority (highest first) and limit to perception bandwidth

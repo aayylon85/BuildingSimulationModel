@@ -91,12 +91,17 @@ class Equipment:
         return self.get_current_power() * self.heat_gain_fraction
 
     def turn_on(self, occupant_id: Optional[str] = None, current_time: Optional[datetime] = None) -> None:
-        """Turn equipment on."""
+        """Turn equipment on.
+
+        Note: If equipment is already on, we do NOT reset the auto-off timer.
+        This prevents redundant turn-on actions from extending the timer indefinitely.
+        """
+        was_already_on = self.is_on
         self.is_on = True
         if occupant_id:
             self.assigned_to = occupant_id
-        # Track when turned on for auto-off functionality
-        if current_time and self.auto_off_minutes:
+        # Only set auto-off timer if equipment was OFF (not if re-turning on already-on equipment)
+        if current_time and self.auto_off_minutes and not was_already_on:
             self.turned_on_at = current_time
 
     def turn_off(self) -> None:
@@ -212,14 +217,20 @@ class EquipmentManager:
             else:
                 auto_off = KITCHEN_AUTO_OFF_MINUTES.get(eq_type)
 
+            # Read always_on from config (for equipment like fridge that should always be on)
+            always_on = item_config.get("always_on", False)
+            # If always_on, start in ON state; also allow explicit is_on in config
+            is_on_initial = always_on or item_config.get("is_on", False)
+
             self._equipment[name] = Equipment(
                 name=name,
                 equipment_type=eq_type,
                 power_w=power,
                 location=location,
-                is_on=False,
+                is_on=is_on_initial,
                 heat_gain_fraction=heat_gain_frac,
                 auto_off_minutes=auto_off,
+                always_on=always_on,
             )
 
         # If no items configured, create default equipment for 3 desks
@@ -400,18 +411,36 @@ class EquipmentManager:
             return True
         return False
 
-    def set_equipment_state(self, name: str, is_on: bool, occupant_id: Optional[str] = None) -> bool:
-        """Set equipment state directly."""
+    def set_equipment_state(
+        self,
+        name: str,
+        is_on: bool,
+        occupant_id: Optional[str] = None,
+        current_time: Optional[datetime] = None,
+    ) -> bool:
+        """Set equipment state directly.
+
+        Args:
+            name: Equipment name
+            is_on: Whether to turn on (True) or off (False)
+            occupant_id: ID of occupant using equipment (for tracking)
+            current_time: Current simulation time (for auto-off tracking)
+        """
         eq = self._equipment.get(name)
         if eq:
             if is_on:
-                eq.turn_on(occupant_id)
+                eq.turn_on(occupant_id, current_time)
             else:
                 eq.turn_off()
             return True
         return False
 
-    def apply_equipment_action(self, action_params: Dict[str, Any], occupant_id: str) -> bool:
+    def apply_equipment_action(
+        self,
+        action_params: Dict[str, Any],
+        occupant_id: str,
+        current_time: Optional[datetime] = None,
+    ) -> bool:
         """
         Apply an equipment_set action from an agent decision.
 
@@ -425,13 +454,18 @@ class EquipmentManager:
             "equipment_type": "laptop",  # turns on/off all at desk
             "on": true/false
         }
+
+        Args:
+            action_params: Action parameters with equipment_name or equipment_type and on state
+            occupant_id: ID of occupant performing the action
+            current_time: Current simulation time (for auto-off tracking)
         """
         equipment_name = action_params.get("equipment_name")
         equipment_type = action_params.get("equipment_type")
         is_on = action_params.get("on", False)
 
         if equipment_name:
-            return self.set_equipment_state(equipment_name, is_on, occupant_id if is_on else None)
+            return self.set_equipment_state(equipment_name, is_on, occupant_id if is_on else None, current_time)
 
         if equipment_type:
             # Turn on/off all equipment of this type
@@ -439,7 +473,7 @@ class EquipmentManager:
             for eq in self._equipment.values():
                 if eq.equipment_type == equipment_type:
                     if is_on:
-                        eq.turn_on(occupant_id)
+                        eq.turn_on(occupant_id, current_time)
                     else:
                         eq.turn_off()
                     success = True

@@ -15,27 +15,27 @@
     {
       "speaker": "alice_001",
       "speaker_name": "Alice",
-      "utterance": "Morning, Bob\u2014nice change that it\u2019s finally a bit warmer out, even if it\u2019s super windy. How\u2019s your morning going so far?"
+      "utterance": "That coffee hit the spot \u2014 thanks for the quick catch-up. It\u2019s surprisingly warm out today but super windy; are you heading straight into work now or got a minute to settle in?"
     },
     {
       "speaker": "bob_002",
       "speaker_name": "Bob",
-      "utterance": "Morning\u2014pretty good so far. The wind\u2019s wild, but I\u2019ll take the warmer air; the office felt a touch nicer when I came in at 9. You all set for the 10:00 sync?"
+      "utterance": "Yeah, straight into it\u2014I've got that 10:00 sync, so I\u2019m just going to drop my stuff at Desk_B and skim my notes. This wind\u2019s making it feel cooler than it looks though."
     },
     {
       "speaker": "alice_001",
       "speaker_name": "Alice",
-      "utterance": "Yeah, I\u2019m set for the 10:00 sync\u2014just doing a quick once-over of my notes now. If you\u2019ve got 5 minutes after it wraps at 10:30, want to do a quick coffee run and then get back to it?"
+      "utterance": "Same, I\u2019ve got the 10:00 sync too \u2014 I\u2019m going to pull up my notes and be ready. That wind is sneaky though; felt warm in the sun and then freezing the second you turn the corner."
     },
     {
       "speaker": "bob_002",
       "speaker_name": "Bob",
-      "utterance": "Yeah, I\u2019m in\u2014let\u2019s do it right after the sync. If we\u2019re out by 11:00, we can head down at 11:05 and be back by 11:15."
+      "utterance": "Yeah, totally\u2014sun feels nice and then the wind just cuts right through. I\u2019m going to take two minutes to settle and open my 10:00 doc; if you spot anything we should flag in that sync, ping me before we head in."
     },
     {
       "speaker": "alice_001",
       "speaker_name": "Alice",
-      "utterance": "Perfect\u201411:05 works for me. I\u2019ll bring my mug so we don\u2019t have to grab a disposable cup, and I\u2019ll see you right after the 10:00 sync."
+      "utterance": "Will do \u2014 I\u2019m going to skim my notes now too and I\u2019ll ping you if I see anything worth flagging before 10. See you in the sync in a bit."
     }
   ],
   "duration_minutes": 2,

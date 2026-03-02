@@ -199,10 +199,11 @@
       "continue_from_run": null
     },
     "_agents_note": "Agent properties (personality, schedule, core_memories, preferences) come from agent_base_types/{base_type}/ folder. Only id and base_type are required here.",
+    "_meeting_organiser_note": "Only is_meeting_organiser=true agents can create meetings in Phase 1. Others only RSVP.",
     "agents": [
-      {"id": "alice_001", "base_type": "alice_office_worker"},
-      {"id": "bob_002", "base_type": "bob_office_worker"},
-      {"id": "charlie_003", "base_type": "charlie_office_worker"}
+      {"id": "alice_001", "base_type": "alice_office_worker", "is_meeting_organiser": true},
+      {"id": "bob_002", "base_type": "bob_office_worker", "is_meeting_organiser": false},
+      {"id": "charlie_003", "base_type": "charlie_office_worker", "is_meeting_organiser": false}
     ]
   },
 

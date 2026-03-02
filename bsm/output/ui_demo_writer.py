@@ -16,6 +16,27 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+# Actions that change simulation state and should be recorded for UI visualization
+RECORDABLE_ACTIONS = {
+    # Arrival/departure
+    "arrive",            # Agent arriving at office
+    "leave_building",    # Agent departing
+    "depart",            # Agent departing (alternative)
+    # Movement (all breaks/lunch use move_to now)
+    "move_to",           # Changes agent location
+    "go_out_for_break",  # Legacy: going outside for break
+    # Environment controls
+    "lights_set",        # Changes lighting state
+    "equipment_set",     # Changes device state (including kitchen appliances)
+    "equipment_auto_off",  # System auto-off event (kitchen appliances timer)
+    "thermostat_adjust", # Changes temperature
+    "window_set",        # Changes window state
+    # Social interactions
+    "initiate_conversation",  # Social interaction
+    "accept_conversation",    # Social interaction response
+}
+
+
 class UIDemoWriter:
     """
     Writes simulation state to UI_demo_outputs/ for visualization.
@@ -70,7 +91,6 @@ class UIDemoWriter:
                 hvac_power_w REAL,
                 equipment_power_w REAL,
                 lighting_power_w REAL,
-                occupant_count INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -159,9 +179,8 @@ class UIDemoWriter:
             cursor.execute("""
                 INSERT INTO timestep_state (
                     simulation_time, external_temp_c, building_temp_c,
-                    total_power_w, hvac_power_w, equipment_power_w, lighting_power_w,
-                    occupant_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    total_power_w, hvac_power_w, equipment_power_w, lighting_power_w
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 timestep_data.get("simulation_time"),
                 timestep_data.get("external_temp_c"),
@@ -170,7 +189,6 @@ class UIDemoWriter:
                 timestep_data.get("hvac_power_w"),
                 timestep_data.get("equipment_power_w"),
                 timestep_data.get("lighting_power_w"),
-                len([o for o in timestep_data.get("occupant_states", []) if o.get("is_in_office")]),
             ))
 
             timestep_id = cursor.lastrowid
@@ -281,6 +299,9 @@ class UIDemoWriter:
         """
         Append action to agent's JSON file.
 
+        Only records actions that change simulation state (in RECORDABLE_ACTIONS).
+        Skips internal actions like take_break, update_daily_plan.
+
         Args:
             agent_id: The agent ID (e.g., "alice_001")
             action_data: Dict containing:
@@ -290,6 +311,11 @@ class UIDemoWriter:
                 - reason: Brief explanation for the action
             agent_name: Optional human-readable name
         """
+        # Filter to only record actions that change simulation state
+        action_type = action_data.get("action_type", "")
+        if action_type not in RECORDABLE_ACTIONS:
+            return  # Skip non-recordable actions
+
         # Get or create cache entry for this agent
         if agent_id not in self._agent_actions_cache:
             action_file = self.actions_dir / f"{agent_id}_actions.json"
@@ -348,8 +374,39 @@ class UIDemoWriter:
         try:
             with open(conversation_file, "w") as f:
                 json.dump(full_data, f, indent=2)
+            # Update manifest for UI discovery
+            self._update_conversations_manifest(conversation_id)
         except IOError as e:
             print(f"Warning: Failed to write conversation {conversation_id}: {e}")
+
+    def _update_conversations_manifest(self, conversation_id: str) -> None:
+        """
+        Maintain a manifest of all conversation IDs for UI discovery.
+
+        The manifest file allows the UI to discover all conversations without
+        relying on time-based filename guessing, which can miss conversations
+        if the UI connects after the conversation timestamp window passes.
+        """
+        manifest_path = self.conversations_dir / "manifest.json"
+
+        # Read existing manifest or create new
+        if manifest_path.exists():
+            try:
+                with open(manifest_path, "r") as f:
+                    manifest = json.load(f)
+            except (IOError, json.JSONDecodeError):
+                manifest = {"conversations": []}
+        else:
+            manifest = {"conversations": []}
+
+        # Add new conversation ID if not already present
+        if conversation_id not in manifest["conversations"]:
+            manifest["conversations"].append(conversation_id)
+            try:
+                with open(manifest_path, "w") as f:
+                    json.dump(manifest, f, indent=2)
+            except IOError as e:
+                print(f"Warning: Failed to update conversations manifest: {e}")
 
     def finalize(self) -> None:
         """

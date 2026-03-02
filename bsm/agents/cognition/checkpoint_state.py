@@ -106,11 +106,24 @@ class CheckpointState:
         """Check if the agent decided to move in step 4."""
         return self.step4 is not None and self.step4.action == "move"
 
+    def get_destinations(self) -> List[str]:
+        """Get the move destinations path if agent decided to move."""
+        if self.moved() and self.step4.destinations:
+            return self.step4.destinations
+        return []
+
+    def get_final_destination(self) -> Optional[str]:
+        """Get the final destination from the path (last element)."""
+        destinations = self.get_destinations()
+        return destinations[-1] if destinations else None
+
     def get_destination(self) -> Optional[str]:
-        """Get the move destination if agent decided to move."""
-        if self.moved() and self.step4.destination:
-            return self.step4.destination
-        return None
+        """Get the move destination if agent decided to move.
+
+        DEPRECATED: Use get_final_destination() or get_destinations() instead.
+        Kept for backwards compatibility - returns final destination.
+        """
+        return self.get_final_destination()
 
     def has_colleagues_at(self, location: str) -> bool:
         """
@@ -202,7 +215,7 @@ class CheckpointState:
                 lines.append(f"Commitment: {self.step1.commitment_status}")
 
         if self.moved():
-            lines.append(f"Moving to: {self.step4.destination}")
+            lines.append(f"Moving to: {self.get_final_destination()}")
 
         lines.append(f"Actions: {len(self.actions)}")
 
